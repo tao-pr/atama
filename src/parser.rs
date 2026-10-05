@@ -7,13 +7,15 @@
 //! - Top-level `- begin_if:`, `- actions:`, `- if_fail:` and `- if_succeed:`
 //!   bullets in a task are fields. Indented bullets under `- actions:` are the
 //!   actions. Any other text is part of the task description.
+//! - An action is whitespace-separated tokens: the action name, then its
+//!   parameters (`get https://example.com`).
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::str::FromStr;
 
-use crate::job::{Event, Hook, Job, Task, Trigger};
+use crate::job::{Action, Event, Hook, Job, Task, Trigger};
 
 /// An error found while parsing a job config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +97,10 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 
             if let Some(job_name) = line.strip_prefix("# ") {
                 if name.is_some() {
-                    return Err(ParseError::new(line_no, "more than one `# <job name>` heading"));
+                    return Err(ParseError::new(
+                        line_no,
+                        "more than one `# <job name>` heading",
+                    ));
                 }
                 let job_name = job_name.trim();
                 if job_name.is_empty() {
@@ -130,7 +135,10 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         if in_actions {
             let is_indented = line.starts_with(' ') || line.starts_with('\t');
             if let Some(action) = bullet_text(line.trim_start()).filter(|_| is_indented) {
-                current.task.actions.push(action.trim().to_string());
+                current
+                    .task
+                    .actions
+                    .push(parse_value(action.trim(), line_no, "action")?);
                 continue;
             }
             if line.trim().is_empty() {
@@ -147,7 +155,10 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         return Err(ParseError::new(line_no, "duplicate `actions` field"));
                     }
                     if !value.is_empty() {
-                        current.task.actions.push(value.to_string());
+                        current
+                            .task
+                            .actions
+                            .push(parse_value(value, line_no, "action")?);
                     }
                     in_actions = true;
                 }
@@ -223,7 +234,10 @@ fn validate(tasks: &[ParsedTask]) -> Result<(), ParseError> {
                 ));
             }
             Trigger::Task { id, .. } if *id == parsed.task.id => {
-                return Err(ParseError::new(line, format!("task `{id}` depends on itself")));
+                return Err(ParseError::new(
+                    line,
+                    format!("task `{id}` depends on itself"),
+                ));
             }
             Trigger::Task { id, .. } if !ids.contains(id.as_str()) => {
                 return Err(ParseError::new(line, format!("unknown task id `{id}`")));
@@ -255,12 +269,27 @@ fn parse_value<T: FromStr<Err = String>>(
     if value.is_empty() {
         return Err(ParseError::new(line, format!("`{key}` has no value")));
     }
-    value.parse().map_err(|message| ParseError::new(line, message))
+    value
+        .parse()
+        .map_err(|message| ParseError::new(line, message))
 }
 
 /// Joins description lines and trims surrounding blank lines.
 fn join_text(lines: &[String]) -> String {
     lines.join("\n").trim().to_string()
+}
+
+impl FromStr for Action {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut tokens = s.split_whitespace().map(str::to_string);
+        let name = tokens.next().ok_or("action is empty")?;
+        Ok(Action {
+            name,
+            params: tokens.collect(),
+        })
+    }
 }
 
 impl FromStr for Trigger {

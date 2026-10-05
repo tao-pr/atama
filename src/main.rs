@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atama::parse_job;
+use atama::{parse_job, print_job};
 use clap::Parser;
 
 /// Atama: automation pipeline as code, defined in markdown.
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
 
     match parse_job(&input) {
         Ok(job) => {
-            println!("{job:#?}");
+            print_job(&job);
             ExitCode::SUCCESS
         }
         Err(err) => {

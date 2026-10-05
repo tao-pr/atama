@@ -1,6 +1,6 @@
 //! Tests for the job config markdown parser.
 
-use atama::{Event, Hook, Trigger, parse_job};
+use atama::{Action, Event, Hook, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
@@ -19,7 +19,7 @@ fn parses_example_job() {
     let build = &job.tasks[0];
     assert_eq!(build.description, "Compile the release binary.");
     assert_eq!(build.begin_if, Trigger::PrevTask(Event::Succeed));
-    assert_eq!(build.actions, ["cargo build --release"]);
+    assert_eq!(build.actions, [action("cargo", &["build", "--release"])]);
     assert_eq!(build.if_fail, Some(Hook::Retry(2)));
     assert_eq!(build.if_succeed, Some(Hook::WriteFile("build.log".into())));
 
@@ -38,12 +38,54 @@ fn parses_example_job() {
     assert!(cleanup.actions.is_empty());
 }
 
+/// Builds the expected [`Action`] for a name and its parameters.
+fn action(name: &str, params: &[&str]) -> Action {
+    Action {
+        name: name.into(),
+        params: params.iter().map(|param| param.to_string()).collect(),
+    }
+}
+
+#[test]
+fn parses_actions() {
+    let cases = [
+        ("npm run build", action("npm", &["run", "build"])),
+        ("download url://aaaaa", action("download", &["url://aaaaa"])),
+        ("get https://aa/a/a", action("get", &["https://aa/a/a"])),
+        (
+            "research azaa pal la",
+            action("research", &["azaa", "pal", "la"]),
+        ),
+        ("deploy", action("deploy", &[])),
+        (
+            "  get \t  https://x.test  ",
+            action("get", &["https://x.test"]),
+        ),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(input.parse::<Action>(), Ok(expected), "input: {input:?}");
+    }
+
+    assert!("".parse::<Action>().is_err());
+    assert!("   ".parse::<Action>().is_err());
+}
+
+#[test]
+fn parses_inline_action() {
+    let job = parse_job("# Job\n## A\n- actions: get https://x.test\n").expect("job should parse");
+
+    assert_eq!(job.tasks[0].actions, [action("get", &["https://x.test"])]);
+}
+
 #[test]
 fn parses_trigger_conditions() {
     let cases = [
         ("prev task succeed", Trigger::PrevTask(Event::Succeed)),
         ("prev task fail", Trigger::PrevTask(Event::Fail)),
-        ("prev task succeed or fail", Trigger::PrevTask(Event::SucceedOrFail)),
+        (
+            "prev task succeed or fail",
+            Trigger::PrevTask(Event::SucceedOrFail),
+        ),
         (
             "task(Build) succeed or fail",
             Trigger::Task {
@@ -67,9 +109,15 @@ fn parses_hooks() {
         ("retry=3", Hook::Retry(3)),
         ("die", Hook::Die),
         ("restart", Hook::Restart),
-        ("call_api(https://x.test)", Hook::CallApi("https://x.test".into())),
+        (
+            "call_api(https://x.test)",
+            Hook::CallApi("https://x.test".into()),
+        ),
         ("write_file(out.txt)", Hook::WriteFile("out.txt".into())),
-        ("write_error_file(err.txt)", Hook::WriteErrorFile("err.txt".into())),
+        (
+            "write_error_file(err.txt)",
+            Hook::WriteErrorFile("err.txt".into()),
+        ),
     ];
     for (input, expected) in cases {
         assert_eq!(input.parse::<Hook>(), Ok(expected), "input: {input}");
@@ -104,8 +152,20 @@ fn rejects_invalid_jobs() {
     assert_error("# Job\n", 1, "no `## <task>`");
     assert_error("# Job\n## A\n## A\n", 3, "duplicate task id `A`");
     assert_error("# Job\n## A\n- begin_if: prev task fail\n", 3, "first task");
-    assert_error("# Job\n## A\n## B\n- begin_if: task(C) fail\n", 4, "unknown task id `C`");
-    assert_error("# Job\n## A\n## B\n- begin_if: task(B) fail\n", 4, "depends on itself");
-    assert_error("# Job\n## A\n- if_fail: retry=1\n- if_fail: die\n", 4, "duplicate `if_fail`");
+    assert_error(
+        "# Job\n## A\n## B\n- begin_if: task(C) fail\n",
+        4,
+        "unknown task id `C`",
+    );
+    assert_error(
+        "# Job\n## A\n## B\n- begin_if: task(B) fail\n",
+        4,
+        "depends on itself",
+    );
+    assert_error(
+        "# Job\n## A\n- if_fail: retry=1\n- if_fail: die\n",
+        4,
+        "duplicate `if_fail`",
+    );
     assert_error("# Job\n## A\n- if_succeed:\n", 3, "has no value");
 }

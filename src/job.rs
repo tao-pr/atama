@@ -21,11 +21,21 @@ pub struct Task {
     /// When the task starts. Defaults to `prev task succeed`.
     pub begin_if: Trigger,
     /// Actions to run, in order.
-    pub actions: Vec<String>,
+    pub actions: Vec<Action>,
     /// Hook to run when the task fails.
     pub if_fail: Option<Hook>,
     /// Hook to run when the task succeeds.
     pub if_succeed: Option<Hook>,
+}
+
+/// One item under `- actions:`, such as `npm run build`.
+///
+/// Tokens are separated by whitespace: the first is the action name and the
+/// rest are its parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub name: String,
+    pub params: Vec<String>,
 }
 
 /// A `begin_if` trigger condition.
