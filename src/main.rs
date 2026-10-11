@@ -3,7 +3,7 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atama::{DryRunner, Executor, parse_job, print_job};
+use atama::{DryRunner, Executor, parse_job, print_error, print_job};
 use clap::Parser;
 
 /// Atama: automation pipeline as code, defined in markdown.
@@ -21,7 +21,7 @@ fn main() -> ExitCode {
     let input = match fs::read_to_string(path) {
         Ok(input) => input,
         Err(err) => {
-            eprintln!("error: cannot read {}: {err}", path.display());
+            print_error(&format!("cannot read {}: {err}", path.display()));
             return ExitCode::FAILURE;
         }
     };
@@ -29,7 +29,7 @@ fn main() -> ExitCode {
     let job = match parse_job(&input) {
         Ok(job) => job,
         Err(err) => {
-            eprintln!("error: {}: {err}", path.display());
+            print_error(&format!("{}: {err}", path.display()));
             return ExitCode::FAILURE;
         }
     };
@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         Ok(report) if report.succeeded() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {
-            eprintln!("error: cannot write output: {err}");
+            print_error(&format!("cannot write output: {err}"));
             ExitCode::FAILURE
         }
     }

@@ -10,13 +10,25 @@ const TASK_TITLE: &str = "1;36";
 const FAIL: &str = "31";
 const SUCCEED: &str = "32";
 
-/// Prints a summary of the job to stdout.
-///
-/// Colors are used only when stdout is a terminal and `NO_COLOR` is not set.
+/// Whether to color output on `stream`: only when it is a terminal and
+/// `NO_COLOR` is not set.
+fn use_color(stream: &impl IsTerminal) -> bool {
+    stream.is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty())
+}
+
+/// Prints a summary of the job to stdout, in color when supported.
 pub fn print_job(job: &Job) {
-    let color = std::io::stdout().is_terminal()
-        && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
-    print!("{}", format_job(job, color));
+    print!("{}", format_job(job, use_color(&std::io::stdout())));
+}
+
+/// Prints `error: <message>` to stderr, in red when supported.
+pub fn print_error(message: &str) {
+    let line = format!("error: {message}");
+    if use_color(&std::io::stderr()) {
+        eprintln!("\x1b[{FAIL}m{line}\x1b[0m");
+    } else {
+        eprintln!("{line}");
+    }
 }
 
 /// Formats the job name and one bullet per task, for example:

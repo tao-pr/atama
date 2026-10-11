@@ -10,4 +10,4 @@ pub use executor::{
 };
 pub use job::{Action, Event, Hook, Job, Task, Trigger};
 pub use parser::{ParseError, parse_job};
-pub use printer::{format_job, print_job};
+pub use printer::{format_job, print_error, print_job};
