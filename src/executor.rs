@@ -245,6 +245,8 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
         for action in &task.actions {
             let command = format_action(action);
             writeln!(self.out, "[{}] $ {command}", task.id)?;
+            // taotodo find implementation of the the action
+            // taotodo then execute that action object
             if let Err(message) = self.runner.run(action) {
                 return Ok(Err(format!("`{command}`: {message}")));
             }

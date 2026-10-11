@@ -1,10 +1,12 @@
 //! Atama: automation pipeline as code, defined in markdown.
 
+pub mod actor;
 pub mod executor;
 pub mod job;
 pub mod parser;
 pub mod printer;
 
+pub use actor::Actor;
 pub use executor::{
     ActionRunner, DryRunner, Executor, JobOutcome, JobReport, TaskReport, TaskStatus,
 };
