@@ -65,14 +65,14 @@ pub fn format_job(job: &Job, color: bool) -> String {
     out
 }
 
-fn format_action(action: &Action) -> String {
+pub(crate) fn format_action(action: &Action) -> String {
     std::iter::once(action.name.as_str())
         .chain(action.params.iter().map(String::as_str))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn format_hook(hook: &Hook) -> String {
+pub(crate) fn format_hook(hook: &Hook) -> String {
     match hook {
         Hook::Retry(count) => format!("retry {count}x"),
         Hook::Die => "die".to_string(),

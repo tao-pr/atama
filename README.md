@@ -76,6 +76,9 @@ Atama takes one required argument, the path to a job config markdown file:
 # Build and run in one step (arguments after -- go to atama)
 cargo run -- job_config_file.md
 
+# Example: Test run the sample job
+cargo run -- jobs/sample_job.md
+
 # Or run a built binary directly
 ./target/release/atama job_config_file.md
 

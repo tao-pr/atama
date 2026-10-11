@@ -1,8 +1,9 @@
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atama::{parse_job, print_job};
+use atama::{DryRunner, Executor, parse_job, print_job};
 use clap::Parser;
 
 /// Atama: automation pipeline as code, defined in markdown.
@@ -25,13 +26,22 @@ fn main() -> ExitCode {
         }
     };
 
-    match parse_job(&input) {
-        Ok(job) => {
-            print_job(&job);
-            ExitCode::SUCCESS
-        }
+    let job = match parse_job(&input) {
+        Ok(job) => job,
         Err(err) => {
             eprintln!("error: {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    print_job(&job);
+    println!();
+
+    match Executor::new(&job, DryRunner, io::stdout().lock()).run() {
+        Ok(report) if report.succeeded() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(err) => {
+            eprintln!("error: cannot write output: {err}");
             ExitCode::FAILURE
         }
     }
