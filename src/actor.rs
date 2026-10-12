@@ -1,7 +1,9 @@
 //! Actors: the implementations that carry out a task's actions.
 
+use crate::passer::Passer;
+
 /// Something that can carry out an [`Action`](crate::job::Action).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Actor {
     /// Runs a command in bash.
     BashScript {
@@ -29,25 +31,25 @@ pub enum ApiVerb {
 
 
 /// How an [`Actor::ApiCall`] authenticates with the API.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Auth {
     /// Sends `Authorization: Bearer <token>`.
     Bearer {
         /// The opaque access token.
-        token: String,
+        token: Passer,
     },
     /// Sends a signed JSON Web Token as `Authorization: Bearer <token>`.
     Jwt {
         /// The encoded JWT (`header.payload.signature`).
-        token: String,
+        token: Passer,
     },
     /// OAuth 2.0 client credentials grant: fetches an access token from
     /// `token_url`, then sends it as a bearer token.
     OAuth2 {
         /// The authorization server's token endpoint.
         token_url: String,
-        client_id: String,
-        client_secret: String,
+        client_id: Passer,
+        client_secret: Passer,
         /// Scopes to request. Empty to use the server's default scopes.
         scopes: Vec<String>,
     },
@@ -56,6 +58,6 @@ pub enum Auth {
         /// Name of the header that carries the key, e.g. `X-API-Key`.
         header: String,
         /// The key value.
-        key: String,
+        key: Passer,
     },
 }

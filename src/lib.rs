@@ -4,6 +4,7 @@ pub mod actor;
 pub mod executor;
 pub mod job;
 pub mod parser;
+pub mod passer;
 pub mod printer;
 
 pub use actor::Actor;
