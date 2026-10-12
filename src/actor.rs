@@ -17,8 +17,8 @@ pub enum Actor {
         url: String,
         input_file: Option<String>,
         payload: Option<String>,
-        auth: Option<Auth>
-    }
+        auth: Option<Auth>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,9 +26,8 @@ pub enum ApiVerb {
     GET,
     POST,
     PUT,
-    DELETE
+    DELETE,
 }
-
 
 /// How an [`Actor::ApiCall`] authenticates with the API.
 #[derive(Debug, Clone, PartialEq)]
