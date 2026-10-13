@@ -96,5 +96,35 @@ Supported hooks are:
 The job is evaluated into a graph structure. The dependencies of tasks are evaluated 
 with the begin hook.
 
+## Test coverage
 
- 
+The project uses `cargo-llvm-cov` to measure test coverage. Test coverage is the part of the code that the tests run.
+The tool shows which lines, functions and regions of `src/` the tests in `tests/` do not run.
+
+To install the tool, run these commands once:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked
+```
+
+To measure coverage, run these commands from the project root:
+
+```sh
+# Run all tests and show a coverage table for each file in src/
+cargo llvm-cov
+
+# Write a line-by-line report to target/llvm-cov/html and open it in the browser
+cargo llvm-cov --html --open
+
+# Measure coverage for one test file only, for example tests/actor.rs.
+# Only the rows for the code that this file tests are useful.
+cargo llvm-cov --test actor
+```
+
+When you add or change code, follow these rules:
+
+1. Add tests in `tests/` for the new or changed code.
+2. Run `cargo llvm-cov` before and after the change.
+3. Make sure that line coverage for each changed file does not decrease.
+4. If a line has no test, open the HTML report to find it.

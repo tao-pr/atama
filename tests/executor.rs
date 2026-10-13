@@ -7,12 +7,17 @@ use atama::{
 };
 
 /// Runner whose actions fail on cue, recording every action it runs.
+///
+/// A successful action outputs its input followed by its name and a space,
+/// so tests can see how output passes from action to action.
 #[derive(Default)]
 struct ScriptedRunner {
     /// Per action name, the result of each call in order. Once a queue is
     /// empty, that action succeeds.
     results: HashMap<String, VecDeque<bool>>,
     calls: Vec<String>,
+    /// The input of each call, in order.
+    inputs: Vec<String>,
 }
 
 impl ScriptedRunner {
@@ -31,15 +36,16 @@ impl ScriptedRunner {
 }
 
 impl ActionRunner for ScriptedRunner {
-    fn run(&mut self, action: &Action) -> Result<(), String> {
+    fn run(&mut self, action: &Action, input: &str) -> Result<String, String> {
         self.calls.push(action.name.clone());
+        self.inputs.push(input.to_string());
         let succeeded = self
             .results
             .get_mut(&action.name)
             .and_then(VecDeque::pop_front)
             .unwrap_or(true);
         if succeeded {
-            Ok(())
+            Ok(format!("{input}{} ", action.name))
         } else {
             Err("scripted failure".to_string())
         }
@@ -222,4 +228,41 @@ fn runs_failure_branch_when_task_fails() {
     assert_eq!(runner.calls, ["deploy", "rollback", "next"]);
     assert_eq!(report.tasks[1].status, TaskStatus::Succeeded);
     assert!(!report.succeeded(), "Deploy failed, so the job failed");
+}
+
+#[test]
+fn passes_output_from_action_to_action_and_task_to_task() {
+    let mut runner = ScriptedRunner::default();
+    run(
+        "# Job\n## A\n- actions:\n  - a1\n  - a2\n## B\n- actions: b1\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.calls, ["a1", "a2", "b1"]);
+    assert_eq!(runner.inputs, ["", "a1 ", "a1 a2 "]);
+}
+
+#[test]
+fn passes_output_of_last_successful_task() {
+    let mut runner = ScriptedRunner::default().fail("broken", 1);
+    run(
+        "# Job\n## A\n- actions: a1\n\
+         ## B\n- actions: broken\n\
+         ## C\n- begin_if: prev task fail\n- actions: c1\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.calls, ["a1", "broken", "c1"]);
+    assert_eq!(runner.inputs, ["", "a1 ", "a1 "]);
+}
+
+#[test]
+fn retry_gets_the_same_input() {
+    let mut runner = ScriptedRunner::default().fail("flaky", 1);
+    run(
+        "# Job\n## A\n- actions: a1\n## B\n- actions: flaky\n- if_fail: retry=1\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.inputs, ["", "a1 ", "a1 "]);
 }

@@ -6,7 +6,7 @@ use std::process::Command;
 /// Where a value comes from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Passer {
-    /// Contents of the file at this path.
+    /// Contents of the text file at this path.
     FromFile(String),
     /// Data written directly in the job file.
     Data(String),
@@ -36,7 +36,7 @@ impl Passer {
                     .arg("-c")
                     .arg(command)
                     .output()
-                    .map_err(|err| format!("cannot run command `{command}`: {err}"))?;
+                    .map_err(|err| format!("failed to run command `{command}`: {err}"))?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     return Err(format!(

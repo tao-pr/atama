@@ -4,6 +4,9 @@
 //! task its `begin_if` condition is checked against the tasks that already ran;
 //! if it is not met the task is skipped. After a task finishes, its
 //! `if_succeed` or `if_fail` hook runs.
+//!
+//! Each action gets the output of the action before it as its input. The
+//! first action of a task gets the output of the last task that succeeded.
 
 use std::io::{self, Write};
 
@@ -15,24 +18,26 @@ pub const DEFAULT_MAX_RESTARTS: u32 = 3;
 
 /// Runs a single action.
 pub trait ActionRunner {
-    /// Runs the action, returning an error message if it failed.
-    fn run(&mut self, action: &Action) -> Result<(), String>;
+    /// Runs the action with `input`, the output of the previous action or
+    /// task. Returns the action's output, or an error message if it failed.
+    fn run(&mut self, action: &Action, input: &str) -> Result<String, String>;
 }
 
 impl<R: ActionRunner + ?Sized> ActionRunner for &mut R {
-    fn run(&mut self, action: &Action) -> Result<(), String> {
-        (**self).run(action)
+    fn run(&mut self, action: &Action, input: &str) -> Result<String, String> {
+        (**self).run(action, input)
     }
 }
 
 /// Placeholder runner until actions are implemented: every action succeeds
-/// without doing anything. The executor still logs each action it runs.
+/// and passes its input through as its output. The executor still logs each
+/// action it runs.
 #[derive(Debug, Default)]
 pub struct DryRunner;
 
 impl ActionRunner for DryRunner {
-    fn run(&mut self, _action: &Action) -> Result<(), String> {
-        Ok(())
+    fn run(&mut self, _action: &Action, input: &str) -> Result<String, String> {
+        Ok(input.to_string())
     }
 }
 
@@ -173,6 +178,8 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
     /// Runs every task once, in order, and reports what the job should do next.
     fn run_pass(&mut self, reports: &mut [TaskReport]) -> io::Result<Pass> {
         let job = self.job;
+        // Output of the last task that succeeded, passed to the next task.
+        let mut last_output = String::new();
         for (index, task) in job.tasks.iter().enumerate() {
             if !should_begin(&task.begin_if, index, reports) {
                 writeln!(self.out, "[{}] skipped (begin_if not met)", task.id)?;
@@ -180,7 +187,10 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                 continue;
             }
 
-            let (status, attempts) = self.run_task(task)?;
+            let (status, attempts, output) = self.run_task(task, &last_output)?;
+            if let Some(output) = output {
+                last_output = output;
+            }
             reports[index].status = status;
             reports[index].attempts = attempts;
 
@@ -215,8 +225,13 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
     }
 
     /// Runs a task, retrying up to N times if its `if_fail` hook is `retry=N`.
-    /// Returns the final status and the number of attempts.
-    fn run_task(&mut self, task: &Task) -> io::Result<(TaskStatus, u32)> {
+    /// Returns the final status, the number of attempts, and the task's output
+    /// if it succeeded.
+    fn run_task(
+        &mut self,
+        task: &Task,
+        input: &str,
+    ) -> io::Result<(TaskStatus, u32, Option<String>)> {
         let retries = match task.if_fail {
             Some(Hook::Retry(retries)) => retries,
             _ => 0,
@@ -229,29 +244,34 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                 writeln!(self.out, "[{}] retry {attempt} of {retries}", task.id)?;
             }
 
-            match self.run_actions(task)? {
-                Ok(()) => {
+            match self.run_actions(task, input)? {
+                Ok(output) => {
                     writeln!(self.out, "[{}] succeeded", task.id)?;
-                    return Ok((TaskStatus::Succeeded, attempt + 1));
+                    return Ok((TaskStatus::Succeeded, attempt + 1, Some(output)));
                 }
                 Err(message) => writeln!(self.out, "[{}] failed: {message}", task.id)?,
             }
         }
-        Ok((TaskStatus::Failed, retries + 1))
+        Ok((TaskStatus::Failed, retries + 1, None))
     }
 
     /// Runs the task's actions in order, stopping at the first failure.
-    fn run_actions(&mut self, task: &Task) -> io::Result<Result<(), String>> {
+    /// Each action gets the previous action's output, and the first gets
+    /// `input`. Returns the last output, which is `input` if there are no
+    /// actions.
+    fn run_actions(&mut self, task: &Task, input: &str) -> io::Result<Result<String, String>> {
+        let mut output = input.to_string();
         for action in &task.actions {
             let command = format_action(action);
             writeln!(self.out, "[{}] $ {command}", task.id)?;
             // taotodo find implementation of the the action
             // taotodo then execute that action object
-            if let Err(message) = self.runner.run(action) {
-                return Ok(Err(format!("`{command}`: {message}")));
+            match self.runner.run(action, &output) {
+                Ok(next) => output = next,
+                Err(message) => return Ok(Err(format!("`{command}`: {message}"))),
             }
         }
-        Ok(Ok(()))
+        Ok(Ok(output))
     }
 }
 
