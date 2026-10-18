@@ -88,11 +88,11 @@ cargo run -- --help
 
 ## Mock Server
 
-When testing Atama with mock API calls, you can install and start a mock server with the help from [json-server](https://github.com/typicode/json-server):
+When testing Atama with mock API calls, you can install and start a mock server with the help from [siga](https://github.com/tao-pr/siga). It allows you to create a mock API server from OpenAPI v3 spec with mock authentication and authorization.
 
 ```sh
-npm install json-server
-npx json-server db.json # create an API spec as db.json first. See README of its repo.
+cd siga & cargo build --release
+./target/release/siga --api tests/data/petstore.yaml
 ```
 
 ## Testing
