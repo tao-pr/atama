@@ -1,7 +1,5 @@
 //! Data model for a job (pipeline) definition.
 
-use crate::actor::Actor;
-
 /// A pipeline parsed from a job config markdown file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
