@@ -64,6 +64,20 @@ fn bash(cmd: &str, params: &[&str]) -> Actor {
     }
 }
 
+/// Verbs that send a request body, with their HTTP method names.
+const BODY_VERBS: [(ApiVerb, &str); 3] = [
+    (ApiVerb::POST, "POST"),
+    (ApiVerb::PUT, "PUT"),
+    (ApiVerb::PATCH, "PATCH"),
+];
+
+/// Verbs that send no request body, with their HTTP method names.
+const NO_BODY_VERBS: [(ApiVerb, &str); 3] = [
+    (ApiVerb::GET, "GET"),
+    (ApiVerb::DELETE, "DELETE"),
+    (ApiVerb::HEAD, "HEAD"),
+];
+
 /// A URL where nothing listens, so connections to it are refused.
 fn closed_url() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -127,26 +141,32 @@ fn bash_fails_on_non_zero_exit() {
 }
 
 #[test]
-fn api_call_sends_input_as_body() {
-    let (url, requests) = serve(vec![(200, "created")]);
-    let actor = api_call(ApiVerb::POST, &format!("{url}/items"));
+fn api_call_sends_input_as_body_for_verbs_with_a_body() {
+    for (verb, method) in BODY_VERBS {
+        let (url, requests) = serve(vec![(200, "created")]);
+        let actor = api_call(verb, &format!("{url}/items"));
 
-    assert_eq!(actor.act(r#"{"name":"atama"}"#), Ok("created".into()));
-    let request = requests.recv().unwrap();
-    assert!(
-        request.starts_with("POST /items "),
-        "request was:\n{request}"
-    );
-    assert!(
-        request
-            .to_lowercase()
-            .contains("content-type: application/json"),
-        "request was:\n{request}"
-    );
-    assert!(
-        request.ends_with(r#"{"name":"atama"}"#),
-        "request was:\n{request}"
-    );
+        assert_eq!(
+            actor.act(r#"{"name":"atama"}"#),
+            Ok("created".into()),
+            "verb: {method}"
+        );
+        let request = requests.recv().unwrap();
+        assert!(
+            request.starts_with(&format!("{method} /items ")),
+            "request was:\n{request}"
+        );
+        assert!(
+            request
+                .to_lowercase()
+                .contains("content-type: application/json"),
+            "request was:\n{request}"
+        );
+        assert!(
+            request.ends_with(r#"{"name":"atama"}"#),
+            "request was:\n{request}"
+        );
+    }
 }
 
 #[test]
@@ -284,13 +304,17 @@ fn api_call_gets_oauth2_token_first() {
 }
 
 #[test]
-fn api_call_fails_on_error_status() {
-    let (url, _requests) = serve(vec![(404, "no such item")]);
-    let actor = api_call(ApiVerb::GET, &url);
+fn api_call_fails_on_error_status_for_every_verb() {
+    for (verb, method) in BODY_VERBS.into_iter().chain(NO_BODY_VERBS) {
+        // A response to `HEAD` has no body, so there is no text to report.
+        let body = if method == "HEAD" { "" } else { "no such item" };
+        let (url, _requests) = serve(vec![(404, body)]);
+        let actor = api_call(verb, &url);
 
-    let err = actor.act("").unwrap_err();
-    assert!(err.contains("404"), "error was: {err}");
-    assert!(err.contains("no such item"), "error was: {err}");
+        let err = actor.act("").unwrap_err();
+        assert!(err.contains("404"), "verb: {method}, error was: {err}");
+        assert!(err.contains(body), "verb: {method}, error was: {err}");
+    }
 }
 
 #[test]
@@ -460,19 +484,29 @@ fn api_call_fails_on_missing_input_file() {
 }
 
 #[test]
-fn api_call_get_ignores_payload() {
-    let (url, requests) = serve(vec![(200, "ok")]);
-    let actor = Actor::ApiCall {
-        verb: ApiVerb::GET,
-        url,
-        input_file: None,
-        payload: Some("not sent".into()),
-        auth: None,
-    };
+fn api_call_sends_no_body_for_verbs_without_a_body() {
+    for (verb, method) in NO_BODY_VERBS {
+        let (url, requests) = serve(vec![(200, "")]);
+        let actor = Actor::ApiCall {
+            verb,
+            url,
+            input_file: None,
+            payload: Some("not sent".into()),
+            auth: None,
+        };
 
-    actor.act("").unwrap();
-    let request = requests.recv().unwrap();
-    assert!(!request.contains("not sent"), "request was:\n{request}");
+        actor.act("ignored input").unwrap();
+        let request = requests.recv().unwrap();
+        assert!(
+            request.starts_with(&format!("{method} / ")),
+            "request was:\n{request}"
+        );
+        assert!(request.ends_with("\r\n\r\n"), "request was:\n{request}");
+        assert!(
+            !request.to_lowercase().contains("content-length"),
+            "request was:\n{request}"
+        );
+    }
 }
 
 #[test]
@@ -740,4 +774,32 @@ fn download_fails_when_auth_value_is_missing() {
 
     let err = actor.act("").unwrap_err();
     assert!(err.contains("does/not/exist.token"), "error was: {err}");
+}
+
+#[test]
+fn api_call_head_sends_no_body_and_outputs_nothing() {
+    let (url, requests) = serve(vec![(200, "")]);
+    let actor = Actor::ApiCall {
+        verb: ApiVerb::HEAD,
+        url: format!("{url}/items"),
+        input_file: None,
+        payload: Some("not sent".into()),
+        auth: Some(Auth::Bearer {
+            token: Passer::Data("head-token".into()),
+        }),
+    };
+
+    assert_eq!(actor.act("ignored input"), Ok(String::new()));
+    let request = requests.recv().unwrap();
+    assert!(
+        request.starts_with("HEAD /items "),
+        "request was:\n{request}"
+    );
+    assert!(
+        request
+            .to_lowercase()
+            .contains("authorization: bearer head-token"),
+        "request was:\n{request}"
+    );
+    assert!(request.ends_with("\r\n\r\n"), "request was:\n{request}");
 }

@@ -43,12 +43,15 @@ pub enum Actor {
     },
 }
 
+/// Verbs https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApiVerb {
     GET,
     POST,
     PUT,
     DELETE,
+    PATCH,
+    HEAD,
 }
 
 /// How an [`Actor::ApiCall`] authenticates with the API.
@@ -94,7 +97,8 @@ impl Actor {
     ///   arguments and `input` on stdin, and returns stdout.
     /// - [`Actor::ApiCall`] sends a request and returns the response body.
     ///   The request body is `payload`, else the contents of `input_file`,
-    ///   else `input`. `GET` and `DELETE` send no body.
+    ///   else `input`. `GET`, `DELETE` and `HEAD` send no body. A `HEAD`
+    ///   response has no body, so its output is empty.
     /// - [`Actor::DownloadFromUrl`] sends a `GET` request, saves the response
     ///   body to a file, and returns the file path. The file is in
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
@@ -228,6 +232,8 @@ fn call_api(verb: &ApiVerb, url: &str, body: &str, auth: Option<&Auth>) -> Resul
         ApiVerb::DELETE => with_auth(&agent, agent.delete(url), auth)?.call(),
         ApiVerb::POST => send(with_auth(&agent, agent.post(url), auth)?, body),
         ApiVerb::PUT => send(with_auth(&agent, agent.put(url), auth)?, body),
+        ApiVerb::HEAD => with_auth(&agent, agent.head(url), auth)?.call(),
+        ApiVerb::PATCH => send(with_auth(&agent, agent.patch(url), auth)?, body),
     };
     read_response(url, response)
 }

@@ -86,6 +86,15 @@ cargo run -- jobs/sample_job.md
 cargo run -- --help
 ```
 
+## Mock Server
+
+When testing Atama with mock API calls, you can install and start a mock server with the help from [json-server](https://github.com/typicode/json-server):
+
+```sh
+npm install json-server
+npx json-server db.json # create an API spec as db.json first. See README of its repo.
+```
+
 ## Testing
 
 ```sh
