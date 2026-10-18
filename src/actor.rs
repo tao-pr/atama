@@ -1,5 +1,6 @@
 //! Actors: the implementations that carry out a task's actions.
 
+use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -11,8 +12,12 @@ use ureq::{Agent, Body, RequestBuilder};
 
 use crate::passer::Passer;
 
-/// Something that can carry out an [`Action`](crate::job::Action).
-#[derive(Debug, Clone, PartialEq)]
+/// One action of a task, and how to carry it out.
+///
+/// The parser makes an actor from each action statement in the job file. The
+/// first word of the statement selects the variant (see the `FromStr` impl in
+/// [`crate::parser`]), and [`fmt::Display`] writes the statement back.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     /// Runs a command in bash.
     /// Always carry stdout as output
@@ -41,6 +46,10 @@ pub enum Actor {
         /// Output dir it not specified, will write to temp dir
         output_dir: Option<String>,
     },
+    /// Does nothing. Carries its input as output unchanged.
+    MockPlaceholder,
+    /// Always fails, to emulate a failing action.
+    MockFail,
 }
 
 /// Verbs https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods
@@ -55,7 +64,7 @@ pub enum ApiVerb {
 }
 
 /// How an [`Actor::ApiCall`] authenticates with the API.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Auth {
     /// Sends `Authorization: Bearer <token>`.
     Bearer {
@@ -103,6 +112,8 @@ impl Actor {
     ///   body to a file, and returns the file path. The file is in
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
     ///   named after the last part of the URL path. It ignores `input`.
+    /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
+    /// - [`Actor::MockFail`] always fails.
     ///
     /// Fails if the command exits with a non-zero status, the server
     /// responds with a non-2xx status, or a value cannot be read or written.
@@ -130,8 +141,74 @@ impl Actor {
                 mime,
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
+            Actor::MockPlaceholder => Ok(input.to_string()),
+            Actor::MockFail => Err("mock failure".to_string()),
         }
     }
+}
+
+/// Writes the action statement that parses back into this actor, for
+/// example `bash npm ci` or `api_call POST https://example.com payload={}`.
+///
+/// The executor logs this text, so it hides secrets: `auth` is written as
+/// `auth=<kind>:***`, for example `auth=bearer:***`.
+impl fmt::Display for Actor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Actor::BashScript { cmd, params } => {
+                write!(f, "bash {cmd}")?;
+                for param in params {
+                    write!(f, " {param}")?;
+                }
+                Ok(())
+            }
+            Actor::ApiCall {
+                verb,
+                url,
+                input_file,
+                payload,
+                auth,
+            } => {
+                write!(f, "api_call {verb:?} {url}")?;
+                write_option(f, "payload", payload)?;
+                write_option(f, "input_file", input_file)?;
+                write_auth(f, auth)
+            }
+            Actor::DownloadFromUrl {
+                url,
+                auth,
+                mime,
+                output_dir,
+            } => {
+                write!(f, "download {url}")?;
+                write_option(f, "mime", mime)?;
+                write_option(f, "output_dir", output_dir)?;
+                write_auth(f, auth)
+            }
+            Actor::MockPlaceholder => write!(f, "mock"),
+            Actor::MockFail => write!(f, "mock fail"),
+        }
+    }
+}
+
+/// Writes ` key=value` if the option is set.
+fn write_option(f: &mut fmt::Formatter<'_>, key: &str, value: &Option<String>) -> fmt::Result {
+    match value {
+        Some(value) => write!(f, " {key}={value}"),
+        None => Ok(()),
+    }
+}
+
+/// Writes ` auth=<kind>:***` if `auth` is set, without the secret.
+fn write_auth(f: &mut fmt::Formatter<'_>, auth: &Option<Auth>) -> fmt::Result {
+    let kind = match auth {
+        None => return Ok(()),
+        Some(Auth::Bearer { .. }) => "bearer",
+        Some(Auth::Jwt { .. }) => "jwt",
+        Some(Auth::OAuth2 { .. }) => "oauth2",
+        Some(Auth::ApiKey { .. }) => "api_key",
+    };
+    write!(f, " auth={kind}:***")
 }
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {

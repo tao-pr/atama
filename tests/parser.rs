@@ -1,6 +1,8 @@
 //! Tests for the job config markdown parser.
 
-use atama::{Action, Event, Hook, Trigger, parse_job};
+use atama::Passer;
+use atama::actor::{Actor, ApiVerb, Auth};
+use atama::{Event, Hook, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
@@ -19,7 +21,7 @@ fn parses_example_job() {
     let build = &job.tasks[0];
     assert_eq!(build.description, "Compile the release binary.");
     assert_eq!(build.begin_if, Trigger::PrevTask(Event::Succeed));
-    assert_eq!(build.actions, [action("cargo", &["build", "--release"])]);
+    assert_eq!(build.actions, [bash("cargo", &["build", "--release"])]);
     assert_eq!(build.if_fail, Some(Hook::Retry(2)));
     assert_eq!(build.if_succeed, Some(Hook::WriteFile("build.log".into())));
 
@@ -38,43 +40,169 @@ fn parses_example_job() {
     assert!(cleanup.actions.is_empty());
 }
 
-/// Builds the expected [`Action`] for a name and its parameters.
-fn action(name: &str, params: &[&str]) -> Action {
-    Action {
-        name: name.into(),
+/// Builds the expected [`Actor::BashScript`] for a command and its parameters.
+fn bash(cmd: &str, params: &[&str]) -> Actor {
+    Actor::BashScript {
+        cmd: cmd.into(),
         params: params.iter().map(|param| param.to_string()).collect(),
+    }
+}
+
+fn api_call(verb: ApiVerb, url: &str, payload: Option<&str>, input_file: Option<&str>) -> Actor {
+    Actor::ApiCall {
+        verb,
+        url: url.into(),
+        input_file: input_file.map(Into::into),
+        payload: payload.map(Into::into),
+        auth: None,
+    }
+}
+
+fn download(url: &str, mime: Option<&str>, output_dir: Option<&str>) -> Actor {
+    Actor::DownloadFromUrl {
+        url: url.into(),
+        auth: None,
+        mime: mime.map(Into::into),
+        output_dir: output_dir.map(Into::into),
     }
 }
 
 #[test]
 fn parses_actions() {
     let cases = [
-        ("npm run build", action("npm", &["run", "build"])),
-        ("download url://aaaaa", action("download", &["url://aaaaa"])),
-        ("get https://aa/a/a", action("get", &["https://aa/a/a"])),
+        ("bash npm run build", bash("npm", &["run", "build"])),
+        ("bash make", bash("make", &[])),
         (
-            "research azaa pal la",
-            action("research", &["azaa", "pal", "la"]),
+            "  bash \t  ./deploy.sh   staging  ",
+            bash("./deploy.sh", &["staging"]),
         ),
-        ("deploy", action("deploy", &[])),
         (
-            "  get \t  https://x.test  ",
-            action("get", &["https://x.test"]),
+            "api_call GET https://x.test",
+            api_call(ApiVerb::GET, "https://x.test", None, None),
         ),
+        (
+            "api_call post https://x.test payload={\"a\":1}",
+            api_call(ApiVerb::POST, "https://x.test", Some("{\"a\":1}"), None),
+        ),
+        (
+            "api_call Patch https://x.test input_file=body.json",
+            api_call(ApiVerb::PATCH, "https://x.test", None, Some("body.json")),
+        ),
+        (
+            "api_call PUT https://x.test input_file=in.txt payload=text",
+            api_call(ApiVerb::PUT, "https://x.test", Some("text"), Some("in.txt")),
+        ),
+        (
+            "download https://x.test/a.zip",
+            download("https://x.test/a.zip", None, None),
+        ),
+        (
+            "download https://x.test/a.zip output_dir=out mime=application/zip",
+            download("https://x.test/a.zip", Some("application/zip"), Some("out")),
+        ),
+        ("mock", Actor::MockPlaceholder),
+        ("mock build step", Actor::MockPlaceholder),
+        ("mock fail", Actor::MockFail),
+        ("mock fail with a note", Actor::MockFail),
     ];
     for (input, expected) in cases {
-        assert_eq!(input.parse::<Action>(), Ok(expected), "input: {input:?}");
+        assert_eq!(input.parse::<Actor>(), Ok(expected), "input: {input:?}");
     }
+}
 
-    assert!("".parse::<Action>().is_err());
-    assert!("   ".parse::<Action>().is_err());
+#[test]
+fn parses_every_api_verb() {
+    let verbs = [
+        ("GET", ApiVerb::GET),
+        ("POST", ApiVerb::POST),
+        ("PUT", ApiVerb::PUT),
+        ("DELETE", ApiVerb::DELETE),
+        ("PATCH", ApiVerb::PATCH),
+        ("HEAD", ApiVerb::HEAD),
+    ];
+    for (text, verb) in verbs {
+        assert_eq!(text.parse::<ApiVerb>(), Ok(verb.clone()));
+        assert_eq!(text.to_lowercase().parse::<ApiVerb>(), Ok(verb));
+    }
+}
+
+#[test]
+fn rejects_invalid_actions() {
+    let cases = [
+        ("", "action is empty"),
+        ("   ", "action is empty"),
+        ("npm ci", "unknown action `npm`"),
+        ("Bash ls", "unknown action `Bash`"),
+        ("bash", "`bash` needs a command"),
+        ("api_call", "`api_call` needs a verb and a URL"),
+        ("api_call GET", "`api_call` needs a verb and a URL"),
+        ("api_call FETCH https://x.test", "unknown API verb `FETCH`"),
+        ("api_call GET https://x.test extra", "unexpected `extra`"),
+        (
+            "api_call GET https://x.test mime=a/b",
+            "unknown option `mime`",
+        ),
+        (
+            "api_call GET https://x.test payload=",
+            "option `payload` has no value",
+        ),
+        (
+            "api_call GET https://x.test payload=a payload=b",
+            "duplicate option `payload`",
+        ),
+        ("download", "`download` needs a URL"),
+        (
+            "api_call GET https://x.test auth=bearer:",
+            "unsupported auth",
+        ),
+        ("api_call GET https://x.test auth=token", "unsupported auth"),
+        ("download https://x.test auth=basic:a:b", "unsupported auth"),
+        (
+            "download https://x.test payload=a",
+            "unknown option `payload`",
+        ),
+    ];
+    for (input, message) in cases {
+        let err = input.parse::<Actor>().expect_err(input);
+        assert!(err.contains(message), "input: {input:?}, error: {err}");
+    }
+}
+
+#[test]
+fn writes_actions_back_as_statements() {
+    let statements = [
+        "bash npm run build",
+        "api_call GET https://x.test",
+        "api_call POST https://x.test payload={} input_file=in.json",
+        "download https://x.test/a.zip mime=application/zip output_dir=out",
+        "mock",
+        "mock fail",
+    ];
+    for statement in statements {
+        let actor: Actor = statement.parse().expect(statement);
+        assert_eq!(actor.to_string(), statement);
+    }
 }
 
 #[test]
 fn parses_inline_action() {
-    let job = parse_job("# Job\n## A\n- actions: get https://x.test\n").expect("job should parse");
+    let job = parse_job("# Job\n## A\n- actions: mock fail\n").expect("job should parse");
 
-    assert_eq!(job.tasks[0].actions, [action("get", &["https://x.test"])]);
+    assert_eq!(job.tasks[0].actions, [Actor::MockFail]);
+}
+
+#[test]
+fn reports_line_of_invalid_action() {
+    assert_error(
+        "# Job\n## A\n- actions: npm ci\n",
+        3,
+        "unknown action `npm`",
+    );
+    assert_error(
+        "# Job\n## A\n- actions:\n  - mock\n  - bash\n",
+        5,
+        "`bash` needs a command",
+    );
 }
 
 #[test]
@@ -168,4 +296,123 @@ fn rejects_invalid_jobs() {
         "duplicate `if_fail`",
     );
     assert_error("# Job\n## A\n- if_succeed:\n", 3, "has no value");
+}
+
+fn bearer(token: &str) -> Option<Auth> {
+    Some(Auth::Bearer {
+        token: Passer::Data(token.into()),
+    })
+}
+
+#[test]
+fn parses_bearer_auth_option() {
+    let actor: Actor = "api_call PUT https://x.test auth=bearer:my-token"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        actor,
+        Actor::ApiCall {
+            verb: ApiVerb::PUT,
+            url: "https://x.test".into(),
+            input_file: None,
+            payload: None,
+            auth: bearer("my-token"),
+        }
+    );
+
+    let actor: Actor = "download https://x.test/a.txt auth=bearer:a:b"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        actor,
+        Actor::DownloadFromUrl {
+            url: "https://x.test/a.txt".into(),
+            auth: bearer("a:b"),
+            mime: None,
+            output_dir: None,
+        }
+    );
+}
+
+#[test]
+fn hides_auth_secrets_when_written_back() {
+    let actor: Actor = "api_call GET https://x.test auth=bearer:secret"
+        .parse()
+        .unwrap();
+    assert_eq!(
+        actor.to_string(),
+        "api_call GET https://x.test auth=bearer:***"
+    );
+
+    let others = [
+        (
+            Auth::Jwt {
+                token: Passer::Data("secret".into()),
+            },
+            "jwt",
+        ),
+        (
+            Auth::OAuth2 {
+                token_url: "https://x.test/token".into(),
+                client_id: Passer::Data("id".into()),
+                client_secret: Passer::Data("secret".into()),
+                scopes: Vec::new(),
+            },
+            "oauth2",
+        ),
+        (
+            Auth::ApiKey {
+                header: "X-API-Key".into(),
+                key: Passer::Data("secret".into()),
+            },
+            "api_key",
+        ),
+    ];
+    for (auth, kind) in others {
+        let actor = Actor::DownloadFromUrl {
+            url: "https://x.test/a.txt".into(),
+            auth: Some(auth),
+            mime: None,
+            output_dir: None,
+        };
+        assert_eq!(
+            actor.to_string(),
+            format!("download https://x.test/a.txt auth={kind}:***")
+        );
+    }
+}
+
+#[test]
+fn parses_sample_api_calls_job() {
+    let job = parse_job(include_str!("../jobs/sample_api_calls.md")).expect("job should parse");
+
+    let actions: Vec<&Actor> = job.tasks.iter().flat_map(|task| &task.actions).collect();
+    assert_eq!(
+        actions,
+        [
+            &bash("mkdir", &["-p", "./output"]),
+            &bash("rm", &["-f", "./output/*"]),
+            &api_call(ApiVerb::GET, "http://localhost:8080/api/items", None, None),
+            &bash("tee", &["./output/items.json"]),
+            &Actor::ApiCall {
+                verb: ApiVerb::PUT,
+                url: "http://localhost:8080/api/items?force-auth=put".into(),
+                input_file: None,
+                payload: None,
+                auth: bearer("my-valid-token"),
+            },
+            &Actor::MockPlaceholder,
+            &download(
+                "https://samples-files.com/samples/documents/txt/sample1.txt",
+                Some("text/plain"),
+                Some("./output"),
+            ),
+            &bash("ls", &["-a", "./output"]),
+            &Actor::MockPlaceholder,
+            &Actor::MockFail,
+            &bash("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]),
+            &bash("awk", &["{print\"foobar\",$0}"]),
+            &bash("tee", &["./output/error-api-call.txt"]),
+        ]
+    );
 }

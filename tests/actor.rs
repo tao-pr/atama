@@ -803,3 +803,30 @@ fn api_call_head_sends_no_body_and_outputs_nothing() {
     );
     assert!(request.ends_with("\r\n\r\n"), "request was:\n{request}");
 }
+
+#[test]
+fn mock_placeholder_passes_input_through() {
+    assert_eq!(
+        Actor::MockPlaceholder.act("from before\n").unwrap(),
+        "from before\n"
+    );
+}
+
+#[test]
+fn mock_placeholder_passes_empty_input_through() {
+    assert_eq!(Actor::MockPlaceholder.act("").unwrap(), "");
+}
+
+#[test]
+fn mock_fail_always_fails() {
+    for input in ["", "some input"] {
+        assert_eq!(Actor::MockFail.act(input).unwrap_err(), "mock failure");
+    }
+}
+
+#[test]
+fn mock_actors_chain_like_real_actors() {
+    let output = Actor::MockPlaceholder.act("data").unwrap();
+    let output = bash("tr a-z A-Z", &[]).act(&output).unwrap();
+    assert_eq!(Actor::MockPlaceholder.act(&output).unwrap(), "DATA");
+}

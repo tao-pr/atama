@@ -1,0 +1,115 @@
+openapi: 3.1.0
+info:
+  title: Sample items API
+  version: 1.0.0
+  description: >-
+    Sample API for jobs/all_actions_job.md. GET returns the list of items.
+    PUT replaces the list and requires a bearer token with the `put` scope.
+    The token is an OAuth 2.0 access token or a JWT.
+servers:
+  - url: http://localhost:8080/api
+
+paths:
+  /items:
+    get:
+      summary: List all items
+      operationId: listItems
+      # Public: no token is needed.
+      security: []
+      responses:
+        "200":
+          description: The list of items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemList"
+              example:
+                - id: 1
+                  item: apple
+                  price: 0.5
+                - id: 2
+                  item: bread
+                  price: 2.25
+    put:
+      summary: Replace all items
+      operationId: replaceItems
+      security:
+        - oauth2: [put]
+        - bearerJwt: [put]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemList"
+      responses:
+        "200":
+          description: The items after the update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ItemList"
+        "400":
+          description: The request body is not a valid list of items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: The bearer token is missing, invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: The token does not have the `put` scope.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    Item:
+      type: object
+      required: [id, item, price]
+      properties:
+        id:
+          type: integer
+          example: 1
+        item:
+          type: string
+          example: apple
+        price:
+          type: number
+          format: double
+          minimum: 0
+          example: 0.5
+    ItemList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Item"
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: missing scope `put`
+
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      description: OAuth 2.0 client credentials grant.
+      flows:
+        clientCredentials:
+          tokenUrl: http://localhost:8080/oauth/token
+          scopes:
+            put: Replace the list of items.
+    bearerJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        A signed JWT sent as `Authorization: Bearer <token>`. The `scope`
+        claim must include `put`.

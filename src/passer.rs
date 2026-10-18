@@ -4,7 +4,7 @@ use std::fs;
 use std::process::Command;
 
 /// Where a value comes from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Passer {
     /// Contents of the text file at this path.
     FromFile(String),

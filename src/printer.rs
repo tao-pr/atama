@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 
-use crate::job::{Action, Hook, Job};
+use crate::job::{Hook, Job};
 
 const BOLD: &str = "1";
 const TASK_TITLE: &str = "1;36";
@@ -23,11 +23,17 @@ pub fn print_job(job: &Job) {
 
 /// Prints `error: <message>` to stderr, in red when supported.
 pub fn print_error(message: &str) {
+    eprintln!("{}", format_error(message, use_color(&std::io::stderr())));
+}
+
+/// Formats `error: <message>`. With `color`, the text is red, using ANSI
+/// escape codes.
+pub fn format_error(message: &str, color: bool) -> String {
     let line = format!("error: {message}");
-    if use_color(&std::io::stderr()) {
-        eprintln!("\x1b[{FAIL}m{line}\x1b[0m");
+    if color {
+        format!("\x1b[{FAIL}m{line}\x1b[0m")
     } else {
-        eprintln!("{line}");
+        line
     }
 }
 
@@ -35,7 +41,7 @@ pub fn print_error(message: &str) {
 ///
 /// ```text
 /// Job: Build and release
-///   - Build: cargo build --release (retry 2x if fail) (write output to build.log if succeed)
+///   - Build: bash cargo build --release (retry 2x if fail) (write output to build.log if succeed)
 ///   - Cleanup:
 /// ```
 ///
@@ -54,7 +60,7 @@ pub fn format_job(job: &Job, color: bool) -> String {
     for task in &job.tasks {
         let _ = write!(out, "  - {}", paint(TASK_TITLE, &format!("{}:", task.id)));
 
-        let actions: Vec<String> = task.actions.iter().map(format_action).collect();
+        let actions: Vec<String> = task.actions.iter().map(ToString::to_string).collect();
         if !actions.is_empty() {
             let _ = write!(out, " {}", actions.join("; "));
         }
@@ -75,13 +81,6 @@ pub fn format_job(job: &Job, color: bool) -> String {
         out.push('\n');
     }
     out
-}
-
-pub(crate) fn format_action(action: &Action) -> String {
-    std::iter::once(action.name.as_str())
-        .chain(action.params.iter().map(String::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 pub(crate) fn format_hook(hook: &Hook) -> String {

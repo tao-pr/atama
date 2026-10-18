@@ -30,7 +30,28 @@ description
 ```
 
 A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
-Task ids must be unique. See `tests/fixtures/example_job.md` for a full example.
+Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
+`jobs/sample_api_calls.md` for a job that uses every action type.
+
+Each action is one line of words separated by spaces. The first word selects
+the type of action, and the other words are its parameters:
+
+- `bash <command> [arguments...]` runs the command in bash, for example
+  `bash npm ci`. The output is stdout.
+- `api_call <verb> <url> [payload=<text>] [input_file=<path>]` sends an HTTP
+  request, for example `api_call GET https://example.com`. The verb is one of
+  GET, POST, PUT, DELETE, PATCH or HEAD, in any case. The output is the
+  response body.
+- `download <url> [mime=<type>] [output_dir=<dir>]` downloads a file. The
+  output is the path of the downloaded file.
+- Add `auth=bearer:<token>` to an `api_call` or `download` action to send
+  `Authorization: Bearer <token>`. The printed job and the log show the token
+  as `***`.
+- `mock` does nothing and passes its input on as its output.
+- `mock fail` always fails.
+
+Each action gets the output of the action before it as its input. The first
+action of a task gets the output of the last task that succeeded.
 
 Tasks run in sequence by default. A `begin_if` trigger condition can make a task
 depend on another task's result, or run in parallel with it:
@@ -76,15 +97,22 @@ Atama takes one required argument, the path to a job config markdown file:
 # Build and run in one step (arguments after -- go to atama)
 cargo run -- job_config_file.md
 
-# Example: Test run the sample job
-cargo run -- jobs/sample_job.md
+# Example: run the sample API job (it needs a server on localhost:8080)
+cargo run -- jobs/sample_api_calls.md
 
 # Or run a built binary directly
 ./target/release/atama job_config_file.md
 
+# Print the job and log each action, but run nothing
+cargo run -- --dry-run jobs/sample_api_calls.md
+
 # Show usage
 cargo run -- --help
 ```
+
+Atama runs the actions in the directory where you start it, so relative
+paths such as `./output` are relative to that directory. The log shows each
+action with a `$` prefix and each line of its output with a `|` prefix.
 
 ## Mock Server
 

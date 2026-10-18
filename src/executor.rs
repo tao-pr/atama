@@ -10,8 +10,9 @@
 
 use std::io::{self, Write};
 
-use crate::job::{Action, Event, Hook, Job, Task, Trigger};
-use crate::printer::{format_action, format_hook};
+use crate::actor::Actor;
+use crate::job::{Event, Hook, Job, Task, Trigger};
+use crate::printer::format_hook;
 
 /// How many times a `restart` hook may restart a job before it gives up.
 pub const DEFAULT_MAX_RESTARTS: u32 = 3;
@@ -20,23 +21,32 @@ pub const DEFAULT_MAX_RESTARTS: u32 = 3;
 pub trait ActionRunner {
     /// Runs the action with `input`, the output of the previous action or
     /// task. Returns the action's output, or an error message if it failed.
-    fn run(&mut self, action: &Action, input: &str) -> Result<String, String>;
+    fn run(&mut self, action: &Actor, input: &str) -> Result<String, String>;
 }
 
 impl<R: ActionRunner + ?Sized> ActionRunner for &mut R {
-    fn run(&mut self, action: &Action, input: &str) -> Result<String, String> {
+    fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
         (**self).run(action, input)
     }
 }
 
-/// Placeholder runner until actions are implemented: every action succeeds
-/// and passes its input through as its output. The executor still logs each
-/// action it runs.
+/// Runner that carries out each action with [`Actor::act`].
+#[derive(Debug, Default)]
+pub struct ActorRunner;
+
+impl ActionRunner for ActorRunner {
+    fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
+        action.act(input)
+    }
+}
+
+/// Runner for a dry run: it runs nothing. Every action succeeds and passes
+/// its input through as its output. The executor still logs each action.
 #[derive(Debug, Default)]
 pub struct DryRunner;
 
 impl ActionRunner for DryRunner {
-    fn run(&mut self, _action: &Action, input: &str) -> Result<String, String> {
+    fn run(&mut self, _action: &Actor, input: &str) -> Result<String, String> {
         Ok(input.to_string())
     }
 }
@@ -176,6 +186,7 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
     }
 
     /// Runs every task once, in order, and reports what the job should do next.
+    /// Output from the last task is passed on to the next task.
     fn run_pass(&mut self, reports: &mut [TaskReport]) -> io::Result<Pass> {
         let job = self.job;
         // Output of the last task that succeeded, passed to the next task.
@@ -256,18 +267,22 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
     }
 
     /// Runs the task's actions in order, stopping at the first failure.
+    /// Logs each line of an action's output with a `| ` prefix.
     /// Each action gets the previous action's output, and the first gets
     /// `input`. Returns the last output, which is `input` if there are no
     /// actions.
     fn run_actions(&mut self, task: &Task, input: &str) -> io::Result<Result<String, String>> {
         let mut output = input.to_string();
         for action in &task.actions {
-            let command = format_action(action);
+            let command = action.to_string();
             writeln!(self.out, "[{}] $ {command}", task.id)?;
-            // taotodo find implementation of the the action
-            // taotodo then execute that action object
             match self.runner.run(action, &output) {
-                Ok(next) => output = next,
+                Ok(next) => {
+                    for line in next.lines() {
+                        writeln!(self.out, "[{}] | {line}", task.id)?;
+                    }
+                    output = next;
+                }
                 Err(message) => return Ok(Err(format!("`{command}`: {message}"))),
             }
         }

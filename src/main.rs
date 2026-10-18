@@ -3,7 +3,9 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use atama::{DryRunner, Executor, parse_job, print_error, print_job};
+use atama::{
+    ActionRunner, ActorRunner, DryRunner, Executor, Job, parse_job, print_error, print_job,
+};
 use clap::Parser;
 
 /// Atama: automation pipeline as code, defined in markdown.
@@ -12,6 +14,10 @@ use clap::Parser;
 struct Cli {
     /// Path to the job configuration markdown file (e.g. job_config_file.md)
     job_config_file: PathBuf,
+
+    /// Print the job and log each action without running it
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn main() -> ExitCode {
@@ -37,7 +43,16 @@ fn main() -> ExitCode {
     print_job(&job);
     println!();
 
-    match Executor::new(&job, DryRunner, io::stdout().lock()).run() {
+    if cli.dry_run {
+        execute(&job, DryRunner)
+    } else {
+        execute(&job, ActorRunner)
+    }
+}
+
+/// Runs the job with `runner` and returns the exit code for its result.
+fn execute(job: &Job, runner: impl ActionRunner) -> ExitCode {
+    match Executor::new(job, runner, io::stdout().lock()).run() {
         Ok(report) if report.succeeded() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

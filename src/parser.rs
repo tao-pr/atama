@@ -8,14 +8,23 @@
 //!   bullets in a task are fields. Indented bullets under `- actions:` are the
 //!   actions. Any other text is part of the task description.
 //! - An action is whitespace-separated tokens: the action name, then its
-//!   parameters (`get https://example.com`).
+//!   parameters. The name selects the [`Actor`]:
+//!   - `bash <cmd> [params...]` is [`Actor::BashScript`].
+//!   - `api_call <verb> <url> [payload=<text>] [input_file=<path>]
+//!     [auth=bearer:<token>]` is [`Actor::ApiCall`].
+//!   - `download <url> [mime=<type>] [output_dir=<dir>] [auth=bearer:<token>]`
+//!     is [`Actor::DownloadFromUrl`].
+//!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
+//!     is [`Actor::MockPlaceholder`].
 //! - Lines inside ``` code fences are always treated as description text.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
-use crate::job::{Action, Event, Hook, Job, Task, Trigger};
+use crate::actor::{Actor, ApiVerb, Auth};
+use crate::job::{Event, Hook, Job, Task, Trigger};
+use crate::passer::Passer;
 
 /// An error found while parsing a job config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,15 +288,127 @@ fn join_text(lines: &[String]) -> String {
     lines.join("\n").trim().to_string()
 }
 
-impl FromStr for Action {
+impl FromStr for Actor {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut tokens = s.split_whitespace().map(str::to_string);
+        let mut tokens = s.split_whitespace();
         let name = tokens.next().ok_or("action is empty")?;
-        Ok(Action {
-            name,
-            params: tokens.collect(),
+        let params: Vec<&str> = tokens.collect();
+        match name {
+            "bash" => {
+                let (cmd, params) = params
+                    .split_first()
+                    .ok_or("`bash` needs a command, as in `bash npm ci`")?;
+                Ok(Actor::BashScript {
+                    cmd: cmd.to_string(),
+                    params: params.iter().map(|param| param.to_string()).collect(),
+                })
+            }
+            "api_call" => {
+                let [verb, url, options @ ..] = params.as_slice() else {
+                    return Err("`api_call` needs a verb and a URL, \
+                                as in `api_call GET https://example.com`"
+                        .to_string());
+                };
+                let mut options = parse_options(options, &["payload", "input_file", "auth"])?;
+                Ok(Actor::ApiCall {
+                    verb: verb.parse()?,
+                    url: url.to_string(),
+                    input_file: options.remove("input_file"),
+                    payload: options.remove("payload"),
+                    auth: options
+                        .remove("auth")
+                        .map(|auth| parse_auth(&auth))
+                        .transpose()?,
+                })
+            }
+            "download" => {
+                let [url, options @ ..] = params.as_slice() else {
+                    return Err(
+                        "`download` needs a URL, as in `download https://example.com/a.zip`"
+                            .to_string(),
+                    );
+                };
+                let mut options = parse_options(options, &["mime", "output_dir", "auth"])?;
+                Ok(Actor::DownloadFromUrl {
+                    url: url.to_string(),
+                    auth: options
+                        .remove("auth")
+                        .map(|auth| parse_auth(&auth))
+                        .transpose()?,
+                    mime: options.remove("mime"),
+                    output_dir: options.remove("output_dir"),
+                })
+            }
+            "mock" => Ok(match params.first() {
+                Some(&"fail") => Actor::MockFail,
+                _ => Actor::MockPlaceholder,
+            }),
+            other => Err(format!(
+                "unknown action `{other}`, expected `bash`, `api_call`, `download` or `mock`"
+            )),
+        }
+    }
+}
+
+/// Parses `key=value` tokens. Each key must be one of `keys` and can occur
+/// only once.
+fn parse_options(tokens: &[&str], keys: &[&str]) -> Result<HashMap<String, String>, String> {
+    let expected = || {
+        keys.iter()
+            .map(|key| format!("`{key}=`"))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    };
+    let mut options = HashMap::new();
+    for token in tokens {
+        let Some((key, value)) = token.split_once('=') else {
+            return Err(format!("unexpected `{token}`, expected {}", expected()));
+        };
+        if !keys.contains(&key) {
+            return Err(format!("unknown option `{key}`, expected {}", expected()));
+        }
+        if value.is_empty() {
+            return Err(format!("option `{key}` has no value"));
+        }
+        if options.insert(key.to_string(), value.to_string()).is_some() {
+            return Err(format!("duplicate option `{key}`"));
+        }
+    }
+    Ok(options)
+}
+
+/// Parses the value of an `auth=` option. Only `bearer:<token>` is
+/// supported, and the token is used as written.
+fn parse_auth(value: &str) -> Result<Auth, String> {
+    match value.split_once(':') {
+        Some(("bearer", token)) if !token.is_empty() => Ok(Auth::Bearer {
+            token: Passer::Data(token.to_string()),
+        }),
+        _ => Err(format!(
+            "unsupported auth `{value}`, expected `auth=bearer:<token>`"
+        )),
+    }
+}
+
+/// Parses a verb in any case, such as `GET` or `get`.
+impl FromStr for ApiVerb {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_ascii_uppercase().as_str() {
+            "GET" => ApiVerb::GET,
+            "POST" => ApiVerb::POST,
+            "PUT" => ApiVerb::PUT,
+            "DELETE" => ApiVerb::DELETE,
+            "PATCH" => ApiVerb::PATCH,
+            "HEAD" => ApiVerb::HEAD,
+            _ => {
+                return Err(format!(
+                    "unknown API verb `{s}`, expected GET, POST, PUT, DELETE, PATCH or HEAD"
+                ));
+            }
         })
     }
 }
