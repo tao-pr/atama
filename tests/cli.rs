@@ -110,5 +110,136 @@ fn fails_when_an_action_fails() {
         stdout.contains("[Broken] failed: `mock fail`: mock failure"),
         "stdout was: {stdout}"
     );
+    // stdout is a pipe here, not a terminal, so it has no color codes.
+    assert!(!stdout.contains('\x1b'), "stdout was: {stdout}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn fails_on_invalid_job_config_file() {
+    let (dir, job) = job_in_temp_dir("invalid", "# Job\n## A\n- actions: npm ci\n");
+    let output = run_atama(&[&job]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("job.md: line 3: unknown action `npm`"),
+        "stderr was: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "nothing runs");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Runs the `atama` binary with its stdout and stderr on a pseudo-terminal,
+/// so it behaves as in a real terminal. Sets the environment variables in
+/// `envs` and removes `NO_COLOR` unless `envs` sets it. Returns everything
+/// that the binary printed, with `\r\n` changed to `\n`.
+#[cfg(unix)]
+fn run_atama_in_terminal(args: &[&str], envs: &[(&str, &str)]) -> String {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty writes two new file descriptors into `master` and
+    // `slave`. The null pointers mean: no name, default settings and size.
+    let result = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(result, 0, "cannot open a pseudo-terminal");
+    // SAFETY: openpty succeeded, so both are open descriptors that we own.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_atama"));
+    command
+        .args(args)
+        .env_remove("NO_COLOR")
+        .envs(envs.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave.try_clone().unwrap()));
+    let mut child = command.spawn().expect("failed to run atama binary");
+    drop(command);
+
+    // Keep `slave` open until all output is read. On macOS, output that is
+    // not read yet is lost when the last descriptor of the terminal closes.
+    let mut master = std::fs::File::from(master);
+    let mut poll = libc::pollfd {
+        fd: master.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut output = Vec::new();
+    let mut buffer = [0; 4096];
+    let error = loop {
+        if Instant::now() > deadline {
+            break Some("atama did not finish in time".to_string());
+        }
+        // SAFETY: `poll` points to one valid pollfd for this call.
+        let ready = unsafe { libc::poll(&mut poll, 1, 100) };
+        if ready > 0 {
+            match master.read(&mut buffer) {
+                Ok(count) => output.extend_from_slice(&buffer[..count]),
+                Err(err) => break Some(format!("cannot read the terminal: {err}")),
+            }
+        } else if matches!(child.try_wait(), Ok(Some(_))) {
+            // The binary exited and printed nothing for 100 ms.
+            break None;
+        }
+    };
+    // Always collect the process, so it does not stay as a zombie.
+    let _ = child.kill();
+    child.wait().expect("cannot wait for atama");
+    if let Some(error) = error {
+        panic!("{error}");
+    }
+    drop(slave);
+    String::from_utf8(output).unwrap().replace("\r\n", "\n")
+}
+
+#[cfg(unix)]
+#[test]
+fn colors_failure_lines_red_in_a_terminal() {
+    let (dir, job) = job_in_temp_dir(
+        "terminal",
+        "# Job\n## Broken\n- actions: mock fail\n## Next\n- actions: mock\n",
+    );
+    let output = run_atama_in_terminal(&[&job], &[]);
+
+    assert!(
+        output.contains("\n\x1b[31m[Broken] failed: `mock fail`: mock failure\x1b[0m\n"),
+        "output was: {output:?}"
+    );
+    assert!(
+        output.contains("\n[Broken] start\n"),
+        "output was: {output:?}"
+    );
+    assert!(
+        output.contains("\n[Next] skipped (begin_if not met)\n"),
+        "output was: {output:?}"
+    );
+    assert!(output.ends_with("\njob failed\n"), "output was: {output:?}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn no_color_turns_off_colors_in_a_terminal() {
+    let (dir, job) = job_in_temp_dir("no_color", "# Job\n## Broken\n- actions: mock fail\n");
+    let output = run_atama_in_terminal(&[&job], &[("NO_COLOR", "1")]);
+
+    assert!(
+        output.contains("\n[Broken] failed: `mock fail`: mock failure\n"),
+        "output was: {output:?}"
+    );
+    assert!(!output.contains('\x1b'), "output was: {output:?}");
     fs::remove_dir_all(dir).unwrap();
 }

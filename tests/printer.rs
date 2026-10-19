@@ -1,6 +1,8 @@
 //! Tests for the job text printer.
 
-use atama::{format_error, format_job, parse_job};
+use std::ffi::OsStr;
+
+use atama::{color_allowed, format_error, format_job, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
@@ -48,4 +50,15 @@ fn formats_error_with_and_without_color() {
         format_error("bad job", true),
         "\x1b[31merror: bad job\x1b[0m"
     );
+}
+
+#[test]
+fn colors_only_a_terminal_without_no_color() {
+    assert!(color_allowed(true, None));
+    assert!(
+        color_allowed(true, Some(OsStr::new(""))),
+        "empty counts as not set"
+    );
+    assert!(!color_allowed(true, Some(OsStr::new("1"))));
+    assert!(!color_allowed(false, None));
 }

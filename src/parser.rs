@@ -76,8 +76,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         }
 
         if !in_code_block {
-            if let Some(id) = line.strip_prefix("## ") {
-                let id = id.trim();
+            if let Some(id) = heading(line, "##") {
                 if name.is_none() {
                     return Err(ParseError::new(
                         line_no,
@@ -104,14 +103,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 continue;
             }
 
-            if let Some(job_name) = line.strip_prefix("# ") {
+            if let Some(job_name) = heading(line, "#") {
                 if name.is_some() {
                     return Err(ParseError::new(
                         line_no,
                         "more than one `# <job name>` heading",
                     ));
                 }
-                let job_name = job_name.trim();
                 if job_name.is_empty() {
                     return Err(ParseError::new(line_no, "job name heading is empty"));
                 }
@@ -281,6 +279,14 @@ fn parse_value<T: FromStr<Err = String>>(
     value
         .parse()
         .map_err(|message| ParseError::new(line, message))
+}
+
+/// The trimmed text of a heading that starts with `marker`, such as `##`.
+/// The marker alone is an empty heading. Returns `None` if the line is not
+/// such a heading: `##` is not a `#` heading.
+fn heading<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(marker)?;
+    (rest.is_empty() || rest.starts_with([' ', '\t'])).then(|| rest.trim())
 }
 
 /// Joins description lines and trims surrounding blank lines.

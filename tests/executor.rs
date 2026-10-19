@@ -320,3 +320,162 @@ fn logs_each_line_of_action_output() {
         "log was:\n{log}"
     );
 }
+
+#[test]
+fn starts_tasks_on_another_tasks_begin_fail_or_succeed() {
+    let mut runner = ScriptedRunner::default().fail("broken", 1);
+    let (report, _) = run(
+        "# Job\n## A\n- actions: bash broken\n\
+         ## Begun\n- begin_if: task(A) begin\n- actions: bash begun\n\
+         ## Failed\n- begin_if: task(A) fail\n- actions: bash failed\n\
+         ## Succeeded\n- begin_if: task(A) succeed\n- actions: bash succeeded\n\
+         ## After skip\n- begin_if: task(Succeeded) begin\n- actions: bash after\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.calls, ["broken", "begun", "failed"]);
+    assert_eq!(
+        statuses(&report),
+        [
+            TaskStatus::Failed,
+            TaskStatus::Succeeded,
+            TaskStatus::Succeeded,
+            TaskStatus::Skipped,
+            TaskStatus::Skipped,
+        ]
+    );
+}
+
+#[test]
+fn logs_hooks_that_are_not_implemented_yet() {
+    let mut runner = ScriptedRunner::default().fail("broken", 1);
+    let (_, log) = run(
+        "# Job\n## A\n- actions: bash ok\n- if_succeed: call_api(https://x.test/done)\n\
+         ## B\n- actions: bash broken\n- if_fail: write_error_file(err.log)\n",
+        &mut runner,
+    );
+
+    assert!(
+        log.contains("[A] hook: call API https://x.test/done (not implemented yet)"),
+        "log was:\n{log}"
+    );
+    assert!(
+        log.contains("[B] hook: write stderr to err.log (not implemented yet)"),
+        "log was:\n{log}"
+    );
+}
+
+#[test]
+fn hooks_run_only_for_the_matching_result() {
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        "# Job\n## A\n- actions: bash ok\n- if_fail: die\n## B\n- actions: bash next\n",
+        &mut runner,
+    );
+
+    assert!(report.succeeded());
+    assert_eq!(runner.calls, ["ok", "next"]);
+    assert!(!log.contains("hook"), "log was:\n{log}");
+}
+
+#[test]
+fn die_as_success_hook_stops_the_job() {
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        "# Job\n## A\n- actions: bash ok\n- if_succeed: die\n## B\n- actions: bash next\n",
+        &mut runner,
+    );
+
+    assert_eq!(report.outcome, JobOutcome::Died);
+    assert_eq!(
+        statuses(&report),
+        [TaskStatus::Succeeded, TaskStatus::NotRun]
+    );
+    assert!(!report.succeeded());
+    assert!(
+        log.contains("[A] hook: die, stopping job"),
+        "log was:\n{log}"
+    );
+    assert!(log.ends_with("job failed\n"), "log was:\n{log}");
+}
+
+#[test]
+fn retry_as_success_hook_does_nothing() {
+    let mut runner = ScriptedRunner::default();
+    let (report, _) = run(
+        "# Job\n## A\n- actions: bash ok\n- if_succeed: retry=2\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.calls, ["ok"]);
+    assert_eq!(report.tasks[0].attempts, 1);
+    assert!(report.succeeded());
+}
+
+#[test]
+fn task_without_actions_succeeds_and_passes_input_on() {
+    let mut runner = ScriptedRunner::default();
+    let (report, _) = run(
+        "# Job\n## A\n- actions: bash a1\n## Empty\n## C\n- actions: bash c1\n",
+        &mut runner,
+    );
+
+    assert_eq!(report.tasks[1].status, TaskStatus::Succeeded);
+    assert_eq!(runner.inputs, ["", "a1 "]);
+}
+
+/// Writer that always fails.
+struct BrokenWriter;
+
+impl std::io::Write for BrokenWriter {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("log is closed"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn fails_when_the_log_cannot_be_written() {
+    let job = parse_job("# Job\n## A\n- actions: bash ok\n").unwrap();
+    let err = Executor::new(&job, DryRunner, BrokenWriter)
+        .run()
+        .unwrap_err();
+
+    assert_eq!(err.to_string(), "log is closed");
+}
+
+#[test]
+fn colors_only_failure_lines_red_when_color_is_on() {
+    let job =
+        parse_job("# Job\n## A\n- actions: mock fail\n- if_fail: retry=1\n## B\n- actions: mock\n")
+            .unwrap();
+    let mut log = Vec::new();
+    Executor::new(&job, ActorRunner, &mut log)
+        .color(true)
+        .run()
+        .unwrap();
+    let log = String::from_utf8(log).unwrap();
+
+    let failed = "\x1b[31m[A] failed: `mock fail`: mock failure\x1b[0m\n";
+    assert_eq!(log.matches(failed).count(), 2, "log was:\n{log}");
+    assert_eq!(
+        log.matches("\x1b[").count(),
+        4,
+        "only the 2 failure lines are colored"
+    );
+    assert!(log.contains("\n[A] retry 1 of 1\n"), "log was:\n{log}");
+}
+
+#[test]
+fn does_not_color_by_default() {
+    let job = parse_job("# Job\n## A\n- actions: mock fail\n").unwrap();
+    let mut log = Vec::new();
+    Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    let log = String::from_utf8(log).unwrap();
+
+    assert!(log.contains("[A] failed: `mock fail`"), "log was:\n{log}");
+    assert!(!log.contains('\x1b'), "log was:\n{log}");
+}

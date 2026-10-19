@@ -530,19 +530,41 @@ fn api_call_sends_jwt_as_bearer_token() {
 
 #[test]
 fn api_call_fails_before_sending_when_auth_value_is_missing() {
-    let actor = with_auth(
-        ApiVerb::GET,
-        &closed_url(),
-        Auth::Bearer {
-            token: Passer::FromEnvVar("ATAMA_TEST_TOKEN_THAT_IS_NOT_SET".into()),
+    let missing = || Passer::FromEnvVar("ATAMA_TEST_TOKEN_THAT_IS_NOT_SET".into());
+    let given = || Passer::Data("value".into());
+    let auths = [
+        Auth::Bearer { token: missing() },
+        Auth::Jwt { token: missing() },
+        Auth::ApiKey {
+            header: "X-API-Key".into(),
+            key: missing(),
         },
-    );
-
-    let err = actor.act("").unwrap_err();
-    assert!(
-        err.contains("ATAMA_TEST_TOKEN_THAT_IS_NOT_SET"),
-        "error was: {err}"
-    );
+        Auth::OAuth2 {
+            token_url: closed_url(),
+            client_id: missing(),
+            client_secret: given(),
+            scopes: Vec::new(),
+        },
+        Auth::OAuth2 {
+            token_url: closed_url(),
+            client_id: given(),
+            client_secret: missing(),
+            scopes: Vec::new(),
+        },
+    ];
+    // The URL is closed, so an error about the variable proves that no
+    // request was sent.
+    for (verb, method) in BODY_VERBS.into_iter().chain(NO_BODY_VERBS) {
+        for auth in auths.clone() {
+            let err = with_auth(verb.clone(), &closed_url(), auth.clone())
+                .act("")
+                .unwrap_err();
+            assert!(
+                err.contains("ATAMA_TEST_TOKEN_THAT_IS_NOT_SET"),
+                "{method} with {auth:?}: error was: {err}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -829,4 +851,50 @@ fn mock_actors_chain_like_real_actors() {
     let output = Actor::MockPlaceholder.act("data").unwrap();
     let output = bash("tr a-z A-Z", &[]).act(&output).unwrap();
     assert_eq!(Actor::MockPlaceholder.act(&output).unwrap(), "DATA");
+}
+
+fn download_to(url: &str, output_dir: &std::path::Path) -> Actor {
+    Actor::DownloadFromUrl {
+        url: url.into(),
+        auth: None,
+        mime: None,
+        output_dir: Some(output_dir.display().to_string()),
+    }
+}
+
+#[test]
+fn download_fails_when_server_is_unreachable() {
+    let dir = temp_dir("download_unreachable");
+    let err = download_to(&format!("{}/a.txt", closed_url()), &dir)
+        .act("")
+        .unwrap_err();
+
+    assert!(err.contains("request to"), "error was: {err}");
+    assert!(!dir.exists(), "no directory is made before the response");
+}
+
+#[test]
+fn download_fails_when_output_dir_is_a_file() {
+    let dir = temp_dir("download_output_dir_is_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("not_a_dir");
+    std::fs::write(&file, "x").unwrap();
+    let (url, _requests) = serve(vec![(200, "content")]);
+
+    let err = download_to(&format!("{url}/a.txt"), &file)
+        .act("")
+        .unwrap_err();
+    assert!(err.contains("cannot create directory"), "error was: {err}");
+}
+
+#[test]
+fn download_fails_when_target_path_is_a_directory() {
+    let dir = temp_dir("download_target_is_dir");
+    std::fs::create_dir_all(dir.join("a.txt")).unwrap();
+    let (url, _requests) = serve(vec![(200, "content")]);
+
+    let err = download_to(&format!("{url}/a.txt"), &dir)
+        .act("")
+        .unwrap_err();
+    assert!(err.contains("cannot create file"), "error was: {err}");
 }

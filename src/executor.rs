@@ -12,7 +12,7 @@ use std::io::{self, Write};
 
 use crate::actor::Actor;
 use crate::job::{Event, Hook, Job, Task, Trigger};
-use crate::printer::format_hook;
+use crate::printer::{FAIL, format_hook, paint};
 
 /// How many times a `restart` hook may restart a job before it gives up.
 pub const DEFAULT_MAX_RESTARTS: u32 = 3;
@@ -115,6 +115,7 @@ pub struct Executor<'a, R, W> {
     runner: R,
     out: W,
     max_restarts: u32,
+    color: bool,
 }
 
 impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
@@ -124,7 +125,15 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             runner,
             out,
             max_restarts: DEFAULT_MAX_RESTARTS,
+            color: false,
         }
+    }
+
+    /// Sets whether the log shows failures in red, using ANSI escape codes.
+    /// Off by default.
+    pub fn color(mut self, color: bool) -> Self {
+        self.color = color;
+        self
     }
 
     /// Sets how many times a `restart` hook may restart the job.
@@ -260,7 +269,10 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                     writeln!(self.out, "[{}] succeeded", task.id)?;
                     return Ok((TaskStatus::Succeeded, attempt + 1, Some(output)));
                 }
-                Err(message) => writeln!(self.out, "[{}] failed: {message}", task.id)?,
+                Err(message) => {
+                    let line = format!("[{}] failed: {message}", task.id);
+                    writeln!(self.out, "{}", paint(self.color, FAIL, &line))?;
+                }
             }
         }
         Ok((TaskStatus::Failed, retries + 1, None))

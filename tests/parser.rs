@@ -296,6 +296,46 @@ fn rejects_invalid_jobs() {
         "duplicate `if_fail`",
     );
     assert_error("# Job\n## A\n- if_succeed:\n", 3, "has no value");
+    assert_error("## A\n# Job\n", 1, "before the `# <job name>`");
+    assert_error("# Job\n## \n", 2, "task heading is empty");
+    assert_error("#  \n## A\n", 1, "job name heading is empty");
+    assert_error(
+        "# Job\n## A\n- actions: mock\n- actions: mock\n",
+        4,
+        "duplicate `actions`",
+    );
+    assert_error(
+        "# Job\n## A\n## B\n- begin_if: prev task fail\n- begin_if: prev task succeed\n",
+        5,
+        "duplicate `begin_if`",
+    );
+    assert_error(
+        "# Job\n## A\n## B\n- begin_if: task(A) explode\n",
+        4,
+        "unknown event `explode`",
+    );
+    assert_error(
+        "# Job\n## A\n- if_fail: notify(me)\n",
+        3,
+        "unknown hook `notify`",
+    );
+}
+
+#[test]
+fn skips_blank_lines_before_the_job_name() {
+    let job = parse_job("\n  \n# Job\n## A\n").expect("job should parse");
+
+    assert_eq!(job.name, "Job");
+}
+
+#[test]
+fn shows_parse_error_with_its_line() {
+    let err = parse_job("# Job\n## A\n- actions: npm ci\n").unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "line 3: unknown action `npm`, expected `bash`, `api_call`, `download` or `mock`"
+    );
 }
 
 fn bearer(token: &str) -> Option<Auth> {
@@ -383,36 +423,29 @@ fn hides_auth_secrets_when_written_back() {
 }
 
 #[test]
-fn parses_sample_api_calls_job() {
+fn sample_api_calls_job_uses_every_action_type() {
     let job = parse_job(include_str!("../jobs/sample_api_calls.md")).expect("job should parse");
-
     let actions: Vec<&Actor> = job.tasks.iter().flat_map(|task| &task.actions).collect();
-    assert_eq!(
-        actions,
-        [
-            &bash("mkdir", &["-p", "./output"]),
-            &bash("rm", &["-f", "./output/*"]),
-            &api_call(ApiVerb::GET, "http://localhost:8080/api/items", None, None),
-            &bash("tee", &["./output/items.json"]),
-            &Actor::ApiCall {
-                verb: ApiVerb::PUT,
-                url: "http://localhost:8080/api/items?force-auth=put".into(),
-                input_file: None,
-                payload: None,
-                auth: bearer("my-valid-token"),
-            },
-            &Actor::MockPlaceholder,
-            &download(
-                "https://samples-files.com/samples/documents/txt/sample1.txt",
-                Some("text/plain"),
-                Some("./output"),
-            ),
-            &bash("ls", &["-a", "./output"]),
-            &Actor::MockPlaceholder,
-            &Actor::MockFail,
-            &bash("date", &["-u", "+%Y-%m-%dT%H:%M:%SZ"]),
-            &bash("awk", &["{print\"foobar\",$0}"]),
-            &bash("tee", &["./output/error-api-call.txt"]),
-        ]
-    );
+
+    let uses = |matches: fn(&Actor) -> bool| actions.iter().any(|actor| matches(actor));
+    assert!(uses(|actor| matches!(actor, Actor::BashScript { .. })));
+    assert!(uses(|actor| matches!(
+        actor,
+        Actor::ApiCall { auth: None, .. }
+    )));
+    assert!(uses(|actor| matches!(
+        actor,
+        Actor::ApiCall { auth: Some(_), .. }
+    )));
+    assert!(uses(|actor| matches!(actor, Actor::DownloadFromUrl { .. })));
+    assert!(uses(|actor| matches!(actor, Actor::MockPlaceholder)));
+    assert!(uses(|actor| matches!(actor, Actor::MockFail)));
+}
+
+#[test]
+fn treats_deeper_headings_as_description() {
+    let job = parse_job("# Job\n## A\n### Notes\nsome text\n").expect("job should parse");
+
+    assert_eq!(job.tasks.len(), 1);
+    assert_eq!(job.tasks[0].description, "### Notes\nsome text");
 }

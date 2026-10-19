@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use atama::{
     ActionRunner, ActorRunner, DryRunner, Executor, Job, parse_job, print_error, print_job,
+    use_color,
 };
 use clap::Parser;
 
@@ -52,7 +53,9 @@ fn main() -> ExitCode {
 
 /// Runs the job with `runner` and returns the exit code for its result.
 fn execute(job: &Job, runner: impl ActionRunner) -> ExitCode {
-    match Executor::new(job, runner, io::stdout().lock()).run() {
+    let stdout = io::stdout();
+    let color = use_color(&stdout);
+    match Executor::new(job, runner, stdout.lock()).color(color).run() {
         Ok(report) if report.succeeded() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {
