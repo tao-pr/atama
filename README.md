@@ -114,6 +114,33 @@ Atama runs the actions in the directory where you start it, so relative
 paths such as `./output` are relative to that directory. The log shows each
 action with a `$` prefix and each line of its output with a `|` prefix.
 
+### Dry run
+
+A dry run shows what a job will do, but it runs no actions. Use it to check
+a new job file before you run it for real.
+
+To do a dry run, add `--dry-run` before the job file:
+
+```sh
+cargo run -- --dry-run jobs/sample_api_calls.md
+
+# Or with a built binary
+./target/release/atama --dry-run jobs/sample_api_calls.md
+```
+
+In a dry run, Atama does these steps:
+
+1. It parses the job file and reports any error with its line number.
+2. It prints the job summary.
+3. It logs each action with a `$` prefix, but it does not run the action.
+
+In a dry run, every action succeeds and passes its input on unchanged. Thus
+the log shows the tasks that run when every action succeeds. A dry run does
+not test the failure paths: `mock fail` succeeds, and `if_fail` hooks and
+tasks that start only on a failure, such as `begin_if: task(A) fail`, do not
+run. A dry run needs no server, and it
+does not create, change or delete files.
+
 ## Mock Server
 
 When testing Atama with mock API calls, you can install and start a mock server with the help from [siga](https://github.com/tao-pr/siga). It allows you to create a mock API server from OpenAPI v3 spec with mock authentication and authorization.
