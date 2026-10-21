@@ -917,32 +917,45 @@ fn agent_websearch_is_not_implemented_yet() {
 }
 
 #[test]
-fn agent_websearch_writes_only_the_topic_when_options_are_empty() {
-    let mut actor = web_search();
-    assert_eq!(actor.to_string(), "agent_websearch rust");
-
-    if let Actor::AgentWebSearch {
-        prefer_websites, ..
-    } = &mut actor
-    {
-        *prefer_websites = Some(Vec::new());
-    }
-    assert_eq!(actor.to_string(), "agent_websearch rust");
+fn api_call_fails_on_response_that_is_not_utf8() {
+    let (url, _requests) = serve(vec![(200, vec![0xff, 0xfe])]);
+    let err = api_call(ApiVerb::GET, &url).act("").unwrap_err();
+    assert!(
+        err.starts_with(&format!("cannot read response from `{url}`")),
+        "error was: {err}"
+    );
 }
 
 #[test]
-fn agent_websearch_writes_every_option() {
-    let actor = Actor::AgentWebSearch {
-        research_topic: "rust".to_string(),
-        prefer_websites: Some(vec!["a.com".to_string(), "b.org".to_string()]),
-        prefer_models: vec!["model-1".to_string(), "model-2".to_string()],
-        output_dir: Some("./output".to_string()),
-        output_instructions: "summary".to_string(),
-        structured_output: "{}".to_string(),
-    };
-    assert_eq!(
-        actor.to_string(),
-        "agent_websearch rust prefer_websites=a.com,b.org prefer_models=model-1,model-2 \
-         output_dir=./output output_instructions=summary structured_output={}"
+fn download_fails_when_the_connection_closes_early() {
+    // The server promises 100 bytes, sends 5, and closes the connection.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/file.txt", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while line != "\r\n" {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+        }
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+            .unwrap();
+    });
+
+    let dir = temp_dir("download_closes_early");
+    let err = Actor::DownloadFromUrl {
+        url: url.clone(),
+        auth: None,
+        mime: None,
+        output_dir: Some(dir.display().to_string()),
+    }
+    .act("")
+    .unwrap_err();
+    server.join().unwrap();
+    assert!(
+        err.starts_with(&format!("cannot save `{url}` to `")),
+        "error was: {err}"
     );
 }

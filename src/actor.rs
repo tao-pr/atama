@@ -1,6 +1,5 @@
 //! Actors: the implementations that carry out a task's actions.
 
-use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -12,11 +11,14 @@ use ureq::{Agent, Body, RequestBuilder};
 
 use crate::passer::Passer;
 
+mod display;
+
 /// One action of a task, and how to carry it out.
 ///
 /// The parser makes an actor from each action statement in the job file. The
 /// first word of the statement selects the variant (see the `FromStr` impl in
-/// [`crate::parser`]), and [`fmt::Display`] writes the statement back.
+/// [`crate::parser`]), and [`std::fmt::Display`] writes the statement back
+/// (see `src/actor/display.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
     /// Runs a command in bash.
@@ -161,100 +163,6 @@ impl Actor {
             Actor::MockFail => Err("mock failure".to_string()),
         }
     }
-}
-
-/// Writes the action statement that parses back into this actor, for
-/// example `bash npm ci` or `api_call POST https://example.com payload={}`.
-///
-/// The executor logs this text, so it hides secrets: `auth` is written as
-/// `auth=<kind>:***`, for example `auth=bearer:***`.
-impl fmt::Display for Actor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Actor::BashScript { cmd, params } => {
-                write!(f, "bash {cmd}")?;
-                for param in params {
-                    write!(f, " {param}")?;
-                }
-                Ok(())
-            }
-            Actor::ApiCall {
-                verb,
-                url,
-                input_file,
-                payload,
-                auth,
-            } => {
-                write!(f, "api_call {verb:?} {url}")?;
-                write_option(f, "payload", payload)?;
-                write_option(f, "input_file", input_file)?;
-                write_auth(f, auth)
-            }
-            Actor::DownloadFromUrl {
-                url,
-                auth,
-                mime,
-                output_dir,
-            } => {
-                write!(f, "download {url}")?;
-                write_option(f, "mime", mime)?;
-                write_option(f, "output_dir", output_dir)?;
-                write_auth(f, auth)
-            }
-            Actor::AgentWebSearch {
-                research_topic,
-                prefer_websites,
-                prefer_models,
-                output_dir,
-                output_instructions,
-                structured_output,
-            } => {
-                write!(f, "agent_websearch {research_topic}")?;
-                if let Some(websites) = prefer_websites {
-                    write_list(f, "prefer_websites", websites)?;
-                }
-                write_list(f, "prefer_models", prefer_models)?;
-                write_option(f, "output_dir", output_dir)?;
-                write_text(f, "output_instructions", output_instructions)?;
-                write_text(f, "structured_output", structured_output)
-            }
-            Actor::MockPlaceholder => write!(f, "mock"),
-            Actor::MockFail => write!(f, "mock fail"),
-        }
-    }
-}
-
-/// Writes ` key=value` if the option is set.
-fn write_option(f: &mut fmt::Formatter<'_>, key: &str, value: &Option<String>) -> fmt::Result {
-    match value {
-        Some(value) => write!(f, " {key}={value}"),
-        None => Ok(()),
-    }
-}
-
-/// Writes ` key=value` if the value is not empty.
-fn write_text(f: &mut fmt::Formatter<'_>, key: &str, value: &str) -> fmt::Result {
-    if value.is_empty() {
-        return Ok(());
-    }
-    write!(f, " {key}={value}")
-}
-
-/// Writes ` key=a,b,c` if the list is not empty.
-fn write_list(f: &mut fmt::Formatter<'_>, key: &str, values: &[String]) -> fmt::Result {
-    write_text(f, key, &values.join(","))
-}
-
-/// Writes ` auth=<kind>:***` if `auth` is set, without the secret.
-fn write_auth(f: &mut fmt::Formatter<'_>, auth: &Option<Auth>) -> fmt::Result {
-    let kind = match auth {
-        None => return Ok(()),
-        Some(Auth::Bearer { .. }) => "bearer",
-        Some(Auth::Jwt { .. }) => "jwt",
-        Some(Auth::OAuth2 { .. }) => "oauth2",
-        Some(Auth::ApiKey { .. }) => "api_key",
-    };
-    write!(f, " auth={kind}:***")
 }
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {
