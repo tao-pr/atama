@@ -98,6 +98,21 @@ fn runs_tasks_in_order_and_logs_actions() {
 }
 
 #[test]
+fn does_not_retry_when_first_run_succeeds() {
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        "# Job\n## A\n- actions: bash flaky\n- if_fail: retry=3\n",
+        &mut runner,
+    );
+
+    assert_eq!(runner.calls_to("flaky"), 1);
+    assert_eq!(report.tasks[0].status, TaskStatus::Succeeded);
+    assert_eq!(report.tasks[0].attempts, 1);
+    assert!(!log.contains("retry"), "log was:\n{log}");
+    assert!(report.succeeded());
+}
+
+#[test]
 fn retries_up_to_n_times_then_fails() {
     let mut runner = ScriptedRunner::default().fail("flaky", 10);
     let (report, log) = run(
