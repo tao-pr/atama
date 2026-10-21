@@ -898,3 +898,51 @@ fn download_fails_when_target_path_is_a_directory() {
         .unwrap_err();
     assert!(err.contains("cannot create file"), "error was: {err}");
 }
+
+fn web_search() -> Actor {
+    Actor::AgentWebSearch {
+        research_topic: "rust".to_string(),
+        prefer_websites: None,
+        prefer_models: Vec::new(),
+        output_dir: None,
+        output_instructions: String::new(),
+        structured_output: String::new(),
+    }
+}
+
+#[test]
+fn agent_websearch_is_not_implemented_yet() {
+    let err = web_search().act("input").unwrap_err();
+    assert_eq!(err, "agent_websearch is not implemented yet (topic `rust`)");
+}
+
+#[test]
+fn agent_websearch_writes_only_the_topic_when_options_are_empty() {
+    let mut actor = web_search();
+    assert_eq!(actor.to_string(), "agent_websearch rust");
+
+    if let Actor::AgentWebSearch {
+        prefer_websites, ..
+    } = &mut actor
+    {
+        *prefer_websites = Some(Vec::new());
+    }
+    assert_eq!(actor.to_string(), "agent_websearch rust");
+}
+
+#[test]
+fn agent_websearch_writes_every_option() {
+    let actor = Actor::AgentWebSearch {
+        research_topic: "rust".to_string(),
+        prefer_websites: Some(vec!["a.com".to_string(), "b.org".to_string()]),
+        prefer_models: vec!["model-1".to_string(), "model-2".to_string()],
+        output_dir: Some("./output".to_string()),
+        output_instructions: "summary".to_string(),
+        structured_output: "{}".to_string(),
+    };
+    assert_eq!(
+        actor.to_string(),
+        "agent_websearch rust prefer_websites=a.com,b.org prefer_models=model-1,model-2 \
+         output_dir=./output output_instructions=summary structured_output={}"
+    );
+}

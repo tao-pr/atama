@@ -46,6 +46,18 @@ pub enum Actor {
         /// Output dir it not specified, will write to temp dir
         output_dir: Option<String>,
     },
+    /// Agent doing web search
+    AgentWebSearch {
+        research_topic: String,
+        prefer_websites: Option<Vec<String>>,
+        /// Model identifiers, will be tried in order
+        prefer_models: Vec<String>,
+        output_dir: Option<String>,
+        /// Output instructions
+        output_instructions: String,
+        /// JSON schema of the output
+        structured_output: String,
+    },
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -112,6 +124,7 @@ impl Actor {
     ///   body to a file, and returns the file path. The file is in
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
     ///   named after the last part of the URL path. It ignores `input`.
+    /// - [`Actor::AgentWebSearch`] is not implemented yet, and always fails.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -141,6 +154,9 @@ impl Actor {
                 mime,
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
+            Actor::AgentWebSearch { research_topic, .. } => Err(format!(
+                "agent_websearch is not implemented yet (topic `{research_topic}`)"
+            )),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }
@@ -185,6 +201,23 @@ impl fmt::Display for Actor {
                 write_option(f, "output_dir", output_dir)?;
                 write_auth(f, auth)
             }
+            Actor::AgentWebSearch {
+                research_topic,
+                prefer_websites,
+                prefer_models,
+                output_dir,
+                output_instructions,
+                structured_output,
+            } => {
+                write!(f, "agent_websearch {research_topic}")?;
+                if let Some(websites) = prefer_websites {
+                    write_list(f, "prefer_websites", websites)?;
+                }
+                write_list(f, "prefer_models", prefer_models)?;
+                write_option(f, "output_dir", output_dir)?;
+                write_text(f, "output_instructions", output_instructions)?;
+                write_text(f, "structured_output", structured_output)
+            }
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }
@@ -197,6 +230,19 @@ fn write_option(f: &mut fmt::Formatter<'_>, key: &str, value: &Option<String>) -
         Some(value) => write!(f, " {key}={value}"),
         None => Ok(()),
     }
+}
+
+/// Writes ` key=value` if the value is not empty.
+fn write_text(f: &mut fmt::Formatter<'_>, key: &str, value: &str) -> fmt::Result {
+    if value.is_empty() {
+        return Ok(());
+    }
+    write!(f, " {key}={value}")
+}
+
+/// Writes ` key=a,b,c` if the list is not empty.
+fn write_list(f: &mut fmt::Formatter<'_>, key: &str, values: &[String]) -> fmt::Result {
+    write_text(f, key, &values.join(","))
 }
 
 /// Writes ` auth=<kind>:***` if `auth` is set, without the secret.
