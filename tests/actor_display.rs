@@ -2,18 +2,7 @@
 //! impl in `src/actor/display.rs`.
 
 use atama::Passer;
-use atama::actor::{Actor, Auth};
-
-fn web_search() -> Actor {
-    Actor::AgentWebSearch {
-        research_topic: "rust".to_string(),
-        prefer_websites: None,
-        prefer_models: Vec::new(),
-        output_dir: None,
-        output_instructions: String::new(),
-        structured_output: String::new(),
-    }
-}
+use atama::actor::{Actor, AgentType, Auth};
 
 #[test]
 fn writes_actions_back_as_statements() {
@@ -24,6 +13,9 @@ fn writes_actions_back_as_statements() {
         "download https://x.test/a.zip mime=application/zip output_dir=out",
         "mock",
         "mock fail",
+        "agent:websearch",
+        "agent:websearch rust release notes",
+        "agent:coder fix.md",
     ];
     for statement in statements {
         let actor: Actor = statement.parse().expect(statement);
@@ -80,32 +72,17 @@ fn hides_auth_secrets_when_written_back() {
 }
 
 #[test]
-fn agent_websearch_writes_only_the_topic_when_options_are_empty() {
-    let mut actor = web_search();
-    assert_eq!(actor.to_string(), "agent_websearch rust");
-
-    if let Actor::AgentWebSearch {
-        prefer_websites, ..
-    } = &mut actor
-    {
-        *prefer_websites = Some(Vec::new());
+fn writes_agent_tool_with_its_type_and_params() {
+    let cases = [
+        (AgentType::WebSearch, "websearch"),
+        (AgentType::Coder, "coder"),
+    ];
+    for (agent, name) in cases {
+        assert_eq!(agent.to_string(), name);
+        let actor = Actor::AgentTool {
+            agent,
+            params: vec!["a".into(), "b".into()],
+        };
+        assert_eq!(actor.to_string(), format!("agent:{name} a b"));
     }
-    assert_eq!(actor.to_string(), "agent_websearch rust");
-}
-
-#[test]
-fn agent_websearch_writes_every_option() {
-    let actor = Actor::AgentWebSearch {
-        research_topic: "rust".to_string(),
-        prefer_websites: Some(vec!["a.com".to_string(), "b.org".to_string()]),
-        prefer_models: vec!["model-1".to_string(), "model-2".to_string()],
-        output_dir: Some("./output".to_string()),
-        output_instructions: "summary".to_string(),
-        structured_output: "{}".to_string(),
-    };
-    assert_eq!(
-        actor.to_string(),
-        "agent_websearch rust prefer_websites=a.com,b.org prefer_models=model-1,model-2 \
-         output_dir=./output output_instructions=summary structured_output={}"
-    );
 }

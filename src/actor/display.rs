@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use super::{Actor, Auth};
+use super::{Actor, AgentType, Auth};
 
 /// Writes the action statement that parses back into this actor, for
 /// example `bash npm ci` or `api_call POST https://example.com payload={}`.
@@ -46,26 +46,26 @@ impl fmt::Display for Actor {
                 write_option(f, "output_dir", output_dir)?;
                 write_auth(f, auth)
             }
-            Actor::AgentWebSearch {
-                research_topic,
-                prefer_websites,
-                prefer_models,
-                output_dir,
-                output_instructions,
-                structured_output,
-            } => {
-                write!(f, "agent_websearch {research_topic}")?;
-                if let Some(websites) = prefer_websites {
-                    write_list(f, "prefer_websites", websites)?;
+            Actor::AgentTool { agent, params } => {
+                write!(f, "agent:{agent}")?;
+                for param in params {
+                    write!(f, " {param}")?;
                 }
-                write_list(f, "prefer_models", prefer_models)?;
-                write_option(f, "output_dir", output_dir)?;
-                write_text(f, "output_instructions", output_instructions)?;
-                write_text(f, "structured_output", structured_output)
+                Ok(())
             }
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }
+    }
+}
+
+/// Writes the agent type as it appears after `agent:`, for example `websearch`.
+impl fmt::Display for AgentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AgentType::WebSearch => "websearch",
+            AgentType::Coder => "coder",
+        })
     }
 }
 
@@ -75,19 +75,6 @@ fn write_option(f: &mut fmt::Formatter<'_>, key: &str, value: &Option<String>) -
         Some(value) => write!(f, " {key}={value}"),
         None => Ok(()),
     }
-}
-
-/// Writes ` key=value` if the value is not empty.
-fn write_text(f: &mut fmt::Formatter<'_>, key: &str, value: &str) -> fmt::Result {
-    if value.is_empty() {
-        return Ok(());
-    }
-    write!(f, " {key}={value}")
-}
-
-/// Writes ` key=a,b,c` if the list is not empty.
-fn write_list(f: &mut fmt::Formatter<'_>, key: &str, values: &[String]) -> fmt::Result {
-    write_text(f, key, &values.join(","))
 }
 
 /// Writes ` auth=<kind>:***` if `auth` is set, without the secret.

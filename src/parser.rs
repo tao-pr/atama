@@ -16,13 +16,15 @@
 //!     is [`Actor::DownloadFromUrl`].
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
+//!   - `agent:<type> [params...]` is [`Actor::AgentTool`]. The type is
+//!     `websearch` or `coder`.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
-use crate::actor::{Actor, ApiVerb, Auth};
+use crate::actor::{Actor, AgentType, ApiVerb, Auth};
 use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::passer::Passer;
 
@@ -351,9 +353,16 @@ impl FromStr for Actor {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
             }),
-            other => Err(format!(
-                "unknown action `{other}`, expected `bash`, `api_call`, `download` or `mock`"
-            )),
+            other => match other.strip_prefix("agent:") {
+                Some(agent) => Ok(Actor::AgentTool {
+                    agent: agent.parse()?,
+                    params: params.iter().map(|param| param.to_string()).collect(),
+                }),
+                None => Err(format!(
+                    "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
+                     `mock` or `agent:<type>`"
+                )),
+            },
         }
     }
 }
@@ -416,6 +425,20 @@ impl FromStr for ApiVerb {
                 ));
             }
         })
+    }
+}
+
+impl FromStr for AgentType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "websearch" => Ok(AgentType::WebSearch),
+            "coder" => Ok(AgentType::Coder),
+            _ => Err(format!(
+                "unknown agent type `{s}`, expected `agent:websearch` or `agent:coder`"
+            )),
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 //! Tests for the job config markdown parser.
 
 use atama::Passer;
-use atama::actor::{Actor, ApiVerb, Auth};
+use atama::actor::{Actor, AgentType, ApiVerb, Auth};
 use atama::{Event, Hook, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
@@ -127,6 +127,30 @@ fn parses_every_api_verb() {
 }
 
 #[test]
+fn parses_agent_tool_actions() {
+    let cases = [
+        ("agent:websearch", AgentType::WebSearch, vec![]),
+        (
+            "agent:websearch rust release notes",
+            AgentType::WebSearch,
+            vec!["rust", "release", "notes"],
+        ),
+        ("agent:coder fix.md", AgentType::Coder, vec!["fix.md"]),
+    ];
+    for (statement, agent, params) in cases {
+        let actor: Actor = statement.parse().expect(statement);
+        assert_eq!(
+            actor,
+            Actor::AgentTool {
+                agent,
+                params: params.into_iter().map(Into::into).collect(),
+            },
+            "{statement}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_actions() {
     let cases = [
         ("", "action is empty"),
@@ -134,6 +158,10 @@ fn rejects_invalid_actions() {
         ("npm ci", "unknown action `npm`"),
         ("Bash ls", "unknown action `Bash`"),
         ("bash", "`bash` needs a command"),
+        ("agent search", "unknown action `agent`"),
+        ("agent:", "unknown agent type ``"),
+        ("agent:browser", "unknown agent type `browser`"),
+        ("agent:WebSearch", "unknown agent type `WebSearch`"),
         ("api_call", "`api_call` needs a verb and a URL"),
         ("api_call GET", "`api_call` needs a verb and a URL"),
         ("api_call FETCH https://x.test", "unknown API verb `FETCH`"),
@@ -318,7 +346,8 @@ fn shows_parse_error_with_its_line() {
 
     assert_eq!(
         err.to_string(),
-        "line 3: unknown action `npm`, expected `bash`, `api_call`, `download` or `mock`"
+        "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
+         `mock` or `agent:<type>`"
     );
 }
 

@@ -49,6 +49,9 @@ the type of action, and the other words are its parameters:
   as `***`.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
+- `agent:<type> [parameters...]` runs an agent. The type is `websearch` or
+  `coder`, for example `agent:websearch rust release notes`. Agents are not
+  implemented yet, so this action always fails.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.

@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use atama::Passer;
-use atama::actor::{Actor, ApiVerb, Auth};
+use atama::actor::{Actor, AgentType, ApiVerb, Auth};
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
@@ -899,21 +899,22 @@ fn download_fails_when_target_path_is_a_directory() {
     assert!(err.contains("cannot create file"), "error was: {err}");
 }
 
-fn web_search() -> Actor {
-    Actor::AgentWebSearch {
-        research_topic: "rust".to_string(),
-        prefer_websites: None,
-        prefer_models: Vec::new(),
-        output_dir: None,
-        output_instructions: String::new(),
-        structured_output: String::new(),
-    }
-}
-
 #[test]
-fn agent_websearch_is_not_implemented_yet() {
-    let err = web_search().act("input").unwrap_err();
-    assert_eq!(err, "agent_websearch is not implemented yet (topic `rust`)");
+fn agent_tool_is_not_implemented_yet() {
+    let cases = [
+        (
+            AgentType::WebSearch,
+            "`agent:websearch` is not implemented yet",
+        ),
+        (AgentType::Coder, "`agent:coder` is not implemented yet"),
+    ];
+    for (agent, message) in cases {
+        let actor = Actor::AgentTool {
+            agent,
+            params: vec!["topic".into()],
+        };
+        assert_eq!(actor.act("input"), Err(message.to_string()));
+    }
 }
 
 #[test]

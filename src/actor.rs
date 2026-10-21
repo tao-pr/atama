@@ -48,17 +48,12 @@ pub enum Actor {
         /// Output dir it not specified, will write to temp dir
         output_dir: Option<String>,
     },
-    /// Agent doing web search
-    AgentWebSearch {
-        research_topic: String,
-        prefer_websites: Option<Vec<String>>,
-        /// Model identifiers, will be tried in order
-        prefer_models: Vec<String>,
-        output_dir: Option<String>,
-        /// Output instructions
-        output_instructions: String,
-        /// JSON schema of the output
-        structured_output: String,
+    /// Runs an agent of the given type.
+    AgentTool {
+        agent: AgentType,
+        /// Parameters for the agent, in order. Each type of agent will
+        /// define its own parameters.
+        params: Vec<String>,
     },
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
@@ -75,6 +70,15 @@ pub enum ApiVerb {
     DELETE,
     PATCH,
     HEAD,
+}
+
+/// The type of agent that an [`Actor::AgentTool`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentType {
+    /// Searches the web.
+    WebSearch,
+    /// Writes code.
+    Coder,
 }
 
 /// How an [`Actor::ApiCall`] authenticates with the API.
@@ -126,7 +130,7 @@ impl Actor {
     ///   body to a file, and returns the file path. The file is in
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
     ///   named after the last part of the URL path. It ignores `input`.
-    /// - [`Actor::AgentWebSearch`] is not implemented yet, and always fails.
+    /// - [`Actor::AgentTool`] is not implemented yet, and always fails.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -156,9 +160,9 @@ impl Actor {
                 mime,
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
-            Actor::AgentWebSearch { research_topic, .. } => Err(format!(
-                "agent_websearch is not implemented yet (topic `{research_topic}`)"
-            )),
+            Actor::AgentTool { agent, .. } => {
+                Err(format!("`agent:{agent}` is not implemented yet"))
+            }
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }
