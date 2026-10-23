@@ -32,6 +32,7 @@ description
 A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
 Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
 `jobs/sample_api_calls.md` for a job that uses every action type.
+`jobs/sample_agents.md` shows two ways to configure an agent.
 
 Each action is one line of words separated by spaces. The first word selects
 the type of action, and the other words are its parameters:
@@ -49,9 +50,11 @@ the type of action, and the other words are its parameters:
   as `***`.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
-- `agent:<type> [parameters...]` runs an agent. The type is `websearch` or
-  `coder`, for example `agent:websearch rust release notes`. Agents are not
-  implemented yet, so this action always fails.
+- `agent:<type> [model=<id>] [base_url=<url>] [max_steps=<n>] <task...>`
+  runs an agent, for example
+  `agent:websearch model=llama3.2 base_url=http://localhost:11434/v1 summarize the news`.
+  The type is `websearch` or `coder`. The output is the agent's final reply.
+  See "Agents" below.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
@@ -78,6 +81,42 @@ The `if_fail` and `if_succeed` hooks run when a task finishes:
 
 Atama evaluates the job into a graph, using each task's `begin_if` condition to
 work out its dependencies.
+
+## Agents
+
+An `agent:<type>` action runs an agent loop. The agent loop sends the task to
+a chat model, runs the tools that the model asks for, and sends the results
+back. When the model replies without a tool call, that reply is the output of
+the action.
+
+The agent works with any model on a server with an OpenAI compatible
+`/chat/completions` endpoint, for example OpenAI, Ollama, vLLM or LM Studio.
+The model must support tool calls.
+
+The words of the action that are not options are the task. The output of the
+previous action or task is added below the task as its input.
+
+These options and environment variables set up the model:
+
+- `model=<id>`, or `ATAMA_AGENT_MODEL`, sets the model. You must set one of them.
+- `base_url=<url>`, or `ATAMA_AGENT_BASE_URL`, sets the server. The default is
+  `https://api.openai.com/v1`.
+- `ATAMA_AGENT_API_KEY` sets the API key, which Atama sends as a bearer token.
+  A local server often needs no key. The key is never in the job file or
+  the log.
+- `max_steps=<n>` sets the most model replies in one run. The default is 10.
+  If the model still calls tools after that, the action fails.
+
+Each type of agent has its own tools:
+
+- `websearch` has `fetch_url`, which sends a `GET` request to a URL.
+- `coder` has `bash`, which runs a command in the directory where you start
+  Atama.
+
+Atama cuts a tool result after 20,000 characters.
+
+If you use `agent:coder`, the model can run any command with your
+permissions. Use it only in a directory and with a model that you trust.
 
 ## Building
 

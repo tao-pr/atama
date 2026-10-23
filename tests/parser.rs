@@ -408,6 +408,30 @@ fn sample_api_calls_job_uses_every_action_type() {
 }
 
 #[test]
+fn sample_agents_job_configures_two_different_agents() {
+    let job = parse_job(include_str!("../jobs/sample_agents.md")).expect("job should parse");
+    let agents: Vec<(AgentType, &Vec<String>)> = job
+        .tasks
+        .iter()
+        .flat_map(|task| &task.actions)
+        .filter_map(|actor| match actor {
+            Actor::AgentTool { agent, params } => Some((*agent, params)),
+            _ => None,
+        })
+        .collect();
+
+    let [(AgentType::WebSearch, research), (AgentType::Coder, coder)] = agents.as_slice() else {
+        panic!("expected a websearch and a coder agent, got {agents:?}");
+    };
+    // Research sets its options in the action. The coder agent uses the
+    // environment instead.
+    for option in ["model=", "base_url=", "max_steps="] {
+        assert!(research.iter().any(|param| param.starts_with(option)));
+        assert!(!coder.iter().any(|param| param.starts_with(option)));
+    }
+}
+
+#[test]
 fn treats_deeper_headings_as_description() {
     let job = parse_job("# Job\n## A\n### Notes\nsome text\n").expect("job should parse");
 

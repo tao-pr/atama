@@ -900,21 +900,41 @@ fn download_fails_when_target_path_is_a_directory() {
 }
 
 #[test]
-fn agent_tool_is_not_implemented_yet() {
-    let cases = [
-        (
-            AgentType::WebSearch,
-            "`agent:websearch` is not implemented yet",
-        ),
-        (AgentType::Coder, "`agent:coder` is not implemented yet"),
-    ];
-    for (agent, message) in cases {
-        let actor = Actor::AgentTool {
-            agent,
-            params: vec!["topic".into()],
-        };
-        assert_eq!(actor.act("input"), Err(message.to_string()));
-    }
+fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
+    let (url, requests) = serve(vec![(
+        200,
+        r#"{"choices":[{"message":{"role":"assistant","content":"done"}}]}"#,
+    )]);
+    let actor = Actor::AgentTool {
+        agent: AgentType::WebSearch,
+        params: vec![
+            "model=test-model".into(),
+            format!("base_url={url}"),
+            "find".into(),
+            "it".into(),
+        ],
+    };
+    assert_eq!(actor.act("the input"), Ok("done".to_string()));
+    let request = requests.recv().unwrap();
+    assert!(request.starts_with("POST /chat/completions "), "{request}");
+    assert!(
+        request.contains("find it\\n\\nInput:\\nthe input"),
+        "{request}"
+    );
+}
+
+#[test]
+fn agent_tool_fails_when_the_model_server_is_unreachable() {
+    let url = closed_url();
+    let actor = Actor::AgentTool {
+        agent: AgentType::Coder,
+        params: vec!["model=m".into(), format!("base_url={url}"), "task".into()],
+    };
+    let err = actor.act("").unwrap_err();
+    assert!(
+        err.starts_with(&format!("request to `{url}/chat/completions` failed")),
+        "error was: {err}"
+    );
 }
 
 #[test]

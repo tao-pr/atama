@@ -9,6 +9,7 @@ use std::thread;
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
+use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::passer::Passer;
 
 mod display;
@@ -130,7 +131,8 @@ impl Actor {
     ///   body to a file, and returns the file path. The file is in
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
     ///   named after the last part of the URL path. It ignores `input`.
-    /// - [`Actor::AgentTool`] is not implemented yet, and always fails.
+    /// - [`Actor::AgentTool`] runs an [`AgentToolLoop`] with `params` and
+    ///   `input`. The loop is not implemented yet, and always fails.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -160,8 +162,8 @@ impl Actor {
                 mime,
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
-            Actor::AgentTool { agent, .. } => {
-                Err(format!("`agent:{agent}` is not implemented yet"))
+            Actor::AgentTool { agent, params } => {
+                AgentToolLoop::new(*agent).run_loop(params, input)
             }
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
