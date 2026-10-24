@@ -706,3 +706,105 @@ fn cuts_long_tool_results() {
         format!("{exact}\n[cut: the result has more than {MAX_RESULT_CHARS} characters]")
     );
 }
+
+// Debug output
+
+#[test]
+fn debug_writes_requests_replies_and_tool_calls() {
+    let (lookup, _) = Recorder::boxed("lookup", Ok("found it"));
+    let (failing, _) = Recorder::boxed("failing", Err("it broke"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(calls(&[
+            ("call-1", "lookup", r#"{"q":"rust"}"#),
+            ("call-2", "failing", "not json"),
+        ])),
+        Ok(text("the answer")),
+    ]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::WebSearch)
+        .with_tools(vec![lookup, failing])
+        .debug(&mut out)
+        .run_with(&mut client, "find it", "")
+        .unwrap();
+    assert_eq!(output, "the answer");
+    let out = String::from_utf8(out).unwrap();
+
+    let blocks: Vec<&str> = out
+        .lines()
+        .filter(|line| line.starts_with("=== "))
+        .collect();
+    assert_eq!(
+        blocks,
+        [
+            "=== agent:websearch step 1: request (2 messages, 2 new, tools: lookup, failing) ===",
+            "=== agent:websearch step 1: response (2 tool calls) ===",
+            "=== agent:websearch step 1: tool call 1 of 2: lookup (id call-1) ===",
+            "=== agent:websearch step 1: tool call 2 of 2: failing (id call-2) ===",
+            "=== agent:websearch step 2: request (5 messages, 3 new, tools: lookup, failing) ===",
+            "=== agent:websearch step 2: response (0 tool calls) ===",
+        ],
+        "{out}"
+    );
+    // Messages are pretty JSON in the chat completions format.
+    assert!(
+        out.contains("    \"role\": \"user\",\n    \"content\": \"find it\"\n"),
+        "{out}"
+    );
+    assert!(out.contains("\"content\": \"the answer\""), "{out}");
+    // Tool calls show their arguments as pretty JSON and their result.
+    assert!(
+        out.contains("arguments:\n{\n  \"q\": \"rust\"\n}\nresult: ok, 8 characters\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("arguments:\nnot json\nresult: error: arguments of `failing` are not JSON"),
+        "{out}"
+    );
+    // The second request sends only the reply and the tool results as new.
+    let second = &out[out.find("step 2: request").unwrap()..];
+    assert!(
+        !second[..second.find("step 2: response").unwrap()].contains("find it"),
+        "{out}"
+    );
+}
+
+#[test]
+fn debug_writes_the_configuration_without_the_api_key() {
+    let (url, _requests) = serve(vec![(200, text_response("done"))]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Coder)
+        .debug(&mut out)
+        .run_loop(
+            &params(&["model=m", &format!("base_url={url}"), "max_steps=4", "task"]),
+            "",
+        )
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    let expected = format!(
+        "=== agent:coder configuration ===\nmodel: m\nbase_url: {url}\nmax_steps: 4\napi key: "
+    );
+    assert!(out.starts_with(&expected), "{out}");
+    let key_line = out.lines().nth(4).unwrap();
+    assert!(
+        key_line == "api key: set" || key_line == "api key: not set",
+        "{out}"
+    );
+}
+
+#[test]
+fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
+    let mut config = AgentConfig {
+        base_url: "http://x.test/v1".into(),
+        model: "m".into(),
+        api_key: Some("secret-key".into()),
+        max_steps: 3,
+        task: "task".into(),
+    };
+    assert_eq!(
+        config.summary(),
+        "model: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
+    );
+    config.api_key = None;
+    assert!(config.summary().ends_with("\napi key: not set"));
+}

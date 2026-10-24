@@ -81,7 +81,8 @@ pub fn request_body(model: &str, messages: &[Message], tools: &[Box<dyn Tool>]) 
     body
 }
 
-fn message_json(message: &Message) -> Value {
+/// A message in the JSON format of the chat completions API.
+pub fn message_json(message: &Message) -> Value {
     match message {
         Message::System(content) => json!({"role": "system", "content": content}),
         Message::User(content) => json!({"role": "user", "content": content}),

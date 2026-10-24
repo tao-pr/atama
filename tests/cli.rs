@@ -162,6 +162,42 @@ fn writes_a_timestamp_before_each_task_line() {
 }
 
 #[test]
+fn debug_writes_agent_requests_to_stderr() {
+    // Nothing listens on the port, so the agent fails after its first request.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let (dir, job) = job_in_temp_dir(
+        "debug",
+        &format!("# Job\n## Ask\n- actions: agent:websearch model=m base_url={url} find it\n"),
+    );
+
+    let output = run_atama(&["--debug", &job]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains(&format!(
+            "=== agent:websearch configuration ===\nmodel: m\nbase_url: {url}\n"
+        )),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "=== agent:websearch step 1: request (2 messages, 2 new, tools: fetch_url) ==="
+        ),
+        "stderr was: {stderr}"
+    );
+    assert!(
+        stderr.contains("\"content\": \"find it\""),
+        "stderr was: {stderr}"
+    );
+
+    let output = run_atama(&[&job]);
+    assert!(output.stderr.is_empty(), "stderr was: {:?}", output.stderr);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn strips_only_valid_timestamps() {
     assert_eq!(
         strip_timestamp("2026-10-24 09:15:02 [A] start"),

@@ -31,13 +31,28 @@ impl<R: ActionRunner + ?Sized> ActionRunner for &mut R {
     }
 }
 
-/// Runner that carries out each action with [`Actor::act`].
+/// Runner that carries out each action with [`Actor::act_with`].
 #[derive(Debug, Default)]
-pub struct ActorRunner;
+pub struct ActorRunner {
+    debug: bool,
+}
+
+impl ActorRunner {
+    /// Sets whether agent actions write their requests, replies and tool
+    /// calls to stderr. Off by default.
+    pub fn debug(mut self, debug: bool) -> Self {
+        self.debug = debug;
+        self
+    }
+}
 
 impl ActionRunner for ActorRunner {
     fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
-        action.act(input)
+        if self.debug {
+            action.act_with(input, Some(&mut io::stderr()))
+        } else {
+            action.act(input)
+        }
     }
 }
 

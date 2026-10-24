@@ -115,6 +115,23 @@ Each type of agent has its own tools:
 
 Atama cuts a tool result after 20,000 characters.
 
+To see what an agent does, add `--debug` before the job file. Atama then
+writes these blocks to stderr for each agent action:
+
+1. The configuration: the model, the base URL, `max_steps`, and whether an
+   API key is set. Atama never writes the key itself.
+2. For each step, the request: the number of messages, the tools, and the
+   messages that are new since the last request, as pretty JSON.
+3. The model's reply, as pretty JSON.
+4. One block per tool call, with the tool name, the call id, the arguments
+   as pretty JSON, and the result: `ok` and its length, or the error.
+
+Each block starts with a line such as
+`=== agent:websearch step 1: tool call 1 of 2: fetch_url (id call-1) ===`.
+The task log stays on stdout, so `2> debug.log` saves the debug output in a
+separate file. `--debug` has no effect in a dry run, because a dry run runs
+no agents.
+
 If you use `agent:coder`, the model can run any command with your
 permissions. Use it only in a directory and with a model that you trust.
 
@@ -147,6 +164,9 @@ cargo run -- jobs/sample_api_calls.md
 
 # Print the job and log each action, but run nothing
 cargo run -- --dry-run jobs/sample_api_calls.md
+
+# Also print what each agent sends to its model and gets back (to stderr)
+cargo run -- --debug jobs/sample_agents.md
 
 # Show usage
 cargo run -- --help

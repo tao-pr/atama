@@ -299,7 +299,9 @@ fn mock_actions_from_a_job_file_pass_input_and_fail() {
     )
     .expect("job should parse");
     let mut log = Vec::new();
-    let report = Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    let report = Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
     let log = String::from_utf8(log).unwrap();
 
     // C succeeds only if its input is `hello`: the output of A, passed
@@ -325,7 +327,9 @@ fn logs_each_line_of_action_output() {
     let job = parse_job("# Job\n## A\n- actions:\n  - bash printf one\\ntwo\n  - bash true\n")
         .expect("job should parse");
     let mut log = Vec::new();
-    Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
     let log = String::from_utf8(log).unwrap();
 
     assert!(
@@ -468,7 +472,7 @@ fn colors_only_failure_lines_red_when_color_is_on() {
         parse_job("# Job\n## A\n- actions: mock fail\n- if_fail: retry=1\n## B\n- actions: mock\n")
             .unwrap();
     let mut log = Vec::new();
-    Executor::new(&job, ActorRunner, &mut log)
+    Executor::new(&job, ActorRunner::default(), &mut log)
         .color(true)
         .run()
         .unwrap();
@@ -488,7 +492,9 @@ fn colors_only_failure_lines_red_when_color_is_on() {
 fn does_not_color_by_default() {
     let job = parse_job("# Job\n## A\n- actions: mock fail\n").unwrap();
     let mut log = Vec::new();
-    Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
     let log = String::from_utf8(log).unwrap();
 
     assert!(log.contains("[A] failed: `mock fail`"), "log was:\n{log}");
@@ -505,7 +511,7 @@ fn writes_the_clock_before_each_task_line_when_timestamps_are_on() {
     .unwrap();
     let mut tick = 0;
     let mut log = Vec::new();
-    Executor::new(&job, ActorRunner, &mut log)
+    Executor::new(&job, ActorRunner::default(), &mut log)
         .color(true)
         .timestamps(|| {
             tick += 1;
@@ -537,8 +543,24 @@ fn writes_the_clock_before_each_task_line_when_timestamps_are_on() {
 fn has_no_timestamps_by_default() {
     let job = parse_job("# Job\n## A\n- actions: mock\n").unwrap();
     let mut log = Vec::new();
-    Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
     let log = String::from_utf8(log).unwrap();
 
     assert_eq!(log, "[A] start\n[A] $ mock\n[A] succeeded\njob succeeded\n");
+}
+
+#[test]
+fn actor_runner_runs_actions_with_and_without_debug() {
+    let job = parse_job("# Job\n## A\n- actions:\n  - bash echo hi\n  - mock\n").unwrap();
+    for debug in [false, true] {
+        let mut log = Vec::new();
+        let report = Executor::new(&job, ActorRunner::default().debug(debug), &mut log)
+            .run()
+            .unwrap();
+        let log = String::from_utf8(log).unwrap();
+        assert!(report.succeeded(), "log was:\n{log}");
+        assert!(log.contains("[A] | hi"), "log was:\n{log}");
+    }
 }

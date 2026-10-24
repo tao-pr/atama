@@ -139,6 +139,14 @@ impl Actor {
     /// Fails if the command exits with a non-zero status, the server
     /// responds with a non-2xx status, or a value cannot be read or written.
     pub fn act(&self, input: &str) -> Result<String, String> {
+        self.act_with(input, None)
+    }
+
+    /// Carries out the action like [`Actor::act`]. If `debug` is set, an
+    /// [`Actor::AgentTool`] writes each request to the model, each reply and
+    /// each tool call to it (see [`AgentToolLoop::debug`]). The other actors
+    /// ignore `debug`.
+    pub fn act_with(&self, input: &str, debug: Option<&mut dyn Write>) -> Result<String, String> {
         match self {
             Actor::BashScript { cmd, params } => run_bash(cmd, params, input),
             Actor::ApiCall {
@@ -163,7 +171,11 @@ impl Actor {
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
             Actor::AgentTool { agent, params } => {
-                AgentToolLoop::new(*agent).run_loop(params, input)
+                let mut agent_loop = AgentToolLoop::new(*agent);
+                match debug {
+                    Some(debug) => agent_loop.debug(debug).run_loop(params, input),
+                    None => agent_loop.run_loop(params, input),
+                }
             }
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),

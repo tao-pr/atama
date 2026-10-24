@@ -19,6 +19,10 @@ struct Cli {
     /// Print the job and log each action without running it
     #[arg(long)]
     dry_run: bool,
+
+    /// Print the requests and replies of agents, and their tool calls, to stderr
+    #[arg(long)]
+    debug: bool,
 }
 
 fn main() -> ExitCode {
@@ -47,7 +51,7 @@ fn main() -> ExitCode {
     if cli.dry_run {
         execute(&job, DryRunner)
     } else {
-        execute(&job, ActorRunner)
+        execute(&job, ActorRunner::default().debug(cli.debug))
     }
 }
 

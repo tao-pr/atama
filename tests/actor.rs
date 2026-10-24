@@ -924,6 +924,30 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
 }
 
 #[test]
+fn act_with_debug_writes_agent_debug_output_only() {
+    let url = closed_url();
+    let actor = Actor::AgentTool {
+        agent: AgentType::WebSearch,
+        params: vec!["model=m".into(), format!("base_url={url}"), "task".into()],
+    };
+    let mut out = Vec::new();
+    assert!(actor.act_with("", Some(&mut out)).is_err());
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:websearch configuration ==="),
+        "{out}"
+    );
+    assert!(out.contains("=== agent:websearch step 1: request"), "{out}");
+
+    let mut out = Vec::new();
+    assert_eq!(
+        bash("echo", &["hi"]).act_with("", Some(&mut out)),
+        Ok("hi\n".to_string())
+    );
+    assert!(out.is_empty());
+}
+
+#[test]
 fn agent_tool_fails_when_the_model_server_is_unreachable() {
     let url = closed_url();
     let actor = Actor::AgentTool {

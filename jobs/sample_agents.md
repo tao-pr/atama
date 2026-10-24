@@ -51,6 +51,25 @@ Prerequisites:
 The `Write report script` task lets the model run bash commands in the
 directory where you start Atama. Read its task before you run the job.
 
+To run the job:
+
+```bash
+cargo run -- jobs/sample_agents.md
+```
+
+To see what each agent sends to the model, what the model replies, and which
+tools it calls with which arguments, add `--debug`. The debug output goes to
+stderr. This command saves it in `debug.log`, and the task log stays in the
+terminal:
+
+```bash
+cargo run -- --debug jobs/sample_agents.md 2> debug.log
+```
+
+If an agent fails or gives a strange answer, read `debug.log`. For example, a
+small model can call a tool with wrong arguments, or stop before it uses a
+tool.
+
 ## Prepare
 
 Make the output directory.

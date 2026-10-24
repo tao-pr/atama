@@ -36,6 +36,8 @@
 //! A local port is the server's default port. If you start the server on a
 //! different port, change the URL.
 
+use std::io::Write;
+
 use serde_json::Value;
 
 use crate::actor::AgentType;
@@ -179,14 +181,32 @@ impl AgentConfig {
     }
 }
 
+impl AgentConfig {
+    /// The configuration for debug output, one `name: value` line each. It
+    /// shows only whether the API key is set, never the key itself.
+    pub fn summary(&self) -> String {
+        let key = if self.api_key.is_some() {
+            "set"
+        } else {
+            "not set"
+        };
+        format!(
+            "model: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
+            self.model, self.base_url, self.max_steps
+        )
+    }
+}
+
 /// Runs one agent of a given type until it finishes its work.
-pub struct AgentToolLoop {
+pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// Gets the debug output, if set.
+    debug: Option<Box<dyn Write + 'a>>,
 }
 
-impl AgentToolLoop {
+impl<'a> AgentToolLoop<'a> {
     /// Makes a loop with the built-in tools for the agent type (see
     /// [`tools::default_tools`]).
     pub fn new(agent: AgentType) -> Self {
@@ -194,7 +214,17 @@ impl AgentToolLoop {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            debug: None,
         }
+    }
+
+    /// Writes debug output to `out`: the configuration, and for each step
+    /// the new messages of the request, the model's reply, and each tool
+    /// call with its arguments and result. Messages are pretty JSON in the
+    /// chat completions format. The API key is never written.
+    pub fn debug(mut self, out: impl Write + 'a) -> Self {
+        self.debug = Some(Box::new(out));
+        self
     }
 
     /// Replaces the tools that the model can call.
@@ -226,6 +256,11 @@ impl AgentToolLoop {
     pub fn run_loop(&mut self, params: &[String], input: &str) -> Result<String, String> {
         let config = AgentConfig::from_params(params, |name| std::env::var(name).ok())?;
         self.max_steps = config.max_steps;
+        let summary = config.summary();
+        self.write_debug(format!(
+            "=== agent:{} configuration ===\n{summary}",
+            self.agent
+        ));
         let mut client =
             openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone());
         self.run_with(&mut client, &config.task, input)
@@ -259,17 +294,52 @@ impl AgentToolLoop {
             Message::User(prompt),
         ];
 
-        for _ in 0..self.max_steps {
+        // Number of messages that earlier requests already sent.
+        let mut sent = 0;
+        for step in 1..=self.max_steps {
+            if self.debug.is_some() {
+                let tools = self.tool_names().join(", ");
+                let new = pretty(&messages[sent..]);
+                self.write_debug(format!(
+                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}) ===\n{new}",
+                    self.agent,
+                    messages.len(),
+                    messages.len() - sent,
+                ));
+            }
+            sent = messages.len();
             let reply = client.chat(&messages, &self.tools)?;
+            if self.debug.is_some() {
+                let json = pretty(std::slice::from_ref(&Message::Assistant(reply.clone())));
+                self.write_debug(format!(
+                    "=== agent:{} step {step}: response ({} tool calls) ===\n{json}",
+                    self.agent,
+                    reply.tool_calls.len()
+                ));
+            }
             if reply.tool_calls.is_empty() {
                 return Ok(reply.content.unwrap_or_default());
             }
             let calls = reply.tool_calls.clone();
             messages.push(Message::Assistant(reply));
-            for call in calls {
-                let content = self
-                    .call_tool(&call)
-                    .unwrap_or_else(|err| format!("error: {err}"));
+            let count = calls.len();
+            for (index, call) in calls.into_iter().enumerate() {
+                let result = self.call_tool(&call);
+                if self.debug.is_some() {
+                    let outcome = match &result {
+                        Ok(content) => format!("ok, {} characters", content.chars().count()),
+                        Err(err) => format!("error: {err}"),
+                    };
+                    self.write_debug(format!(
+                        "=== agent:{} step {step}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
+                        self.agent,
+                        index + 1,
+                        call.name,
+                        call.id,
+                        pretty_arguments(&call.arguments),
+                    ));
+                }
+                let content = result.unwrap_or_else(|err| format!("error: {err}"));
                 messages.push(Message::Tool {
                     call_id: call.id,
                     content,
@@ -280,6 +350,14 @@ impl AgentToolLoop {
             "`agent:{}` did not finish in {} steps",
             self.agent, self.max_steps
         ))
+    }
+
+    /// Writes one block of debug output, if debug output is on. A failed
+    /// write does not stop the agent.
+    fn write_debug(&mut self, text: String) {
+        if let Some(out) = &mut self.debug {
+            let _ = writeln!(out, "{text}");
+        }
     }
 
     fn call_tool(&mut self, call: &ToolCall) -> Result<String, String> {
@@ -296,6 +374,20 @@ impl AgentToolLoop {
                 .map_err(|err| format!("arguments of `{}` are not JSON: {err}", call.name))?
         };
         tool.call(&arguments)
+    }
+}
+
+/// The messages as a pretty JSON array in the chat completions format.
+fn pretty(messages: &[Message]) -> String {
+    let json: Vec<Value> = messages.iter().map(openai::message_json).collect();
+    serde_json::to_string_pretty(&json).expect("JSON values always serialize")
+}
+
+/// Tool call arguments as pretty JSON, or as they are if they are not JSON.
+fn pretty_arguments(arguments: &str) -> String {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(json) => serde_json::to_string_pretty(&json).expect("JSON values always serialize"),
+        Err(_) => arguments.to_string(),
     }
 }
 
