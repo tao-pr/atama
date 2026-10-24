@@ -494,3 +494,51 @@ fn does_not_color_by_default() {
     assert!(log.contains("[A] failed: `mock fail`"), "log was:\n{log}");
     assert!(!log.contains('\x1b'), "log was:\n{log}");
 }
+
+#[test]
+fn writes_the_clock_before_each_task_line_when_timestamps_are_on() {
+    let job = parse_job(
+        "# Job\n## A\n- actions: mock fail\n- if_fail: retry=1\n\
+         ## B\n- actions: mock\n## C\n- begin_if: task(A) fail\n- actions: bash echo hi\n\
+         - if_succeed: die\n",
+    )
+    .unwrap();
+    let mut tick = 0;
+    let mut log = Vec::new();
+    Executor::new(&job, ActorRunner, &mut log)
+        .color(true)
+        .timestamps(|| {
+            tick += 1;
+            format!("T{tick}")
+        })
+        .run()
+        .unwrap();
+    let log = String::from_utf8(log).unwrap();
+
+    assert_eq!(
+        log,
+        "T1 [A] start\n\
+         T2 [A] $ mock fail\n\
+         T3 \x1b[31m[A] failed: `mock fail`: mock failure\x1b[0m\n\
+         T4 [A] retry 1 of 1\n\
+         T5 [A] $ mock fail\n\
+         T6 \x1b[31m[A] failed: `mock fail`: mock failure\x1b[0m\n\
+         T7 [B] skipped (begin_if not met)\n\
+         T8 [C] start\n\
+         T9 [C] $ bash echo hi\n\
+         T10 [C] | hi\n\
+         T11 [C] succeeded\n\
+         T12 [C] hook: die, stopping job\n\
+         job failed\n"
+    );
+}
+
+#[test]
+fn has_no_timestamps_by_default() {
+    let job = parse_job("# Job\n## A\n- actions: mock\n").unwrap();
+    let mut log = Vec::new();
+    Executor::new(&job, ActorRunner, &mut log).run().unwrap();
+    let log = String::from_utf8(log).unwrap();
+
+    assert_eq!(log, "[A] start\n[A] $ mock\n[A] succeeded\njob succeeded\n");
+}

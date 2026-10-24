@@ -52,7 +52,7 @@ the type of action, and the other words are its parameters:
 - `mock fail` always fails.
 - `agent:<type> [model=<id>] [base_url=<url>] [max_steps=<n>] <task...>`
   runs an agent, for example
-  `agent:websearch model=llama3.2 base_url=http://localhost:11434/v1 summarize the news`.
+  `agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 summarize the news`.
   The type is `websearch` or `coder`. The output is the agent's final reply.
   See "Agents" below.
 
@@ -154,7 +154,14 @@ cargo run -- --help
 
 Atama runs the actions in the directory where you start it, so relative
 paths such as `./output` are relative to that directory. The log shows each
-action with a `$` prefix and each line of its output with a `|` prefix.
+action with a `$` prefix and each line of its output with a `|` prefix. Each
+line of a task starts with the local date and time:
+
+```text
+2026-10-24 09:15:02 [Prepare] start
+2026-10-24 09:15:02 [Prepare] $ bash mkdir -p ./output/agents
+2026-10-24 09:15:02 [Prepare] succeeded
+```
 
 ### Dry run
 

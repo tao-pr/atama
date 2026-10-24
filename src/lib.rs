@@ -16,4 +16,7 @@ pub use executor::{
 pub use job::{Event, Hook, Job, Task, Trigger};
 pub use parser::{ParseError, parse_job};
 pub use passer::Passer;
-pub use printer::{color_allowed, format_error, format_job, print_error, print_job, use_color};
+pub use printer::{
+    TIMESTAMP_FORMAT, color_allowed, format_error, format_job, local_timestamp, print_error,
+    print_job, use_color,
+};

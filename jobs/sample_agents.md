@@ -10,17 +10,40 @@ Prerequisites:
 - A chat model that supports tool calls, on a server with an OpenAI compatible
   `/chat/completions` endpoint. The sample uses Ollama on `localhost:11434`:
 
-  ```bash
-  ollama pull llama3.2
-  ollama serve
-  ```
+  If you don't have Ollama installed, see https://ollama.com/download.
+
+  1. Start the Ollama server in a separate terminal. The command keeps
+     running. If the Ollama desktop app is open, the server already runs,
+     and you can skip this step.
+
+     ```bash
+     ollama serve
+     ```
+
+  2. Download the model:
+
+     ```bash
+     ollama pull qwen3.5:0.8b
+     ```
+
+  3. Load the model into memory and keep it there until the server stops.
+     `ollama serve` serves every model that you pulled, and it loads a model
+     only at its first request. This request loads `qwen3.5:0.8b` now, so the
+     first agent step does not wait for it:
+
+     ```bash
+     curl http://localhost:11434/api/generate -d '{"model": "qwen3.5:0.8b", "keep_alive": -1}'
+     ```
+
+     To make sure that the model is loaded, run `ollama ps`. To unload it,
+     run `ollama stop qwen3.5:0.8b`.
 
 - The `Write report script` task reads its model from the environment. Set
   these variables before you run the job:
 
   ```bash
   export ATAMA_AGENT_BASE_URL=http://localhost:11434/v1
-  export ATAMA_AGENT_MODEL=qwen2.5-coder
+  export ATAMA_AGENT_MODEL=qwen3.5:0.8b
   # Only if the server needs a key, for example https://api.openai.com/v1
   export ATAMA_AGENT_API_KEY=<your key>
   ```
@@ -43,7 +66,7 @@ replies. The other words are the task. The agent can call `fetch_url` to read
 web pages. Its final reply is the output of the task.
 
 - actions:
-  - agent:websearch model=llama3.2 base_url=http://localhost:11434/v1 max_steps=6 Find the latest stable Rust release on https://blog.rust-lang.org and list its version, its release date and three notable changes as a short markdown list.
+  - agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 max_steps=6 Find the latest stable Rust release on https://blog.rust-lang.org and list its version, its release date and three notable changes as a short markdown list.
 - if_fail: retry=1
 
 ## Save notes

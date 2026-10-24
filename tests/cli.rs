@@ -7,12 +7,32 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use atama::TIMESTAMP_FORMAT;
+use chrono::NaiveDateTime;
+
 /// Runs the `atama` binary with the given arguments and returns its output.
 fn run_atama(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_atama"))
         .args(args)
         .output()
         .expect("failed to run atama binary")
+}
+
+/// The line without its leading `YYYY-MM-DD HH:MM:SS ` timestamp, or `None`
+/// if it does not start with one.
+fn strip_timestamp(line: &str) -> Option<&str> {
+    let (timestamp, rest) = line.split_at_checked(19)?;
+    NaiveDateTime::parse_from_str(timestamp, TIMESTAMP_FORMAT).ok()?;
+    rest.strip_prefix(' ')
+}
+
+/// The output with the timestamp removed from each line that has one.
+fn strip_timestamps(output: &str) -> String {
+    output
+        .lines()
+        .map(|line| strip_timestamp(line).unwrap_or(line))
+        .flat_map(|line| [line, "\n"])
+        .collect()
 }
 
 #[test]
@@ -116,6 +136,44 @@ fn fails_when_an_action_fails() {
 }
 
 #[test]
+fn writes_a_timestamp_before_each_task_line() {
+    let (dir, job) = job_in_temp_dir("timestamps", "# Job\n## A\n- actions: bash echo hi\n");
+    let output = run_atama(&[&job]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let task_lines: Vec<&str> = stdout.lines().filter_map(strip_timestamp).collect();
+    assert_eq!(
+        task_lines,
+        [
+            "[A] start",
+            "[A] $ bash echo hi",
+            "[A] | hi",
+            "[A] succeeded"
+        ],
+        "stdout was: {stdout}"
+    );
+    // The job summary and the result line have no timestamp.
+    assert!(stdout.starts_with("Job: Job\n"), "stdout was: {stdout}");
+    assert!(
+        stdout.ends_with("\njob succeeded\n"),
+        "stdout was: {stdout}"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn strips_only_valid_timestamps() {
+    assert_eq!(
+        strip_timestamp("2026-10-24 09:15:02 [A] start"),
+        Some("[A] start")
+    );
+    assert_eq!(strip_timestamp("2026-13-24 09:15:02 [A] start"), None);
+    assert_eq!(strip_timestamp("2026-10-24 09:15:02[A] start"), None);
+    assert_eq!(strip_timestamp("[A] start"), None);
+    assert_eq!(strip_timestamps("2026-10-24 09:15:02 a\nb\n"), "a\nb\n");
+}
+
+#[test]
 fn fails_on_invalid_job_config_file() {
     let (dir, job) = job_in_temp_dir("invalid", "# Job\n## A\n- actions: npm ci\n");
     let output = run_atama(&[&job]);
@@ -212,7 +270,7 @@ fn colors_failure_lines_red_in_a_terminal() {
         "terminal",
         "# Job\n## Broken\n- actions: mock fail\n## Next\n- actions: mock\n",
     );
-    let output = run_atama_in_terminal(&[&job], &[]);
+    let output = strip_timestamps(&run_atama_in_terminal(&[&job], &[]));
 
     assert!(
         output.contains("\n\x1b[31m[Broken] failed: `mock fail`: mock failure\x1b[0m\n"),
@@ -234,7 +292,7 @@ fn colors_failure_lines_red_in_a_terminal() {
 #[test]
 fn no_color_turns_off_colors_in_a_terminal() {
     let (dir, job) = job_in_temp_dir("no_color", "# Job\n## Broken\n- actions: mock fail\n");
-    let output = run_atama_in_terminal(&[&job], &[("NO_COLOR", "1")]);
+    let output = strip_timestamps(&run_atama_in_terminal(&[&job], &[("NO_COLOR", "1")]));
 
     assert!(
         output.contains("\n[Broken] failed: `mock fail`: mock failure\n"),

@@ -4,12 +4,23 @@ use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 
+use crate::actor::Actor;
 use crate::job::{Hook, Job};
 
 const BOLD: &str = "1";
 const TASK_TITLE: &str = "1;36";
 pub(crate) const FAIL: &str = "31";
 const SUCCEED: &str = "32";
+/// Black text on a light gray background.
+const AGENT: &str = "30;47";
+
+/// Format of [`local_timestamp`], for example `2026-10-24 09:15:02`.
+pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+/// The current local date and time, in [`TIMESTAMP_FORMAT`].
+pub fn local_timestamp() -> String {
+    chrono::Local::now().format(TIMESTAMP_FORMAT).to_string()
+}
 
 /// Whether to color output on `stream`: only when it is a terminal and
 /// `NO_COLOR` is not set.
@@ -60,7 +71,8 @@ pub(crate) fn paint(color: bool, code: &str, text: &str) -> String {
 /// ```
 ///
 /// With `color`, task titles are cyan, `if fail` hooks red and
-/// `if succeed` hooks green, using ANSI escape codes.
+/// `if succeed` hooks green, and the `agent:<type>` word of an agent action
+/// has a light background, using ANSI escape codes.
 pub fn format_job(job: &Job, color: bool) -> String {
     let paint = |code: &str, text: &str| paint(color, code, text);
 
@@ -68,7 +80,11 @@ pub fn format_job(job: &Job, color: bool) -> String {
     for task in &job.tasks {
         let _ = write!(out, "  - {}", paint(TASK_TITLE, &format!("{}:", task.id)));
 
-        let actions: Vec<String> = task.actions.iter().map(ToString::to_string).collect();
+        let actions: Vec<String> = task
+            .actions
+            .iter()
+            .map(|action| format_action(action, color))
+            .collect();
         if !actions.is_empty() {
             let _ = write!(out, " {}", actions.join("; "));
         }
@@ -89,6 +105,19 @@ pub fn format_job(job: &Job, color: bool) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Writes the action as its statement. With `color`, the `agent:<type>` word
+/// of an agent action has a light background, so the reader sees which
+/// steps run an agent and with which model.
+fn format_action(action: &Actor, color: bool) -> String {
+    let statement = action.to_string();
+    let Actor::AgentTool { agent, .. } = action else {
+        return statement;
+    };
+    let name = format!("agent:{agent}");
+    let params = statement.strip_prefix(&name).unwrap_or_default();
+    format!("{}{params}", paint(color, AGENT, &name))
 }
 
 pub(crate) fn format_hook(hook: &Hook) -> String {

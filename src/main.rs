@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use atama::{
-    ActionRunner, ActorRunner, DryRunner, Executor, Job, parse_job, print_error, print_job,
-    use_color,
+    ActionRunner, ActorRunner, DryRunner, Executor, Job, local_timestamp, parse_job, print_error,
+    print_job, use_color,
 };
 use clap::Parser;
 
@@ -55,7 +55,10 @@ fn main() -> ExitCode {
 fn execute(job: &Job, runner: impl ActionRunner) -> ExitCode {
     let stdout = io::stdout();
     let color = use_color(&stdout);
-    match Executor::new(job, runner, stdout.lock()).color(color).run() {
+    let mut executor = Executor::new(job, runner, stdout.lock())
+        .color(color)
+        .timestamps(local_timestamp);
+    match executor.run() {
         Ok(report) if report.succeeded() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(err) => {

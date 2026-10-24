@@ -8,6 +8,7 @@
 //! Each action gets the output of the action before it as its input. The
 //! first action of a task gets the output of the last task that succeeded.
 
+use std::fmt;
 use std::io::{self, Write};
 
 use crate::actor::Actor;
@@ -116,6 +117,8 @@ pub struct Executor<'a, R, W> {
     out: W,
     max_restarts: u32,
     color: bool,
+    /// Returns the timestamp in front of each task line, if set.
+    clock: Option<Box<dyn FnMut() -> String + 'a>>,
 }
 
 impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
@@ -126,7 +129,16 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             out,
             max_restarts: DEFAULT_MAX_RESTARTS,
             color: false,
+            clock: None,
         }
+    }
+
+    /// Writes the text that `clock` returns, and a space, in front of each
+    /// line of a task, for example `2026-10-24 09:15:02 [Build] start`.
+    /// Off by default. [`crate::local_timestamp`] is the usual clock.
+    pub fn timestamps(mut self, clock: impl FnMut() -> String + 'a) -> Self {
+        self.clock = Some(Box::new(clock));
+        self
     }
 
     /// Sets whether the log shows failures in red, using ANSI escape codes.
@@ -202,7 +214,7 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
         let mut last_output = String::new();
         for (index, task) in job.tasks.iter().enumerate() {
             if !should_begin(&task.begin_if, index, reports) {
-                writeln!(self.out, "[{}] skipped (begin_if not met)", task.id)?;
+                self.log(format_args!("[{}] skipped (begin_if not met)", task.id))?;
                 reports[index].status = TaskStatus::Skipped;
                 continue;
             }
@@ -222,22 +234,21 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             match hook {
                 None => {}
                 Some(Hook::Die) => {
-                    writeln!(self.out, "[{}] hook: die, stopping job", task.id)?;
+                    self.log(format_args!("[{}] hook: die, stopping job", task.id))?;
                     return Ok(Pass::Died);
                 }
                 Some(Hook::Restart) => {
-                    writeln!(self.out, "[{}] hook: restart", task.id)?;
+                    self.log(format_args!("[{}] hook: restart", task.id))?;
                     return Ok(Pass::Restart);
                 }
                 // Retries already happened in `run_task`.
                 Some(Hook::Retry(_)) => {}
                 Some(hook) => {
-                    writeln!(
-                        self.out,
+                    self.log(format_args!(
                         "[{}] hook: {} (not implemented yet)",
                         task.id,
                         format_hook(hook)
-                    )?;
+                    ))?;
                 }
             }
         }
@@ -259,19 +270,20 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
 
         for attempt in 0..=retries {
             if attempt == 0 {
-                writeln!(self.out, "[{}] start", task.id)?;
+                self.log(format_args!("[{}] start", task.id))?;
             } else {
-                writeln!(self.out, "[{}] retry {attempt} of {retries}", task.id)?;
+                self.log(format_args!("[{}] retry {attempt} of {retries}", task.id))?;
             }
 
             match self.run_actions(task, input)? {
                 Ok(output) => {
-                    writeln!(self.out, "[{}] succeeded", task.id)?;
+                    self.log(format_args!("[{}] succeeded", task.id))?;
                     return Ok((TaskStatus::Succeeded, attempt + 1, Some(output)));
                 }
                 Err(message) => {
                     let line = format!("[{}] failed: {message}", task.id);
-                    writeln!(self.out, "{}", paint(self.color, FAIL, &line))?;
+                    let line = paint(self.color, FAIL, &line);
+                    self.log(line)?;
                 }
             }
         }
@@ -287,11 +299,11 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
         let mut output = input.to_string();
         for action in &task.actions {
             let command = action.to_string();
-            writeln!(self.out, "[{}] $ {command}", task.id)?;
+            self.log(format_args!("[{}] $ {command}", task.id))?;
             match self.runner.run(action, &output) {
                 Ok(next) => {
                     for line in next.lines() {
-                        writeln!(self.out, "[{}] | {line}", task.id)?;
+                        self.log(format_args!("[{}] | {line}", task.id))?;
                     }
                     output = next;
                 }
@@ -299,6 +311,14 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             }
         }
         Ok(Ok(output))
+    }
+
+    /// Writes one line of a task, after the timestamp if timestamps are on.
+    fn log(&mut self, line: impl fmt::Display) -> io::Result<()> {
+        match self.clock.as_mut().map(|clock| clock()) {
+            Some(now) => writeln!(self.out, "{now} {line}"),
+            None => writeln!(self.out, "{line}"),
+        }
     }
 }
 
