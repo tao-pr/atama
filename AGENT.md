@@ -129,11 +129,27 @@ model asks for tool calls, the loop runs them and sends the results back. If
 the model replies without a tool call, that reply is the output.
 `max_steps` limits the number of model replies.
 
-The code of the loop is in three files:
+The code of the loop is in four files:
 
-- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, `AgentConfig` and the `Tool` and `ChatClient` traits.
+- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `Tool` and `ChatClient` traits.
+- `src/agent_loop_openai_compat/agent_options.rs` has the options of an agent action: `AgentConfig`, `WebSearchOptions`, `SummarizerOptions`, `MaxOutput`, and the defaults and environment variable names of the options.
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
 - `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
+
+### Options of an agent action
+
+Each param of an agent action is an option: `task=`, `model=`, `base_url=`
+and `max_steps=`. A `websearch` agent also takes `topic=` and
+`max_results=`, and a `summarizer` agent also takes `expertise=` and
+`max_output=`. An agent of another type fails on these options
+(`only_for`). A value
+can be in double quotes, so that it can have spaces, as in
+`task="Fix the failing test."`. The parser (`split_quoted` in
+`src/parser.rs`) splits the params of an `agent:` line at whitespace, but
+not inside quotes, and removes the quotes. Inside quotes, `\"` is a quote and
+`\\` is a backslash. Then `AgentConfig::from_params` reads each param. It fails
+on a word without `=` and on an unknown key. `src/actor/display.rs` puts the
+quotes back when it writes an agent action as a line.
 
 ### Steps of one agent run
 
@@ -143,9 +159,12 @@ The code of the loop is in three files:
 1. Get the tools. `AgentToolLoop::new` gets the tools of the agent type from
    `tools::default_tools`. See "Tools of each agent type" below.
 2. Read the configuration. `run_loop_with_env` reads the options of the
-   action with `AgentConfig::from_params`.
-3. Search, only for `websearch`. `search_task` searches the topic with
+   action with `AgentConfig::from_params`. `task=` becomes
+   `AgentConfig::task`.
+3. Make the task. For `websearch`, `search_task` searches the topic with
    Tavily, and puts the prompt, the topic and the results into the task.
+   For `summarizer`, `SummarizerOptions::task` puts the instruction, the
+   expertise and the length limit into the task.
 4. Start the conversation. `run_with` makes two messages: the system prompt
    of the agent type (`system_prompt`) and the user prompt (`user_prompt`).
    The user prompt is the task and the input of the action.
@@ -187,6 +206,8 @@ methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
 - `websearch` gets `FetchUrl` (`fetch_url`). It also gets `TavilySearch`
   (`tavily_search`), but only if `TAVILY_API_KEY` is set.
 - `coder` gets `Bash` (`bash`).
+- `summarizer` gets no tools. `request_body` then leaves out the `tools`
+  field, so the model can only reply with text.
 
 The tools run the same code as the actions of a job file. `fetch_url` runs
 an `Actor::ApiCall` with `GET`, and `bash` runs an `Actor::BashScript`.
@@ -203,6 +224,9 @@ agent type a new tool, do these steps:
 3. If the model must know when to use the tool, tell it in `system_prompt`.
 4. Add tests to `tests/agent_loop_openai_compat.rs`.
 
+Tests of the options are in `tests/agent_options.rs`. Tests that run the
+loop are in `tests/agent_loop_openai_compat.rs`.
+
 `AgentToolLoop::with_tools` replaces the tools of a loop. Tests use it to
 give the loop mock tools.
 
@@ -211,11 +235,30 @@ give the loop mock tools.
 A `websearch` agent needs `topic="<text>"` and takes `max_results=<n>`
 (default `DEFAULT_MAX_RESULTS`, 5). `AgentConfig::from_params` takes the
 agent type, and it reads these two options into `WebSearchOptions` only for
-`websearch`. For `coder`, it rejects them. `join_quoted` joins a quoted
-option value that the parser split at its spaces. Before the first model
-step, `AgentToolLoop::search_task` sends one Tavily search for the topic. It
+`websearch`. Other agent types reject them. Before the first model step,
+`AgentToolLoop::search_task` sends one Tavily search for the topic. It
 gives the model the prompt, the topic and the results in one user message.
-The prompt is the words that are not options, else `DEFAULT_WEBSEARCH_PROMPT`.
+The prompt is the value of `task=`, else `DEFAULT_WEBSEARCH_PROMPT`.
+
+### The `summarizer` agent
+
+A `summarizer` agent summarizes the input of the action. It takes
+`expertise=<text>` (default `DEFAULT_EXPERTISE`, `general`) and
+`max_output=<size>`. `AgentConfig::from_params` reads them into
+`SummarizerOptions` only for `summarizer`. `MaxOutput` is the parsed size:
+`Percent`, `Sentences`, `Words` or `Paragraphs`. Without `max_output=`,
+it is `None`, and the model chooses the length.
+
+`SummarizerOptions::task` makes the task: the instruction, the expertise
+and the length limit. The instruction is the value of `task=`, else
+`DEFAULT_SUMMARIZER_PROMPT`. For `Percent`, the task also gives the number
+of words that the percent allows. `user_prompt` adds the input after the
+task. If the input is empty, `SummarizerOptions::task` fails, and the loop
+does not ask the model.
+
+Now, the expertise is only the name of a field in the task. A `TAOTODO`
+comment on `SummarizerOptions::expertise` marks the plan to load domain
+expertise as skills later.
 
 ### Model, debug output and tests
 

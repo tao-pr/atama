@@ -910,8 +910,7 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
         params: vec![
             "model=test-model".into(),
             format!("base_url={url}"),
-            "find".into(),
-            "it".into(),
+            "task=find it".into(),
         ],
     };
     assert_eq!(actor.act("the input"), Ok("done".to_string()));
@@ -928,7 +927,7 @@ fn act_with_debug_writes_agent_debug_output_only() {
     let url = closed_url();
     let actor = Actor::AgentTool {
         agent: AgentType::Coder,
-        params: vec!["model=m".into(), format!("base_url={url}"), "task".into()],
+        params: vec!["model=m".into(), format!("base_url={url}"), "task=t".into()],
     };
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
@@ -949,7 +948,7 @@ fn agent_tool_fails_when_the_model_server_is_unreachable() {
     let url = closed_url();
     let actor = Actor::AgentTool {
         agent: AgentType::Coder,
-        params: vec!["model=m".into(), format!("base_url={url}"), "task".into()],
+        params: vec!["model=m".into(), format!("base_url={url}"), "task=t".into()],
     };
     let err = actor.act("").unwrap_err();
     assert!(

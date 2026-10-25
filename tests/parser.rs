@@ -2,6 +2,7 @@
 
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
+use atama::agent_loop_openai_compat::agent_options::AgentConfig;
 use atama::{Event, Hook, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
@@ -131,11 +132,21 @@ fn parses_agent_tool_actions() {
     let cases = [
         ("agent:websearch", AgentType::WebSearch, vec![]),
         (
-            "agent:websearch rust release notes",
+            "agent:websearch topic=rust task=\"list the  release notes\"",
             AgentType::WebSearch,
-            vec!["rust", "release", "notes"],
+            vec!["topic=rust", "task=list the  release notes"],
         ),
-        ("agent:coder fix.md", AgentType::Coder, vec!["fix.md"]),
+        ("agent:coder   fix.md ", AgentType::Coder, vec!["fix.md"]),
+        (
+            "agent:summarizer max_output=60%",
+            AgentType::Summarizer,
+            vec!["max_output=60%"],
+        ),
+        (
+            r#"agent:coder task="say \"hi\" \\ a\b" "" "a b"c"#,
+            AgentType::Coder,
+            vec![r#"task=say "hi" \ a\b"#, "", "a bc"],
+        ),
     ];
     for (statement, agent, params) in cases {
         let actor: Actor = statement.parse().expect(statement);
@@ -183,6 +194,14 @@ fn rejects_invalid_actions() {
         ("agent:", "unknown agent type ``"),
         ("agent:browser", "unknown agent type `browser`"),
         ("agent:WebSearch", "unknown agent type `WebSearch`"),
+        (
+            "agent:coder task=\"fix it",
+            "a quote in `task=\"fix it` has no closing quote",
+        ),
+        (
+            "agent:coder task=\"fix it\\",
+            "a quote in `task=\"fix it\\` has no closing quote",
+        ),
         ("api_call", "`api_call` needs a verb and a URL"),
         ("api_call GET", "`api_call` needs a verb and a URL"),
         ("api_call FETCH https://x.test", "unknown API verb `FETCH`"),
@@ -449,6 +468,20 @@ fn sample_agents_job_configures_two_different_agents() {
     for option in ["model=", "base_url=", "max_steps="] {
         assert!(research.iter().any(|param| param.starts_with(option)));
         assert!(!coder.iter().any(|param| param.starts_with(option)));
+    }
+    // Every param is a valid option, and both agents have a task.
+    let env = |_: &str| Some("env-model".to_string());
+    let cases = [
+        (
+            AgentType::WebSearch,
+            research,
+            "From these search results, list",
+        ),
+        (AgentType::Coder, coder, "Write a bash script"),
+    ];
+    for (agent, params, task) in cases {
+        let config = AgentConfig::from_params(agent, params, env).expect("valid options");
+        assert!(config.task.starts_with(task), "{}", config.task);
     }
 }
 

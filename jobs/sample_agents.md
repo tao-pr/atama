@@ -93,15 +93,15 @@ Make the output directory.
 A `websearch` agent with every option in the action itself: `model=` and
 `base_url=` select the model, and `max_steps=6` allows at most 6 model
 replies. Atama first searches `topic=` with Tavily and gets the top 5
-results (`max_results=5`). The quotes let the topic have spaces. The other
-words are the prompt, which tells the model how to analyse the results. The
+results (`max_results=5`). `task=` is the prompt, which tells the model how
+to analyse the results. The quotes let a value have spaces. The
 model can call `fetch_url` to read a result in full, or `tavily_search` to
 search again. The prompt asks it to use only the search results, because a
 small model can lose the prompt after it reads several full pages. Its final
 reply is the output of the task.
 
 - actions:
-  - agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 max_steps=6 max_results=5 topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows" From these search results, list the most common agent loop patterns that work with any model and fit most AI workflows. For each pattern, give its name, how its loop works in one or two sentences, when to use it, and the URL of its source. Name only patterns that the results describe. Use only the search results, and reply with a short markdown list.
+  - agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 max_steps=6 max_results=5 topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows" task="From these search results, list the most common agent loop patterns that work with any model and fit most AI workflows. For each pattern, give its name, how its loop works in one or two sentences, when to use it, and the URL of its source. Name only patterns that the results describe. Use only the search results, and reply with a short markdown list."
 - if_fail: retry=1
 
 ## Save notes
@@ -114,12 +114,12 @@ output of the task.
 
 ## Write report script
 
-A `coder` agent without options in the action. It gets its model, server and
-API key from the `ATAMA_AGENT_*` environment variables, and the default of 10
-steps. The agent can call `bash`. The notes from Save notes are its input.
+A `coder` agent with only `task=` in the action. It gets its model, server
+and API key from the `ATAMA_AGENT_*` environment variables, and the default
+of 10 steps. The agent can call `bash`. The notes from Save notes are its input.
 
 - actions:
-  - agent:coder Write a bash script ./output/agents/report.sh that prints the name and the line count of each .md file in ./output/agents. Make it executable and run it once. Change no files outside ./output/agents. Reply with the output of the script.
+  - agent:coder task="Write a bash script ./output/agents/report.sh that prints the name and the line count of each .md file in ./output/agents. Make it executable and run it once. Change no files outside ./output/agents. Reply with the output of the script."
   - bash tee ./output/agents/report.txt
 
 ## List output

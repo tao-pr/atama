@@ -57,12 +57,13 @@ the type of action, and the other words are its parameters:
   below.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
-- `agent:<type> [model=<id>] [base_url=<url>] [max_steps=<n>] <task...>`
+- `agent:<type> [task="<text>"] [model=<id>] [base_url=<url>] [max_steps=<n>]`
   runs an agent, for example
-  `agent:coder model=qwen3.5:0.8b base_url=http://localhost:11434/v1 fix the failing test`.
-  The type is `websearch` or `coder`. A `websearch` agent also needs
-  `topic="<text>"`, and takes `max_results=<n>`. The output is the agent's
-  final reply. See "Agents" below.
+  `agent:coder model=qwen3.5:0.8b base_url=http://localhost:11434/v1 task="Fix the failing test."`.
+  The type is `websearch`, `coder` or `summarizer`. A `websearch` agent also
+  needs `topic="<text>"`, and takes `max_results=<n>`. A `summarizer` agent
+  also takes `expertise="<text>"` and `max_output="<size>"`. The output is
+  the agent's final reply. See "Agents" below.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
@@ -101,12 +102,16 @@ The agent works with any model on a server with an OpenAI compatible
 `/chat/completions` endpoint, for example OpenAI, Ollama, vLLM or LM Studio.
 The model must support tool calls.
 
-The words of the action that are not options are the task. The output of the
-previous action or task is added below the task as its input.
+Each word after `agent:<type>` must be an option, as in `key=value`.
+`task="<text>"` sets the task, the instruction for the model. The output of
+the previous action or task is added below the task as its input. If an
+action has no task and no input, it fails. A word that is not an option,
+or an unknown option, makes the action fail.
 
-An option value can be in double quotes, so that it can have spaces, as in
-`topic="latest stable Rust release"`. Atama keeps one space between the
-words of a quoted value.
+Put a value in double quotes if it has spaces, as in
+`task="Fix the failing test."`. Atama removes the quotes, and keeps the
+text between them unchanged. To put a double quote in a quoted value,
+write `\"`. To put a backslash in a quoted value, write `\\`.
 
 These options and environment variables set up the model:
 
@@ -129,14 +134,13 @@ these options, in addition to the model options above:
 - `max_results=<n>` sets the most search results to analyse, from 1 to 20.
   The default is 5.
 
-The words that are not options are the prompt: the instruction that tells
-the model how to analyse the results. If there are no such words, the
-prompt is: "Summarize the main facts in the search results about the topic.
+`task=` is the prompt: the instruction that tells the model how to analyse
+the results. If the action has no `task=`, the prompt is: "Summarize the main facts in the search results about the topic.
 Name the URL of the source of each fact."
 
 ```markdown
 - actions:
-  - agent:websearch model=qwen3.5:0.8b max_results=5 topic="latest stable Rust release" List the version, the release date and three notable changes.
+  - agent:websearch model=qwen3.5:0.8b max_results=5 topic="latest stable Rust release" task="List the version, the release date and three notable changes."
 ```
 
 The agent runs these steps:
@@ -151,8 +155,40 @@ The agent runs these steps:
 
 The action fails before it asks the model if the topic is not set,
 `TAVILY_API_KEY` is not set, or the search fails. `topic=` and
-`max_results=` work only with `agent:websearch`. `agent:coder` fails if you
+`max_results=` work only with `agent:websearch`. Another agent fails if you
 give it one of these options.
+
+### The `summarizer` agent
+
+A `summarizer` agent summarizes its input, which is the output of the
+previous action or task. The summary keeps the key information of the
+input. If the input names numbers, quantities, dates, names or concepts
+that are important to its key matter, the summary keeps them. The summary
+is the output of the action. A `summarizer` agent has no tools, so it
+sends one request to the model. It has these options, in addition to the
+model options above:
+
+- `expertise="<text>"` sets the field of the reader, for example
+  `expertise="molecular biology"`. The summary uses the terms and the point
+  of view of this field. The default is `general`.
+- `max_output="<size>"` sets how long the summary can be. The size is a part
+  of the input in percent, as in `60%`, or a number of sentences, words or
+  paragraphs, as in `"3 sentences"`. If you do not set it, the model makes
+  the summary as short as it can without losing key information.
+
+`task=` is the instruction. If the action has no `task=`, the instruction is
+"Summarize the input." For a size in percent, Atama counts the words of the
+input and tells the model how many words it can use, because a model cannot
+measure a percent of a text well.
+
+```markdown
+- actions:
+  - bash cat ./notes.md
+  - agent:summarizer model=qwen3.5:0.8b expertise="software engineering" max_output="3 sentences"
+```
+
+The action fails before it asks the model if the input is empty.
+`expertise=` and `max_output=` work only with `agent:summarizer`.
 
 ### Agent tools
 
@@ -164,6 +200,7 @@ Each type of agent has its own tools:
   "Tavily search" below.
 - `coder` has `bash`, which runs a command in the directory where you start
   Atama.
+- `summarizer` has no tools.
 
 Atama cuts a tool result after 20,000 characters.
 
@@ -172,7 +209,8 @@ writes these blocks to stderr for each agent action:
 
 1. The configuration: the model, the base URL, `max_steps`, and whether an
    API key is set. Atama never writes the key itself. For a `websearch`
-   agent, it also has `topic` and `max_results`.
+   agent, it also has `topic` and `max_results`. For a `summarizer` agent,
+   it also has `expertise` and `max_output`.
 2. For a `websearch` agent, the search. One block has the response body
    from Tavily as pretty JSON, with every field that Tavily sends. If the body
    is not JSON, the block shows it as it is. The next block has the topic,

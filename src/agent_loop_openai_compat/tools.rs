@@ -22,6 +22,7 @@ pub fn default_tools(agent: AgentType) -> Vec<Box<dyn Tool>> {
 /// - `websearch` gets [`FetchUrl`], and also [`TavilySearch`] if `env` has
 ///   the Tavily API key ([`tavily::API_KEY_ENV`]).
 /// - `coder` gets [`Bash`].
+/// - `summarizer` gets no tools, because it only rewrites its input.
 ///
 /// `env` returns the value of an environment variable, or `None` if it is
 /// not set.
@@ -38,6 +39,7 @@ pub fn tools_for(agent: AgentType, env: impl Fn(&str) -> Option<String>) -> Vec<
             tools
         }
         AgentType::Coder => vec![Box::new(Bash)],
+        AgentType::Summarizer => Vec::new(),
     }
 }
 

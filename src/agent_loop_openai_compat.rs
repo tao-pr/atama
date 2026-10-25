@@ -43,31 +43,11 @@ use serde_json::Value;
 use crate::actor::AgentType;
 use crate::tavily::{self, SearchConfig};
 
+pub mod agent_options;
 pub mod openai;
 pub mod tools;
 
-/// Base URL of the chat API if the action and the environment set none.
-pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-/// Most model replies that one run of the loop asks for.
-pub const DEFAULT_MAX_STEPS: u32 = 10;
-/// Environment variable with the base URL of the chat API.
-pub const BASE_URL_ENV: &str = "ATAMA_AGENT_BASE_URL";
-/// Environment variable with the model identifier.
-pub const MODEL_ENV: &str = "ATAMA_AGENT_MODEL";
-/// Environment variable with the API key. Local servers often need none.
-pub const API_KEY_ENV: &str = "ATAMA_AGENT_API_KEY";
-/// Search results that a `websearch` agent analyses if the action sets no
-/// `max_results`.
-pub const DEFAULT_MAX_RESULTS: u32 = 5;
-/// Most search results that a `websearch` agent can ask for. Tavily returns
-/// at most 20.
-pub const MAX_SEARCH_RESULTS: u32 = 20;
-/// Instruction of a `websearch` agent if the action has no prompt words.
-pub const DEFAULT_WEBSEARCH_PROMPT: &str = "Summarize the main facts in the search results \
-     about the topic. Name the URL of the source of each fact.";
-
-/// Options of an agent action. Only these options can have a quoted value.
-const OPTION_KEYS: [&str; 5] = ["base_url", "model", "max_steps", "topic", "max_results"];
+use agent_options::{AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_WEBSEARCH_PROMPT, WebSearchOptions};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,168 +100,6 @@ pub trait ChatClient {
     /// Sends the conversation and the available tools, and returns the
     /// model's next reply.
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String>;
-}
-
-/// The configuration of one run, read from the action's params and the
-/// environment.
-///
-/// A param `model=<id>`, `base_url=<url>` or `max_steps=<n>` sets that
-/// option for every agent type. A `websearch` agent also takes
-/// `topic=<text>` and `max_results=<n>` (see [`WebSearchOptions`]). A value
-/// can be in double quotes, so that it can have spaces, as in
-/// `topic="latest Rust release"`. The other params, joined with spaces, are
-/// the task. If the params do not set `model` or `base_url`, the environment
-/// variables [`MODEL_ENV`] and [`BASE_URL_ENV`] set them. The API key comes
-/// only from [`API_KEY_ENV`], so it is never in the job file or the log.
-pub struct AgentConfig {
-    pub base_url: String,
-    pub model: String,
-    pub api_key: Option<String>,
-    pub max_steps: u32,
-    /// The search options of a `websearch` agent. `None` for other agent
-    /// types.
-    pub websearch: Option<WebSearchOptions>,
-    /// The task. For a `websearch` agent, it is the instruction that tells
-    /// the model how to analyse the search results.
-    pub task: String,
-}
-
-/// The options of a `websearch` agent: what it searches for, and how many
-/// results it analyses.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebSearchOptions {
-    /// What to search for, from `topic=<text>`.
-    pub topic: String,
-    /// Most search results to analyse, from `max_results=<n>`. The default
-    /// is [`DEFAULT_MAX_RESULTS`].
-    pub max_results: u32,
-}
-
-impl WebSearchOptions {
-    /// Reads the options from the values of `topic=` and `max_results=`, if
-    /// the params set them.
-    ///
-    /// Fails if `max_results` is not a number from 1 to
-    /// [`MAX_SEARCH_RESULTS`], or there is no topic.
-    fn from_values(topic: Option<String>, max_results: Option<String>) -> Result<Self, String> {
-        let max_results = match max_results {
-            None => DEFAULT_MAX_RESULTS,
-            Some(value) => value
-                .parse()
-                .ok()
-                .filter(|n| (1..=MAX_SEARCH_RESULTS).contains(n))
-                .ok_or_else(|| {
-                    format!("`max_results={value}` is not a number from 1 to {MAX_SEARCH_RESULTS}")
-                })?,
-        };
-        let topic = topic
-            .ok_or("`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`")?;
-        Ok(WebSearchOptions { topic, max_results })
-    }
-}
-
-impl AgentConfig {
-    /// Reads the configuration of an `agent` action. `env` returns the value
-    /// of an environment variable, or `None` if it is not set.
-    ///
-    /// Fails if an option is empty, set twice or invalid, there is no model,
-    /// a `websearch` agent has no topic, or another agent type gets
-    /// `topic=` or `max_results=`.
-    pub fn from_params(
-        agent: AgentType,
-        params: &[String],
-        env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Self, String> {
-        let mut base_url = None;
-        let mut model = None;
-        let mut max_steps = None;
-        let mut topic = None;
-        let mut max_results = None;
-        let mut task = Vec::new();
-        let params = join_quoted(params)?;
-        for param in &params {
-            // A word without `=`, such as `model`, is part of the task.
-            let (key, value) = param.split_once('=').unwrap_or_default();
-            let option = match key {
-                "base_url" => &mut base_url,
-                "model" => &mut model,
-                "max_steps" => &mut max_steps,
-                "topic" => &mut topic,
-                "max_results" => &mut max_results,
-                _ => {
-                    task.push(param.as_str());
-                    continue;
-                }
-            };
-            if value.is_empty() {
-                return Err(format!("option `{key}` has no value"));
-            }
-            if option.replace(value.to_string()).is_some() {
-                return Err(format!("option `{key}` is set twice"));
-            }
-        }
-
-        let websearch = match agent {
-            AgentType::WebSearch => Some(WebSearchOptions::from_values(topic, max_results)?),
-            AgentType::Coder => {
-                // The search options only control the search of a `websearch`
-                // agent, so another agent fails on them instead of ignoring them.
-                for (key, value) in [("topic", &topic), ("max_results", &max_results)] {
-                    if value.is_some() {
-                        return Err(format!("option `{key}` works only with `agent:websearch`"));
-                    }
-                }
-                None
-            }
-        };
-        let max_steps = match max_steps {
-            None => DEFAULT_MAX_STEPS,
-            Some(value) => value
-                .parse()
-                .ok()
-                .filter(|steps| *steps > 0)
-                .ok_or_else(|| format!("`max_steps={value}` is not a positive number"))?,
-        };
-        let model = model
-            .or_else(|| env(MODEL_ENV))
-            .filter(|model| !model.is_empty())
-            .ok_or_else(|| format!("no model: add `model=<id>` or set `{MODEL_ENV}`"))?;
-        Ok(AgentConfig {
-            base_url: base_url
-                .or_else(|| env(BASE_URL_ENV))
-                .filter(|url| !url.is_empty())
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            model,
-            api_key: env(API_KEY_ENV).filter(|key| !key.is_empty()),
-            max_steps,
-            websearch,
-            task: task.join(" "),
-        })
-    }
-}
-
-impl AgentConfig {
-    /// The configuration for debug output, one `name: value` line each. It
-    /// shows only whether the API key is set, never the key itself. For a
-    /// `websearch` agent, it also shows `topic` and `max_results`.
-    pub fn summary(&self) -> String {
-        let key = if self.api_key.is_some() {
-            "set"
-        } else {
-            "not set"
-        };
-        let mut summary = format!(
-            "model: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
-            self.model, self.base_url, self.max_steps
-        );
-        if let Some(options) = &self.websearch {
-            summary.push_str(&format!(
-                "\ntopic: {}\nmax_results: {}",
-                options.topic, options.max_results
-            ));
-        }
-        summary
-    }
 }
 
 /// Runs one agent of a given type until it finishes its work.
@@ -361,10 +179,12 @@ impl<'a> AgentToolLoop<'a> {
     /// Reads the configuration with [`AgentConfig::from_params`], talks to
     /// the model with an [`openai::OpenAiClient`], and returns the model's
     /// final reply. A `websearch` agent first searches its topic with Tavily
-    /// (see [`AgentToolLoop::search_task`]).
+    /// (see [`AgentToolLoop::search_task`]). A `summarizer` agent adds its
+    /// expertise and length limit to the task (see
+    /// [`agent_options::SummarizerOptions::task`]).
     ///
-    /// Fails if the configuration is invalid, or the search of a
-    /// `websearch` agent fails.
+    /// Fails if the configuration is invalid, the search of a `websearch`
+    /// agent fails, or a `summarizer` agent has no input.
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
@@ -378,9 +198,10 @@ impl<'a> AgentToolLoop<'a> {
             "=== agent:{} configuration ===\n{summary}",
             self.agent
         ));
-        let task = match &config.websearch {
-            Some(options) => self.search_task(options, &config.task, env)?,
-            None => config.task.clone(),
+        let task = match (&config.websearch, &config.summarizer) {
+            (Some(options), _) => self.search_task(options, &config.task, env)?,
+            (_, Some(options)) => options.task(&config.task, input)?,
+            (None, None) => config.task.clone(),
         };
         let mut client =
             openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone());
@@ -450,12 +271,8 @@ impl<'a> AgentToolLoop<'a> {
         task: &str,
         input: &str,
     ) -> Result<String, String> {
-        let prompt = user_prompt(task, input).ok_or_else(|| {
-            format!(
-                "`agent:{}` needs a task in its params or an input",
-                self.agent
-            )
-        })?;
+        let prompt = user_prompt(task, input)
+            .ok_or_else(|| format!("`agent:{}` needs `task=` or an input", self.agent))?;
         let mut messages = vec![
             Message::System(system_prompt(self.agent).to_string()),
             Message::User(prompt),
@@ -584,36 +401,16 @@ fn system_prompt(agent: AgentType) -> &'static str {
              tools to read, change and test code for the task. When you are done, \
              reply with a short summary of the changes, without tool calls."
         }
-    }
-}
-
-/// Joins a quoted option value that the parser split at its spaces, so that
-/// `topic="latest`, `Rust`, `release"` becomes `topic=latest Rust release`.
-/// Only the keys in [`OPTION_KEYS`] can have a quoted value. Other params do
-/// not change.
-///
-/// Fails if a quoted value has no closing quote.
-fn join_quoted(params: &[String]) -> Result<Vec<String>, String> {
-    let mut joined = Vec::new();
-    let mut params = params.iter();
-    while let Some(param) = params.next() {
-        let quoted = param
-            .split_once("=\"")
-            .filter(|(key, _)| OPTION_KEYS.contains(key));
-        let Some((key, rest)) = quoted else {
-            joined.push(param.clone());
-            continue;
-        };
-        let mut value = rest.to_string();
-        while !value.ends_with('"') {
-            let next = params
-                .next()
-                .ok_or_else(|| format!("option `{key}` has no closing quote"))?;
-            value.push(' ');
-            value.push_str(next);
+        AgentType::Summarizer => {
+            "You are a summarizing agent. The user message has an instruction, an \
+             expertise, a length limit for the summary, and the input text. Analyse the \
+             input and find its key information. Then rewrite the input as a summary \
+             that keeps all its key points. Keep the summary informative, concise and \
+             to the point. If the input names numbers, quantities, dates or times, \
+             names or concepts that are important to its key matter, keep them in the \
+             summary. Do not add facts that are not in the input. Use the terms and the \
+             point of view of the expertise. Stay within the length limit. Reply with \
+             the summary only."
         }
-        value.pop();
-        joined.push(format!("{key}={value}"));
     }
-    Ok(joined)
 }

@@ -11,16 +11,15 @@ use std::thread;
 use serde_json::{Value, json};
 
 use atama::AgentToolLoop;
-use atama::actor::{Actor, AgentType};
+use atama::actor::AgentType;
+use atama::agent_loop_openai_compat::agent_options::{
+    DEFAULT_EXPERTISE, DEFAULT_MAX_RESULTS, DEFAULT_SUMMARIZER_PROMPT, DEFAULT_WEBSEARCH_PROMPT,
+};
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
 use atama::agent_loop_openai_compat::tools::{
     Bash, FetchUrl, MAX_RESULT_CHARS, TavilySearch, default_tools, tools_for, truncate,
 };
-use atama::agent_loop_openai_compat::{
-    API_KEY_ENV, AgentConfig, BASE_URL_ENV, ChatClient, DEFAULT_BASE_URL, DEFAULT_MAX_RESULTS,
-    DEFAULT_MAX_STEPS, DEFAULT_WEBSEARCH_PROMPT, MODEL_ENV, Message, Reply, Tool, ToolCall,
-    WebSearchOptions,
-};
+use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
@@ -196,233 +195,6 @@ fn no_env(_: &str) -> Option<String> {
     None
 }
 
-// Configuration
-
-#[test]
-fn reads_options_and_task_from_params() {
-    let config = AgentConfig::from_params(
-        AgentType::Coder,
-        &params(&[
-            "find",
-            "model=m1",
-            "the",
-            "base_url=http://x.test/v1",
-            "max_steps=3",
-            "news",
-        ]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(config.model, "m1");
-    assert_eq!(config.base_url, "http://x.test/v1");
-    assert_eq!(config.max_steps, 3);
-    assert_eq!(config.task, "find the news");
-    assert_eq!(config.api_key, None);
-}
-
-#[test]
-fn keeps_words_that_are_not_options_in_the_task() {
-    let config = AgentConfig::from_params(
-        AgentType::Coder,
-        &params(&["model", "a=b", "model=m", "=x"]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(config.task, "model a=b =x");
-}
-
-#[test]
-fn reads_missing_options_and_the_api_key_from_the_environment() {
-    let env = |name: &str| match name {
-        MODEL_ENV => Some("env-model".to_string()),
-        BASE_URL_ENV => Some("http://env.test/v1".to_string()),
-        API_KEY_ENV => Some("secret".to_string()),
-        _ => None,
-    };
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["task"]), env).unwrap();
-    assert_eq!(config.model, "env-model");
-    assert_eq!(config.base_url, "http://env.test/v1");
-    assert_eq!(config.api_key.as_deref(), Some("secret"));
-    assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
-
-    let config = AgentConfig::from_params(
-        AgentType::Coder,
-        &params(&["model=m", "base_url=http://p.test"]),
-        env,
-    )
-    .unwrap();
-    assert_eq!(config.model, "m");
-    assert_eq!(config.base_url, "http://p.test");
-}
-
-#[test]
-fn uses_defaults_and_ignores_empty_environment_values() {
-    let env = |name: &str| (name != MODEL_ENV).then(String::new);
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), env).unwrap();
-    assert_eq!(config.base_url, DEFAULT_BASE_URL);
-    assert_eq!(config.api_key, None);
-    assert_eq!(config.task, "");
-}
-
-#[test]
-fn rejects_invalid_configuration() {
-    let cases = [
-        (
-            vec!["task"],
-            "no model: add `model=<id>` or set `ATAMA_AGENT_MODEL`",
-        ),
-        (vec!["model="], "option `model` has no value"),
-        (vec!["model=a", "model=b"], "option `model` is set twice"),
-        (
-            vec!["model=a", "max_steps=0"],
-            "`max_steps=0` is not a positive number",
-        ),
-        (
-            vec!["model=a", "max_steps=x"],
-            "`max_steps=x` is not a positive number",
-        ),
-    ];
-    for (input, message) in cases {
-        let err = AgentConfig::from_params(AgentType::Coder, &params(&input), no_env)
-            .err()
-            .expect("configuration should be invalid");
-        assert_eq!(err, message, "{input:?}");
-    }
-    let env = |name: &str| (name == MODEL_ENV).then(String::new);
-    assert!(AgentConfig::from_params(AgentType::Coder, &params(&["task"]), env).is_err());
-}
-
-#[test]
-fn reads_topic_and_max_results_for_websearch() {
-    let config = AgentConfig::from_params(
-        AgentType::WebSearch,
-        &params(&["model=m", "topic=rust", "max_results=20", "list", "it"]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(
-        config.websearch,
-        Some(WebSearchOptions {
-            topic: "rust".into(),
-            max_results: 20
-        })
-    );
-    assert_eq!(config.task, "list it");
-
-    let config = AgentConfig::from_params(
-        AgentType::WebSearch,
-        &params(&["model=m", "topic=rust"]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(
-        config.websearch.map(|options| options.max_results),
-        Some(DEFAULT_MAX_RESULTS)
-    );
-
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), no_env).unwrap();
-    assert_eq!(config.websearch, None);
-}
-
-#[test]
-fn reads_quoted_option_values_with_spaces() {
-    // The parser splits the action at its spaces, so test the whole path.
-    let actor: Actor = r#"agent:websearch model="m 1" topic="latest  stable Rust" max_results="3" List "the" changes"#
-        .parse()
-        .unwrap();
-    let Actor::AgentTool {
-        agent,
-        params: words,
-    } = actor
-    else {
-        panic!("expected an agent action");
-    };
-    let config = AgentConfig::from_params(agent, &words, no_env).unwrap();
-    assert_eq!(config.model, "m 1");
-    // The parser does not keep runs of spaces.
-    assert_eq!(
-        config.websearch,
-        Some(WebSearchOptions {
-            topic: "latest stable Rust".into(),
-            max_results: 3
-        })
-    );
-    // Quotes in the task are part of the task.
-    assert_eq!(config.task, r#"List "the" changes"#);
-
-    let config = AgentConfig::from_params(
-        AgentType::Coder,
-        &params(&["model=m", r#"other="a"#, "b\""]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(config.task, r#"other="a b""#);
-}
-
-#[test]
-fn rejects_invalid_websearch_options() {
-    let cases = [
-        (
-            AgentType::WebSearch,
-            vec!["topic=\"latest", "Rust"],
-            "option `topic` has no closing quote",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=\""],
-            "option `topic` has no closing quote",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=\"\""],
-            "option `topic` has no value",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "topic=b"],
-            "option `topic` is set twice",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=0"],
-            "`max_results=0` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=21"],
-            "`max_results=21` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=x"],
-            "`max_results=x` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["task"],
-            "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
-        ),
-        (
-            AgentType::Coder,
-            vec!["topic=a", "task"],
-            "option `topic` works only with `agent:websearch`",
-        ),
-        (
-            AgentType::Coder,
-            vec!["max_results=3", "task"],
-            "option `max_results` works only with `agent:websearch`",
-        ),
-    ];
-    for (agent, words, message) in cases {
-        let mut words = words;
-        words.insert(0, "model=m");
-        let err = AgentConfig::from_params(agent, &params(&words), no_env)
-            .err()
-            .expect("configuration should be invalid");
-        assert_eq!(err, message, "{agent} {words:?}");
-    }
-}
-
 // Loop
 
 fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
@@ -431,7 +203,11 @@ fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
 
 #[test]
 fn has_the_default_tools_of_its_agent_type() {
-    for agent in [AgentType::WebSearch, AgentType::Coder] {
+    for agent in [
+        AgentType::WebSearch,
+        AgentType::Coder,
+        AgentType::Summarizer,
+    ] {
         let agent_loop = AgentToolLoop::new(agent);
         assert_eq!(agent_loop.agent(), agent);
         assert_eq!(agent_loop.tool_names(), names(&default_tools(agent)));
@@ -454,6 +230,7 @@ fn websearch_gets_tavily_search_only_with_an_api_key() {
             vec!["fetch_url", "tavily_search"],
         ),
         (tools_for(AgentType::Coder, with_key), vec!["bash"]),
+        (tools_for(AgentType::Summarizer, with_key), vec![]),
     ];
     for (tools, expected) in cases {
         assert_eq!(names(&tools), expected);
@@ -514,10 +291,7 @@ fn fails_without_a_task_or_an_input() {
     let err = AgentToolLoop::new(AgentType::WebSearch)
         .run_with(&mut client, "", " \n")
         .unwrap_err();
-    assert_eq!(
-        err,
-        "`agent:websearch` needs a task in its params or an input"
-    );
+    assert_eq!(err, "`agent:websearch` needs `task=` or an input");
     assert!(client.conversations.is_empty());
 }
 
@@ -790,11 +564,8 @@ fn websearch_searches_the_topic_then_the_model_analyses_the_results() {
             &params(&[
                 "model=m",
                 &format!("base_url={url}"),
-                "topic=\"rust",
-                "release\"",
-                "list",
-                "the",
-                "changes",
+                "topic=rust release",
+                "task=list the changes",
             ]),
             "the input",
             &tavily_env,
@@ -891,7 +662,7 @@ fn websearch_fails_before_asking_the_model_without_topic_or_key() {
             vec![
                 "model=m".to_string(),
                 format!("base_url={url}"),
-                "task".into(),
+                "task=t".into(),
             ],
             "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
         ),
@@ -931,7 +702,12 @@ fn run_loop_uses_max_steps_from_the_params() {
     let (url, _requests) = serve(vec![(200, tool_call_response("c1", "unknown", json!({})))]);
     let err = AgentToolLoop::new(AgentType::Coder)
         .run_loop(
-            &params(&["model=m", &format!("base_url={url}"), "max_steps=1", "task"]),
+            &params(&[
+                "model=m",
+                &format!("base_url={url}"),
+                "max_steps=1",
+                "task=t",
+            ]),
             "",
         )
         .unwrap_err();
@@ -1109,7 +885,12 @@ fn debug_writes_the_configuration_without_the_api_key() {
     AgentToolLoop::new(AgentType::Coder)
         .debug(&mut out)
         .run_loop(
-            &params(&["model=m", &format!("base_url={url}"), "max_steps=4", "task"]),
+            &params(&[
+                "model=m",
+                &format!("base_url={url}"),
+                "max_steps=4",
+                "task=t",
+            ]),
             "",
         )
         .unwrap();
@@ -1126,32 +907,52 @@ fn debug_writes_the_configuration_without_the_api_key() {
     );
 }
 
-#[test]
-fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
-    let mut config = AgentConfig {
-        base_url: "http://x.test/v1".into(),
-        model: "m".into(),
-        api_key: Some("secret-key".into()),
-        max_steps: 3,
-        websearch: None,
-        task: "task".into(),
-    };
-    assert_eq!(
-        config.summary(),
-        "model: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
-    );
-    config.api_key = None;
-    assert!(config.summary().ends_with("\napi key: not set"));
+// Summarizer
 
-    config.websearch = Some(WebSearchOptions {
-        topic: "rust".into(),
-        max_results: 4,
-    });
-    assert!(
-        config
-            .summary()
-            .ends_with("\napi key: not set\ntopic: rust\nmax_results: 4"),
-        "{}",
-        config.summary()
+#[test]
+fn summarizer_sends_the_input_without_tools_and_returns_the_summary() {
+    let (url, requests) = serve(vec![(200, text_response("short summary"))]);
+    let output = AgentToolLoop::new(AgentType::Summarizer).run_loop_with_env(
+        &params(&[
+            "model=m",
+            &format!("base_url={url}"),
+            "max_output=1 sentence",
+        ]),
+        "Rust 1.80 came out on 25 July 2024.",
+        &no_env,
     );
+    assert_eq!(output, Ok("short summary".to_string()));
+    let request = request_json(&requests.recv().unwrap());
+    assert_eq!(request.get("tools"), None);
+    let system = request["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.starts_with("You are a summarizing agent."),
+        "{system}"
+    );
+    assert!(
+        system.contains("numbers, quantities, dates or times"),
+        "{system}"
+    );
+    assert_eq!(
+        request["messages"][1]["content"],
+        format!(
+            "{DEFAULT_SUMMARIZER_PROMPT}\n\nExpertise: {DEFAULT_EXPERTISE}\n\
+             Length of the summary: at most 1 sentence\n\n\
+             Input:\nRust 1.80 came out on 25 July 2024."
+        )
+    );
+}
+
+#[test]
+fn summarizer_fails_before_asking_the_model_without_an_input() {
+    // Nothing listens on this port, so a request would fail with another error.
+    let url = closed_url();
+    let err = AgentToolLoop::new(AgentType::Summarizer)
+        .run_loop_with_env(
+            &params(&["model=m", &format!("base_url={url}")]),
+            "",
+            &no_env,
+        )
+        .unwrap_err();
+    assert_eq!(err, "`agent:summarizer` needs an input to summarize");
 }

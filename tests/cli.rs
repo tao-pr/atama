@@ -172,7 +172,7 @@ fn debug_writes_agent_requests_to_stderr() {
     drop(listener);
     let (dir, job) = job_in_temp_dir(
         "debug",
-        &format!("# Job\n## Ask\n- actions: agent:coder model=m base_url={url} find it\n"),
+        &format!("# Job\n## Ask\n- actions: agent:coder model=m base_url={url} task=\"find it\"\n"),
     );
 
     let output = run_atama(&["--debug", &job]);

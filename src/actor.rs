@@ -53,8 +53,9 @@ pub enum Actor {
     /// Runs an agent of the given type.
     AgentTool {
         agent: AgentType,
-        /// Parameters for the agent, in order. Each type of agent will
-        /// define its own parameters.
+        /// Options of the agent, in order, such as `task=Fix the tests`.
+        /// The parser removes the quotes around a value (see
+        /// [`crate::agent_loop_openai_compat::agent_options::AgentConfig`]).
         params: Vec<String>,
     },
     /// Searches the web with the Tavily API.
@@ -88,6 +89,8 @@ pub enum AgentType {
     WebSearch,
     /// Writes code.
     Coder,
+    /// Summarizes its input.
+    Summarizer,
 }
 
 /// How an [`Actor::ApiCall`] authenticates with the API.

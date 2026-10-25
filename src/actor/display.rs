@@ -49,7 +49,7 @@ impl fmt::Display for Actor {
             Actor::AgentTool { agent, params } => {
                 write!(f, "agent:{agent}")?;
                 for param in params {
-                    write!(f, " {param}")?;
+                    write!(f, " {}", quote_param(param))?;
                 }
                 Ok(())
             }
@@ -72,7 +72,25 @@ impl fmt::Display for AgentType {
         f.write_str(match self {
             AgentType::WebSearch => "websearch",
             AgentType::Coder => "coder",
+            AgentType::Summarizer => "summarizer",
         })
+    }
+}
+
+/// Puts the value of an agent param in double quotes if it has whitespace
+/// or a quote, so that the parser reads it back as one param:
+/// `task=Fix the tests` becomes `task="Fix the tests"`. A param without a
+/// key is quoted whole.
+fn quote_param(param: &str) -> String {
+    if !param.contains(|c: char| c.is_whitespace() || c == '"') && !param.is_empty() {
+        return param.to_string();
+    }
+    let escape = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+    match param.split_once('=') {
+        Some((key, value)) if !key.contains(|c: char| c.is_whitespace() || c == '"') => {
+            format!("{key}=\"{}\"", escape(value))
+        }
+        _ => format!("\"{}\"", escape(param)),
     }
 }
 

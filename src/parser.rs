@@ -301,9 +301,12 @@ impl FromStr for Actor {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut tokens = s.split_whitespace();
-        let name = tokens.next().ok_or("action is empty")?;
-        let params: Vec<&str> = tokens.collect();
+        let s = s.trim();
+        let (name, rest) = s.split_once(char::is_whitespace).unwrap_or((s, ""));
+        if name.is_empty() {
+            return Err("action is empty".to_string());
+        }
+        let params: Vec<&str> = rest.split_whitespace().collect();
         match name {
             "bash" => {
                 let (cmd, params) = params
@@ -361,7 +364,7 @@ impl FromStr for Actor {
             other => match other.strip_prefix("agent:") {
                 Some(agent) => Ok(Actor::AgentTool {
                     agent: agent.parse()?,
-                    params: params.iter().map(|param| param.to_string()).collect(),
+                    params: split_quoted(rest)?,
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
@@ -370,6 +373,54 @@ impl FromStr for Actor {
             },
         }
     }
+}
+
+/// Splits the params of an agent action at whitespace, but not inside
+/// double quotes, and removes the quotes. `task="Fix the tests"` becomes
+/// `task=Fix the tests`. Inside quotes, `\"` is a quote and `\\` is a
+/// backslash. Other text, and the spaces inside quotes, do not change.
+///
+/// Fails if a quote has no closing quote.
+fn split_quoted(text: &str) -> Result<Vec<String>, String> {
+    let mut params = Vec::new();
+    let mut param = String::new();
+    // A param can be empty only if it has quotes, as in `""`.
+    let mut started = false;
+    let mut quoted = false;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                quoted = !quoted;
+                started = true;
+            }
+            '\\' if quoted => match chars.next() {
+                Some(next @ ('"' | '\\')) => param.push(next),
+                Some(next) => {
+                    param.push('\\');
+                    param.push(next);
+                }
+                None => param.push('\\'),
+            },
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    params.push(std::mem::take(&mut param));
+                    started = false;
+                }
+            }
+            c => {
+                param.push(c);
+                started = true;
+            }
+        }
+    }
+    if quoted {
+        return Err(format!("a quote in `{}` has no closing quote", text.trim()));
+    }
+    if started {
+        params.push(param);
+    }
+    Ok(params)
 }
 
 /// Parses `key=value` tokens. Each key must be one of `keys` and can occur
@@ -440,8 +491,10 @@ impl FromStr for AgentType {
         match s {
             "websearch" => Ok(AgentType::WebSearch),
             "coder" => Ok(AgentType::Coder),
+            "summarizer" => Ok(AgentType::Summarizer),
             _ => Err(format!(
-                "unknown agent type `{s}`, expected `agent:websearch` or `agent:coder`"
+                "unknown agent type `{s}`, expected `agent:websearch`, `agent:coder` \
+                 or `agent:summarizer`"
             )),
         }
     }

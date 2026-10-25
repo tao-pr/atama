@@ -14,8 +14,10 @@ fn writes_actions_back_as_statements() {
         "mock",
         "mock fail",
         "agent:websearch",
-        "agent:websearch rust release notes",
-        "agent:coder fix.md",
+        "agent:websearch topic=rust task=\"list the  release notes\"",
+        "agent:coder task=fix.md",
+        "agent:summarizer expertise=law max_output=\"3 sentences\"",
+        r#"agent:coder task="say \"hi\" \\ a\\b" "" "a b" a=b\c"#,
         "tavily_search",
         "tavily_search topic=news rust release notes",
     ];
