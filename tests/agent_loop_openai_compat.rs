@@ -11,14 +11,15 @@ use std::thread;
 use serde_json::{Value, json};
 
 use atama::AgentToolLoop;
-use atama::actor::AgentType;
+use atama::actor::{Actor, AgentType};
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
 use atama::agent_loop_openai_compat::tools::{
     Bash, FetchUrl, MAX_RESULT_CHARS, TavilySearch, default_tools, tools_for, truncate,
 };
 use atama::agent_loop_openai_compat::{
-    API_KEY_ENV, AgentConfig, BASE_URL_ENV, ChatClient, DEFAULT_BASE_URL, DEFAULT_MAX_STEPS,
-    MODEL_ENV, Message, Reply, Tool, ToolCall,
+    API_KEY_ENV, AgentConfig, BASE_URL_ENV, ChatClient, DEFAULT_BASE_URL, DEFAULT_MAX_RESULTS,
+    DEFAULT_MAX_STEPS, DEFAULT_WEBSEARCH_PROMPT, MODEL_ENV, Message, Reply, Tool, ToolCall,
+    WebSearchOptions,
 };
 
 /// Starts a local HTTP server that answers one request per response, in order.
@@ -200,6 +201,7 @@ fn no_env(_: &str) -> Option<String> {
 #[test]
 fn reads_options_and_task_from_params() {
     let config = AgentConfig::from_params(
+        AgentType::Coder,
         &params(&[
             "find",
             "model=m1",
@@ -220,8 +222,12 @@ fn reads_options_and_task_from_params() {
 
 #[test]
 fn keeps_words_that_are_not_options_in_the_task() {
-    let config =
-        AgentConfig::from_params(&params(&["model", "a=b", "model=m", "=x"]), no_env).unwrap();
+    let config = AgentConfig::from_params(
+        AgentType::Coder,
+        &params(&["model", "a=b", "model=m", "=x"]),
+        no_env,
+    )
+    .unwrap();
     assert_eq!(config.task, "model a=b =x");
 }
 
@@ -233,14 +239,18 @@ fn reads_missing_options_and_the_api_key_from_the_environment() {
         API_KEY_ENV => Some("secret".to_string()),
         _ => None,
     };
-    let config = AgentConfig::from_params(&params(&["task"]), env).unwrap();
+    let config = AgentConfig::from_params(AgentType::Coder, &params(&["task"]), env).unwrap();
     assert_eq!(config.model, "env-model");
     assert_eq!(config.base_url, "http://env.test/v1");
     assert_eq!(config.api_key.as_deref(), Some("secret"));
     assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
 
-    let config =
-        AgentConfig::from_params(&params(&["model=m", "base_url=http://p.test"]), env).unwrap();
+    let config = AgentConfig::from_params(
+        AgentType::Coder,
+        &params(&["model=m", "base_url=http://p.test"]),
+        env,
+    )
+    .unwrap();
     assert_eq!(config.model, "m");
     assert_eq!(config.base_url, "http://p.test");
 }
@@ -248,7 +258,7 @@ fn reads_missing_options_and_the_api_key_from_the_environment() {
 #[test]
 fn uses_defaults_and_ignores_empty_environment_values() {
     let env = |name: &str| (name != MODEL_ENV).then(String::new);
-    let config = AgentConfig::from_params(&params(&["model=m"]), env).unwrap();
+    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), env).unwrap();
     assert_eq!(config.base_url, DEFAULT_BASE_URL);
     assert_eq!(config.api_key, None);
     assert_eq!(config.task, "");
@@ -273,13 +283,144 @@ fn rejects_invalid_configuration() {
         ),
     ];
     for (input, message) in cases {
-        let err = AgentConfig::from_params(&params(&input), no_env)
+        let err = AgentConfig::from_params(AgentType::Coder, &params(&input), no_env)
             .err()
             .expect("configuration should be invalid");
         assert_eq!(err, message, "{input:?}");
     }
     let env = |name: &str| (name == MODEL_ENV).then(String::new);
-    assert!(AgentConfig::from_params(&params(&["task"]), env).is_err());
+    assert!(AgentConfig::from_params(AgentType::Coder, &params(&["task"]), env).is_err());
+}
+
+#[test]
+fn reads_topic_and_max_results_for_websearch() {
+    let config = AgentConfig::from_params(
+        AgentType::WebSearch,
+        &params(&["model=m", "topic=rust", "max_results=20", "list", "it"]),
+        no_env,
+    )
+    .unwrap();
+    assert_eq!(
+        config.websearch,
+        Some(WebSearchOptions {
+            topic: "rust".into(),
+            max_results: 20
+        })
+    );
+    assert_eq!(config.task, "list it");
+
+    let config = AgentConfig::from_params(
+        AgentType::WebSearch,
+        &params(&["model=m", "topic=rust"]),
+        no_env,
+    )
+    .unwrap();
+    assert_eq!(
+        config.websearch.map(|options| options.max_results),
+        Some(DEFAULT_MAX_RESULTS)
+    );
+
+    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), no_env).unwrap();
+    assert_eq!(config.websearch, None);
+}
+
+#[test]
+fn reads_quoted_option_values_with_spaces() {
+    // The parser splits the action at its spaces, so test the whole path.
+    let actor: Actor = r#"agent:websearch model="m 1" topic="latest  stable Rust" max_results="3" List "the" changes"#
+        .parse()
+        .unwrap();
+    let Actor::AgentTool {
+        agent,
+        params: words,
+    } = actor
+    else {
+        panic!("expected an agent action");
+    };
+    let config = AgentConfig::from_params(agent, &words, no_env).unwrap();
+    assert_eq!(config.model, "m 1");
+    // The parser does not keep runs of spaces.
+    assert_eq!(
+        config.websearch,
+        Some(WebSearchOptions {
+            topic: "latest stable Rust".into(),
+            max_results: 3
+        })
+    );
+    // Quotes in the task are part of the task.
+    assert_eq!(config.task, r#"List "the" changes"#);
+
+    let config = AgentConfig::from_params(
+        AgentType::Coder,
+        &params(&["model=m", r#"other="a"#, "b\""]),
+        no_env,
+    )
+    .unwrap();
+    assert_eq!(config.task, r#"other="a b""#);
+}
+
+#[test]
+fn rejects_invalid_websearch_options() {
+    let cases = [
+        (
+            AgentType::WebSearch,
+            vec!["topic=\"latest", "Rust"],
+            "option `topic` has no closing quote",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=\""],
+            "option `topic` has no closing quote",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=\"\""],
+            "option `topic` has no value",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=a", "topic=b"],
+            "option `topic` is set twice",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=a", "max_results=0"],
+            "`max_results=0` is not a number from 1 to 20",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=a", "max_results=21"],
+            "`max_results=21` is not a number from 1 to 20",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["topic=a", "max_results=x"],
+            "`max_results=x` is not a number from 1 to 20",
+        ),
+        (
+            AgentType::WebSearch,
+            vec!["task"],
+            "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
+        ),
+        (
+            AgentType::Coder,
+            vec!["topic=a", "task"],
+            "option `topic` works only with `agent:websearch`",
+        ),
+        (
+            AgentType::Coder,
+            vec!["max_results=3", "task"],
+            "option `max_results` works only with `agent:websearch`",
+        ),
+    ];
+    for (agent, words, message) in cases {
+        let mut words = words;
+        words.insert(0, "model=m");
+        let err = AgentConfig::from_params(agent, &params(&words), no_env)
+            .err()
+            .expect("configuration should be invalid");
+        assert_eq!(err, message, "{agent} {words:?}");
+    }
 }
 
 // Loop
@@ -616,9 +757,21 @@ fn client_fails_on_bad_responses() {
     );
 }
 
+/// An environment that has only the Tavily API key `key-1`.
+fn tavily_env(name: &str) -> Option<String> {
+    (name == "TAVILY_API_KEY").then(|| "key-1".to_string())
+}
+
+/// A Tavily response with one result.
+fn search_response() -> String {
+    json!({"results": [{"title": "Rust 2.0", "url": "https://r.test", "content": "Released."}]})
+        .to_string()
+}
+
 #[test]
-fn run_loop_talks_to_the_model_and_runs_its_tool_calls() {
+fn websearch_searches_the_topic_then_the_model_analyses_the_results() {
     let (page_url, pages) = serve(vec![(200, "page text".to_string())]);
+    let (search_url, searches) = serve(vec![(200, search_response())]);
     let (url, requests) = serve(vec![
         (
             200,
@@ -631,26 +784,145 @@ fn run_loop_talks_to_the_model_and_runs_its_tool_calls() {
         (200, text_response("summary")),
     ]);
 
-    let output = AgentToolLoop::new(AgentType::WebSearch).run_loop(
-        &params(&[
-            "model=m",
-            &format!("base_url={url}"),
-            "summarize",
-            "the",
-            "news",
-        ]),
-        "",
-    );
+    let output = AgentToolLoop::new(AgentType::WebSearch)
+        .search_base_url(&search_url)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                &format!("base_url={url}"),
+                "topic=\"rust",
+                "release\"",
+                "list",
+                "the",
+                "changes",
+            ]),
+            "the input",
+            &tavily_env,
+        );
 
     assert_eq!(output, Ok("summary".to_string()));
+    let search = searches.recv().unwrap();
+    assert!(search.starts_with("POST /search "), "{search}");
+    assert!(search.contains("authorization: Bearer key-1"), "{search}");
+    assert_eq!(
+        request_json(&search),
+        json!({"query": "rust release", "max_results": DEFAULT_MAX_RESULTS})
+    );
     assert!(pages.recv().unwrap().starts_with("GET /news "));
     let first = request_json(&requests.recv().unwrap());
     assert_eq!(first["model"], "m");
-    assert_eq!(first["messages"][1]["content"], "summarize the news");
+    assert_eq!(
+        first["messages"][1]["content"],
+        "list the changes\n\nTopic: rust release\n\nSearch results:\n\
+         1. Rust 2.0\nhttps://r.test\nReleased.\n\nInput:\nthe input"
+    );
     let second = request_json(&requests.recv().unwrap());
     assert_eq!(
         second["messages"][3],
         json!({"role": "tool", "tool_call_id": "c1", "content": "page text"})
+    );
+}
+
+#[test]
+fn websearch_uses_max_results_and_the_default_prompt() {
+    let (search_url, searches) = serve(vec![(200, search_response())]);
+    let (url, requests) = serve(vec![(200, text_response("summary"))]);
+    let mut out = Vec::new();
+
+    AgentToolLoop::new(AgentType::WebSearch)
+        .search_base_url(&search_url)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                &format!("base_url={url}"),
+                "topic=rust",
+                "max_results=2",
+            ]),
+            "",
+            &tavily_env,
+        )
+        .unwrap();
+
+    assert_eq!(request_json(&searches.recv().unwrap())["max_results"], 2);
+    let first = request_json(&requests.recv().unwrap());
+    let prompt = first["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        prompt.starts_with(&format!("{DEFAULT_WEBSEARCH_PROMPT}\n\nTopic: rust\n")),
+        "{prompt}"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("\ntopic: rust\nmax_results: 2\n"), "{out}");
+    let pretty =
+        serde_json::to_string_pretty(&serde_json::from_str::<Value>(&search_response()).unwrap())
+            .unwrap();
+    let response = format!("=== agent:websearch search response ===\n{pretty}\n");
+    let results =
+        "=== agent:websearch search: rust (max_results 2) ===\n1. Rust 2.0\nhttps://r.test\n";
+    let response_at = out.find(&response).expect(&out);
+    let results_at = out.find(results).expect(&out);
+    assert!(response_at < results_at, "{out}");
+}
+
+#[test]
+fn websearch_debug_writes_a_search_response_that_is_not_json_as_it_is() {
+    let (search_url, _searches) = serve(vec![(200, "<html>busy</html>".to_string())]);
+    let mut out = Vec::new();
+    let err = AgentToolLoop::new(AgentType::WebSearch)
+        .search_base_url(&search_url)
+        .debug(&mut out)
+        .run_loop_with_env(&params(&["model=m", "topic=rust"]), "", &tavily_env)
+        .unwrap_err();
+
+    assert!(err.starts_with("Tavily response is not JSON"), "{err}");
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:websearch search response ===\n<html>busy</html>\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn websearch_fails_before_asking_the_model_without_topic_or_key() {
+    // Nothing listens on these ports, so a request would fail with another error.
+    let url = closed_url();
+    let cases = [
+        (
+            vec![
+                "model=m".to_string(),
+                format!("base_url={url}"),
+                "task".into(),
+            ],
+            "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
+        ),
+        (
+            vec![
+                "model=m".to_string(),
+                format!("base_url={url}"),
+                "topic=rust".into(),
+            ],
+            "no Tavily API key: set `TAVILY_API_KEY`",
+        ),
+    ];
+    for (params, message) in cases {
+        let err = AgentToolLoop::new(AgentType::WebSearch)
+            .search_base_url(&url)
+            .run_loop_with_env(&params, "", &no_env)
+            .unwrap_err();
+        assert_eq!(err, message);
+    }
+}
+
+#[test]
+fn websearch_fails_when_the_search_fails() {
+    let (search_url, _searches) = serve(vec![(401, "bad key".to_string())]);
+    let err = AgentToolLoop::new(AgentType::WebSearch)
+        .search_base_url(&search_url)
+        .run_loop_with_env(&params(&["model=m", "topic=rust"]), "", &tavily_env)
+        .unwrap_err();
+    assert_eq!(
+        err,
+        format!("`{search_url}/search` responded with 401 Unauthorized: bad key")
     );
 }
 
@@ -861,6 +1133,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         model: "m".into(),
         api_key: Some("secret-key".into()),
         max_steps: 3,
+        websearch: None,
         task: "task".into(),
     };
     assert_eq!(
@@ -869,4 +1142,16 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
     );
     config.api_key = None;
     assert!(config.summary().ends_with("\napi key: not set"));
+
+    config.websearch = Some(WebSearchOptions {
+        topic: "rust".into(),
+        max_results: 4,
+    });
+    assert!(
+        config
+            .summary()
+            .ends_with("\napi key: not set\ntopic: rust\nmax_results: 4"),
+        "{}",
+        config.summary()
+    );
 }

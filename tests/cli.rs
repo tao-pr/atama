@@ -11,8 +11,8 @@ use atama::TIMESTAMP_FORMAT;
 use chrono::NaiveDateTime;
 
 /// Runs the `atama` binary with the given arguments and returns its output.
-/// It removes `TAVILY_API_KEY`, so the tools of a `websearch` agent do not
-/// depend on the shell that runs the tests.
+/// It removes `TAVILY_API_KEY`, so that no test can use the real Tavily API
+/// key of the shell that runs the tests.
 fn run_atama(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_atama"))
         .args(args)
@@ -172,7 +172,7 @@ fn debug_writes_agent_requests_to_stderr() {
     drop(listener);
     let (dir, job) = job_in_temp_dir(
         "debug",
-        &format!("# Job\n## Ask\n- actions: agent:websearch model=m base_url={url} find it\n"),
+        &format!("# Job\n## Ask\n- actions: agent:coder model=m base_url={url} find it\n"),
     );
 
     let output = run_atama(&["--debug", &job]);
@@ -180,14 +180,12 @@ fn debug_writes_agent_requests_to_stderr() {
     assert!(!output.status.success());
     assert!(
         stderr.contains(&format!(
-            "=== agent:websearch configuration ===\nmodel: m\nbase_url: {url}\n"
+            "=== agent:coder configuration ===\nmodel: m\nbase_url: {url}\n"
         )),
         "stderr was: {stderr}"
     );
     assert!(
-        stderr.contains(
-            "=== agent:websearch step 1: request (2 messages, 2 new, tools: fetch_url) ==="
-        ),
+        stderr.contains("=== agent:coder step 1: request (2 messages, 2 new, tools: bash) ==="),
         "stderr was: {stderr}"
     );
     assert!(

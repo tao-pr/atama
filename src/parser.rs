@@ -357,6 +357,7 @@ impl FromStr for Actor {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
             }),
+            // Prefixed action, e.g. "agent:{}"
             other => match other.strip_prefix("agent:") {
                 Some(agent) => Ok(Actor::AgentTool {
                     agent: agent.parse()?,

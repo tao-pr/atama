@@ -906,7 +906,7 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
         r#"{"choices":[{"message":{"role":"assistant","content":"done"}}]}"#,
     )]);
     let actor = Actor::AgentTool {
-        agent: AgentType::WebSearch,
+        agent: AgentType::Coder,
         params: vec![
             "model=test-model".into(),
             format!("base_url={url}"),
@@ -927,17 +927,14 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
 fn act_with_debug_writes_agent_debug_output_only() {
     let url = closed_url();
     let actor = Actor::AgentTool {
-        agent: AgentType::WebSearch,
+        agent: AgentType::Coder,
         params: vec!["model=m".into(), format!("base_url={url}"), "task".into()],
     };
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
     let out = String::from_utf8(out).unwrap();
-    assert!(
-        out.contains("=== agent:websearch configuration ==="),
-        "{out}"
-    );
-    assert!(out.contains("=== agent:websearch step 1: request"), "{out}");
+    assert!(out.contains("=== agent:coder configuration ==="), "{out}");
+    assert!(out.contains("=== agent:coder step 1: request"), "{out}");
 
     let mut out = Vec::new();
     assert_eq!(

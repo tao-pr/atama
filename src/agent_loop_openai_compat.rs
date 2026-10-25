@@ -41,6 +41,7 @@ use std::io::Write;
 use serde_json::Value;
 
 use crate::actor::AgentType;
+use crate::tavily::{self, SearchConfig};
 
 pub mod openai;
 pub mod tools;
@@ -55,6 +56,18 @@ pub const BASE_URL_ENV: &str = "ATAMA_AGENT_BASE_URL";
 pub const MODEL_ENV: &str = "ATAMA_AGENT_MODEL";
 /// Environment variable with the API key. Local servers often need none.
 pub const API_KEY_ENV: &str = "ATAMA_AGENT_API_KEY";
+/// Search results that a `websearch` agent analyses if the action sets no
+/// `max_results`.
+pub const DEFAULT_MAX_RESULTS: u32 = 5;
+/// Most search results that a `websearch` agent can ask for. Tavily returns
+/// at most 20.
+pub const MAX_SEARCH_RESULTS: u32 = 20;
+/// Instruction of a `websearch` agent if the action has no prompt words.
+pub const DEFAULT_WEBSEARCH_PROMPT: &str = "Summarize the main facts in the search results \
+     about the topic. Name the URL of the source of each fact.";
+
+/// Options of an agent action. Only these options can have a quoted value.
+const OPTION_KEYS: [&str; 5] = ["base_url", "model", "max_steps", "topic", "max_results"];
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,36 +126,88 @@ pub trait ChatClient {
 /// environment.
 ///
 /// A param `model=<id>`, `base_url=<url>` or `max_steps=<n>` sets that
-/// option. The other params, joined with spaces, are the task. If the params
-/// do not set `model` or `base_url`, the environment variables [`MODEL_ENV`]
-/// and [`BASE_URL_ENV`] set them. The API key comes only from
-/// [`API_KEY_ENV`], so it is never in the job file or the log.
+/// option for every agent type. A `websearch` agent also takes
+/// `topic=<text>` and `max_results=<n>` (see [`WebSearchOptions`]). A value
+/// can be in double quotes, so that it can have spaces, as in
+/// `topic="latest Rust release"`. The other params, joined with spaces, are
+/// the task. If the params do not set `model` or `base_url`, the environment
+/// variables [`MODEL_ENV`] and [`BASE_URL_ENV`] set them. The API key comes
+/// only from [`API_KEY_ENV`], so it is never in the job file or the log.
 pub struct AgentConfig {
     pub base_url: String,
     pub model: String,
     pub api_key: Option<String>,
     pub max_steps: u32,
+    /// The search options of a `websearch` agent. `None` for other agent
+    /// types.
+    pub websearch: Option<WebSearchOptions>,
+    /// The task. For a `websearch` agent, it is the instruction that tells
+    /// the model how to analyse the search results.
     pub task: String,
 }
 
+/// The options of a `websearch` agent: what it searches for, and how many
+/// results it analyses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSearchOptions {
+    /// What to search for, from `topic=<text>`.
+    pub topic: String,
+    /// Most search results to analyse, from `max_results=<n>`. The default
+    /// is [`DEFAULT_MAX_RESULTS`].
+    pub max_results: u32,
+}
+
+impl WebSearchOptions {
+    /// Reads the options from the values of `topic=` and `max_results=`, if
+    /// the params set them.
+    ///
+    /// Fails if `max_results` is not a number from 1 to
+    /// [`MAX_SEARCH_RESULTS`], or there is no topic.
+    fn from_values(topic: Option<String>, max_results: Option<String>) -> Result<Self, String> {
+        let max_results = match max_results {
+            None => DEFAULT_MAX_RESULTS,
+            Some(value) => value
+                .parse()
+                .ok()
+                .filter(|n| (1..=MAX_SEARCH_RESULTS).contains(n))
+                .ok_or_else(|| {
+                    format!("`max_results={value}` is not a number from 1 to {MAX_SEARCH_RESULTS}")
+                })?,
+        };
+        let topic = topic
+            .ok_or("`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`")?;
+        Ok(WebSearchOptions { topic, max_results })
+    }
+}
+
 impl AgentConfig {
-    /// Reads the configuration. `env` returns the value of an environment
-    /// variable, or `None` if it is not set.
+    /// Reads the configuration of an `agent` action. `env` returns the value
+    /// of an environment variable, or `None` if it is not set.
+    ///
+    /// Fails if an option is empty, set twice or invalid, there is no model,
+    /// a `websearch` agent has no topic, or another agent type gets
+    /// `topic=` or `max_results=`.
     pub fn from_params(
+        agent: AgentType,
         params: &[String],
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
         let mut base_url = None;
         let mut model = None;
         let mut max_steps = None;
+        let mut topic = None;
+        let mut max_results = None;
         let mut task = Vec::new();
-        for param in params {
+        let params = join_quoted(params)?;
+        for param in &params {
             // A word without `=`, such as `model`, is part of the task.
             let (key, value) = param.split_once('=').unwrap_or_default();
             let option = match key {
                 "base_url" => &mut base_url,
                 "model" => &mut model,
                 "max_steps" => &mut max_steps,
+                "topic" => &mut topic,
+                "max_results" => &mut max_results,
                 _ => {
                     task.push(param.as_str());
                     continue;
@@ -156,6 +221,19 @@ impl AgentConfig {
             }
         }
 
+        let websearch = match agent {
+            AgentType::WebSearch => Some(WebSearchOptions::from_values(topic, max_results)?),
+            AgentType::Coder => {
+                // The search options only control the search of a `websearch`
+                // agent, so another agent fails on them instead of ignoring them.
+                for (key, value) in [("topic", &topic), ("max_results", &max_results)] {
+                    if value.is_some() {
+                        return Err(format!("option `{key}` works only with `agent:websearch`"));
+                    }
+                }
+                None
+            }
+        };
         let max_steps = match max_steps {
             None => DEFAULT_MAX_STEPS,
             Some(value) => value
@@ -176,6 +254,7 @@ impl AgentConfig {
             model,
             api_key: env(API_KEY_ENV).filter(|key| !key.is_empty()),
             max_steps,
+            websearch,
             task: task.join(" "),
         })
     }
@@ -183,17 +262,25 @@ impl AgentConfig {
 
 impl AgentConfig {
     /// The configuration for debug output, one `name: value` line each. It
-    /// shows only whether the API key is set, never the key itself.
+    /// shows only whether the API key is set, never the key itself. For a
+    /// `websearch` agent, it also shows `topic` and `max_results`.
     pub fn summary(&self) -> String {
         let key = if self.api_key.is_some() {
             "set"
         } else {
             "not set"
         };
-        format!(
+        let mut summary = format!(
             "model: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
             self.model, self.base_url, self.max_steps
-        )
+        );
+        if let Some(options) = &self.websearch {
+            summary.push_str(&format!(
+                "\ntopic: {}\nmax_results: {}",
+                options.topic, options.max_results
+            ));
+        }
+        summary
     }
 }
 
@@ -202,6 +289,8 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// Base URL of the Tavily API for the search of a `websearch` agent.
+    search_base_url: String,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
 }
@@ -214,14 +303,17 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            search_base_url: tavily::DEFAULT_BASE_URL.to_string(),
             debug: None,
         }
     }
 
-    /// Writes debug output to `out`: the configuration, and for each step
-    /// the new messages of the request, the model's reply, and each tool
-    /// call with its arguments and result. Messages are pretty JSON in the
-    /// chat completions format. The API key is never written.
+    /// Writes debug output to `out`: the configuration, for a `websearch`
+    /// agent the Tavily response body as pretty JSON and the results that
+    /// the model gets, and for each step the new messages of the request,
+    /// the model's reply, and each tool call with its arguments and result.
+    /// Messages are pretty JSON in the chat completions format. The API key
+    /// is never written.
     pub fn debug(mut self, out: impl Write + 'a) -> Self {
         self.debug = Some(Box::new(out));
         self
@@ -239,6 +331,13 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets the base URL of the Tavily API for the search of a `websearch`
+    /// agent. The default is [`tavily::DEFAULT_BASE_URL`].
+    pub fn search_base_url(mut self, url: &str) -> Self {
+        self.search_base_url = url.to_string();
+        self
+    }
+
     /// The type of agent that this loop runs.
     pub fn agent(&self) -> AgentType {
         self.agent
@@ -250,20 +349,88 @@ impl<'a> AgentToolLoop<'a> {
     }
 
     /// Runs the agent with `params` from the action statement and `input`,
-    /// the output of the previous action or task. Reads the configuration
-    /// with [`AgentConfig::from_params`], talks to the model with an
-    /// [`openai::OpenAiClient`], and returns the model's final reply.
+    /// the output of the previous action or task, with the environment of
+    /// the process (see [`AgentToolLoop::run_loop_with_env`]).
     pub fn run_loop(&mut self, params: &[String], input: &str) -> Result<String, String> {
-        let config = AgentConfig::from_params(params, |name| std::env::var(name).ok())?;
+        self.run_loop_with_env(params, input, &|name| std::env::var(name).ok())
+    }
+
+    /// Runs the agent like [`AgentToolLoop::run_loop`]. `env` returns the
+    /// value of an environment variable, or `None` if it is not set.
+    ///
+    /// Reads the configuration with [`AgentConfig::from_params`], talks to
+    /// the model with an [`openai::OpenAiClient`], and returns the model's
+    /// final reply. A `websearch` agent first searches its topic with Tavily
+    /// (see [`AgentToolLoop::search_task`]).
+    ///
+    /// Fails if the configuration is invalid, or the search of a
+    /// `websearch` agent fails.
+    pub fn run_loop_with_env(
+        &mut self,
+        params: &[String],
+        input: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<String, String> {
+        let config = AgentConfig::from_params(self.agent, params, env)?;
         self.max_steps = config.max_steps;
         let summary = config.summary();
         self.write_debug(format!(
             "=== agent:{} configuration ===\n{summary}",
             self.agent
         ));
+        let task = match &config.websearch {
+            Some(options) => self.search_task(options, &config.task, env)?,
+            None => config.task.clone(),
+        };
         let mut client =
             openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone());
-        self.run_with(&mut client, &config.task, input)
+        self.run_with(&mut client, &task, input)
+    }
+
+    /// Searches the topic of a `websearch` agent with Tavily, and returns
+    /// the task for the model: the instruction, the topic and the results.
+    ///
+    /// The search asks for `options.max_results` results. The instruction is
+    /// `prompt`, or [`DEFAULT_WEBSEARCH_PROMPT`] if it is empty.
+    ///
+    /// Fails if `env` has no Tavily API key, or the search fails.
+    pub fn search_task(
+        &mut self,
+        options: &WebSearchOptions,
+        prompt: &str,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<String, String> {
+        let WebSearchOptions { topic, max_results } = options;
+        let search = SearchConfig {
+            base_url: self.search_base_url.clone(),
+            api_key: tavily::api_key(env)?,
+            query: topic.clone(),
+            max_results: Some(*max_results),
+            search_depth: None,
+            topic: None,
+            include_answer: None,
+        };
+        let body = search.search()?;
+        if self.debug.is_some() {
+            self.write_debug(format!(
+                "=== agent:{} search response ===\n{}",
+                self.agent,
+                pretty_json(&body)
+            ));
+        }
+        let results = tools::truncate(tavily::format_results(&body)?);
+        self.write_debug(format!(
+            "=== agent:{} search: {topic} (max_results {max_results}) ===\n{results}",
+            self.agent
+        ));
+        let prompt = if prompt.is_empty() {
+            DEFAULT_WEBSEARCH_PROMPT
+        } else {
+            prompt
+        };
+        Ok(format!(
+            "{prompt}\n\nTopic: {topic}\n\nSearch results:\n{results}"
+        ))
     }
 
     /// Runs the loop with `client`.
@@ -336,7 +503,7 @@ impl<'a> AgentToolLoop<'a> {
                         index + 1,
                         call.name,
                         call.id,
-                        pretty_arguments(&call.arguments),
+                        pretty_json(&call.arguments),
                     ));
                 }
                 let content = result.unwrap_or_else(|err| format!("error: {err}"));
@@ -383,11 +550,12 @@ fn pretty(messages: &[Message]) -> String {
     serde_json::to_string_pretty(&json).expect("JSON values always serialize")
 }
 
-/// Tool call arguments as pretty JSON, or as they are if they are not JSON.
-fn pretty_arguments(arguments: &str) -> String {
-    match serde_json::from_str::<Value>(arguments) {
+/// JSON text, such as tool call arguments, as pretty JSON. Text that is not
+/// JSON stays as it is.
+fn pretty_json(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
         Ok(json) => serde_json::to_string_pretty(&json).expect("JSON values always serialize"),
-        Err(_) => arguments.to_string(),
+        Err(_) => text.to_string(),
     }
 }
 
@@ -405,9 +573,11 @@ fn user_prompt(task: &str, input: &str) -> Option<String> {
 fn system_prompt(agent: AgentType) -> &'static str {
     match agent {
         AgentType::WebSearch => {
-            "You are a web research agent. Use the tools to find and read web pages \
-             for the task. When you are done, reply with the answer only, without \
-             tool calls."
+            "You are a web research agent. The user message has an instruction, a \
+             topic, and web search results for the topic. Analyse the results as the \
+             instruction says. Use the tools only if you need more facts, for example \
+             to read a result in full. When you are done, reply with the answer only, \
+             without tool calls."
         }
         AgentType::Coder => {
             "You are a coding agent that works in the current directory. Use the \
@@ -415,4 +585,35 @@ fn system_prompt(agent: AgentType) -> &'static str {
              reply with a short summary of the changes, without tool calls."
         }
     }
+}
+
+/// Joins a quoted option value that the parser split at its spaces, so that
+/// `topic="latest`, `Rust`, `release"` becomes `topic=latest Rust release`.
+/// Only the keys in [`OPTION_KEYS`] can have a quoted value. Other params do
+/// not change.
+///
+/// Fails if a quoted value has no closing quote.
+fn join_quoted(params: &[String]) -> Result<Vec<String>, String> {
+    let mut joined = Vec::new();
+    let mut params = params.iter();
+    while let Some(param) = params.next() {
+        let quoted = param
+            .split_once("=\"")
+            .filter(|(key, _)| OPTION_KEYS.contains(key));
+        let Some((key, rest)) = quoted else {
+            joined.push(param.clone());
+            continue;
+        };
+        let mut value = rest.to_string();
+        while !value.ends_with('"') {
+            let next = params
+                .next()
+                .ok_or_else(|| format!("option `{key}` has no closing quote"))?;
+            value.push(' ');
+            value.push_str(next);
+        }
+        value.pop();
+        joined.push(format!("{key}={value}"));
+    }
+    Ok(joined)
 }

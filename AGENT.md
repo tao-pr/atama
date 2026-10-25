@@ -134,12 +134,52 @@ the model replies without a tool call, that reply is the output.
 - `websearch` has the `fetch_url` tool, and `coder` has the `bash` tool.
 - `websearch` also has the `tavily_search` tool if `TAVILY_API_KEY` is set (see `tools_for`).
 
+A `websearch` agent needs `topic="<text>"` and takes `max_results=<n>`
+(default `DEFAULT_MAX_RESULTS`, 5). `AgentConfig::from_params` takes the
+agent type, and it reads these two options into `WebSearchOptions` only for
+`websearch`. For `coder`, it rejects them. `join_quoted` joins a quoted
+option value that the parser split at its spaces. Before the first model
+step, `AgentToolLoop::search_task` sends one Tavily search for the topic. It
+gives the model the prompt, the topic and the results in one user message.
+The prompt is the words that are not options, else `DEFAULT_WEBSEARCH_PROMPT`.
+
+`run_loop` reads the real environment. Tests call `run_loop_with_env` with a
+fake environment, and `search_base_url` with a mock Tavily server.
+
 The model comes from `model=`, `base_url=` and `max_steps=` in the action,
 or from the `ATAMA_AGENT_MODEL`, `ATAMA_AGENT_BASE_URL` and
 `ATAMA_AGENT_API_KEY` environment variables. With `--debug`, the loop writes
 each request, reply and tool call to stderr.
 
 In tests, use a mock `ChatClient` and mock tools. Tests must not call a real model.
+
+## Tavily client
+
+`src/tavily.rs` is a small client for the Tavily search API. It sends
+`POST <base_url>/search` with `ureq`, without an SDK. The API key comes only
+from the `TAVILY_API_KEY` environment variable, and Atama sends it as a
+bearer token.
+
+- `SearchConfig::from_params` reads the options and the query of an action.
+- `SearchConfig::request_body` makes the JSON body. It has only the options that are set.
+- `SearchConfig::search` sends the request and returns the response JSON.
+- `format_results` turns the response JSON into short text for a model.
+
+Three parts of Atama use the client. The `tavily_search` action
+(`Actor::TavilySearch`) runs a search in a task, and its output is the
+response JSON. A `websearch` agent searches its topic first with
+`AgentToolLoop::search_task`, and gives the model the text of
+`format_results`. The `tavily_search` tool (`TavilySearch` in `tools.rs`)
+lets the model of a `websearch` agent search again, and it returns the
+text of `format_results`.
+`tools_for` gives the tool to `websearch` only if `TAVILY_API_KEY` is set.
+
+Tests must not call the real Tavily API. Set `base_url=` or
+`TavilySearch::new` to a local mock server. Do not call `std::env::set_var`
+in tests, because other tests read the environment in parallel. To test
+with `TAVILY_API_KEY`, give the key to a child `atama` process, as
+`tests/cli.rs` does. A test that checks the tools of an agent must not
+expect a fixed list, because the list depends on `TAVILY_API_KEY`.
 
 ## Test coverage
 

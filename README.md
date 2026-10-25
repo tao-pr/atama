@@ -53,16 +53,16 @@ the type of action, and the other words are its parameters:
   [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search),
   for example `tavily_search max_results=3 latest stable Rust release`. The
   words that are not options are the query. If there are none, the input is
-  the query. The output is the Tavily response as JSON. Set the API key in
-  `TAVILY_API_KEY`. Atama sends it as a bearer token and never writes it
-  in the log.
+  the query. The output is the Tavily response as JSON. See "Tavily search"
+  below.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
 - `agent:<type> [model=<id>] [base_url=<url>] [max_steps=<n>] <task...>`
   runs an agent, for example
-  `agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 summarize the news`.
-  The type is `websearch` or `coder`. The output is the agent's final reply.
-  See "Agents" below.
+  `agent:coder model=qwen3.5:0.8b base_url=http://localhost:11434/v1 fix the failing test`.
+  The type is `websearch` or `coder`. A `websearch` agent also needs
+  `topic="<text>"`, and takes `max_results=<n>`. The output is the agent's
+  final reply. See "Agents" below.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
@@ -104,6 +104,10 @@ The model must support tool calls.
 The words of the action that are not options are the task. The output of the
 previous action or task is added below the task as its input.
 
+An option value can be in double quotes, so that it can have spaces, as in
+`topic="latest stable Rust release"`. Atama keeps one space between the
+words of a quoted value.
+
 These options and environment variables set up the model:
 
 - `model=<id>`, or `ATAMA_AGENT_MODEL`, sets the model. You must set one of them.
@@ -115,11 +119,49 @@ These options and environment variables set up the model:
 - `max_steps=<n>` sets the most model replies in one run. The default is 10.
   If the model still calls tools after that, the action fails.
 
+### The `websearch` agent
+
+A `websearch` agent searches a topic first, and then lets the model analyse
+the results. It needs `TAVILY_API_KEY` (see "Tavily search" below). It has
+these options, in addition to the model options above:
+
+- `topic="<text>"` sets what to search for. You must set it.
+- `max_results=<n>` sets the most search results to analyse, from 1 to 20.
+  The default is 5.
+
+The words that are not options are the prompt: the instruction that tells
+the model how to analyse the results. If there are no such words, the
+prompt is: "Summarize the main facts in the search results about the topic.
+Name the URL of the source of each fact."
+
+```markdown
+- actions:
+  - agent:websearch model=qwen3.5:0.8b max_results=5 topic="latest stable Rust release" List the version, the release date and three notable changes.
+```
+
+The agent runs these steps:
+
+1. Atama sends one Tavily search for the topic, with `max_results`.
+2. Atama gives the model one message with the prompt, the topic and the
+   results. The title, URL and content of each result are in the message. If
+   the action has an input, it comes after the results.
+3. The model analyses the results. It can call tools to get more facts,
+   for example `fetch_url` to read a result in full.
+4. The final reply of the model is the output of the action.
+
+The action fails before it asks the model if the topic is not set,
+`TAVILY_API_KEY` is not set, or the search fails. `topic=` and
+`max_results=` work only with `agent:websearch`. `agent:coder` fails if you
+give it one of these options.
+
+### Agent tools
+
 Each type of agent has its own tools:
 
 - `websearch` has `fetch_url`, which sends a `GET` request to a URL. If
-  `TAVILY_API_KEY` is set, it also has `tavily_search`, which searches the
-  web with Tavily and returns the answer and the results as text.
+  `TAVILY_API_KEY` is set, it also has `tavily_search`, which makes one more
+  search with Tavily and returns the answer and the results as text. See
+  "Tavily search" below.
 - `coder` has `bash`, which runs a command in the directory where you start
   Atama.
 
@@ -129,11 +171,16 @@ To see what an agent does, add `--debug` before the job file. Atama then
 writes these blocks to stderr for each agent action:
 
 1. The configuration: the model, the base URL, `max_steps`, and whether an
-   API key is set. Atama never writes the key itself.
-2. For each step, the request: the number of messages, the tools, and the
+   API key is set. Atama never writes the key itself. For a `websearch`
+   agent, it also has `topic` and `max_results`.
+2. For a `websearch` agent, the search. One block has the response body
+   from Tavily as pretty JSON, with every field that Tavily sends. If the body
+   is not JSON, the block shows it as it is. The next block has the topic,
+   `max_results`, and the results as the model gets them.
+3. For each step, the request: the number of messages, the tools, and the
    messages that are new since the last request, as pretty JSON.
-3. The model's reply, as pretty JSON.
-4. One block per tool call, with the tool name, the call id, the arguments
+4. The model's reply, as pretty JSON.
+5. One block per tool call, with the tool name, the call id, the arguments
    as pretty JSON, and the result: `ok` and its length, or the error.
 
 Each block starts with a line such as
@@ -144,6 +191,64 @@ no agents.
 
 If you use `agent:coder`, the model can run any command with your
 permissions. Use it only in a directory and with a model that you trust.
+
+## Tavily search
+
+Atama has a small client for the
+[Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search).
+It sends `POST https://api.tavily.com/search` directly, without an SDK. You
+can use Tavily in three ways: as a `tavily_search` action in a task, as the
+first search of a `websearch` agent, or as the `tavily_search` tool of a
+`websearch` agent.
+
+Each search uses Tavily API credits. To use Tavily, set your API key before
+you run Atama:
+
+```sh
+export TAVILY_API_KEY=<your key>
+```
+
+Atama reads the key only from `TAVILY_API_KEY`. It sends the key as a
+bearer token, and it never writes the key in the job file or the log.
+
+### The `tavily_search` action
+
+The action sends one search and needs no model. The words that are not
+options are the query. If there are none, the output of the previous action
+is the query. The output is the Tavily response as JSON:
+
+```markdown
+## Search
+
+- actions:
+  - tavily_search max_results=3 topic=news latest stable Rust release
+  - bash jq -r .results[].url
+```
+
+These options change the search. If you do not set an option, Tavily uses
+its default:
+
+- `max_results=<n>` sets the most results.
+- `search_depth=<depth>` sets the depth, for example `basic` or `advanced`.
+- `topic=<topic>` sets the kind of search, for example `general`, `news` or `finance`.
+- `include_answer=<value>` asks for a short answer: `true`, `false`, `basic` or `advanced`.
+- `base_url=<url>` sets the server. The default is `https://api.tavily.com`.
+
+The action fails if `TAVILY_API_KEY` is not set, the query is empty, or
+Tavily responds with an error status.
+
+### The `tavily_search` agent tool
+
+A `websearch` agent always searches its topic first (see "The `websearch`
+agent" above). If the model needs more results, it can call the
+`tavily_search` tool, next to `fetch_url`. The model gives the tool a
+`query`, and optionally `max_results` and `topic`. In the tool, `topic` is
+the kind of search, `general`, `news` or `finance`, not the `topic=` option
+of the action. The tool always asks Tavily for a short answer.
+
+The tool returns text, not JSON, so that the model gets less text to read.
+The text has the answer, then the title, URL and content of each result. The
+model can then read a result in full with `fetch_url`.
 
 ## Building
 
@@ -244,3 +349,7 @@ cargo test --test cli
 
 Unit tests live next to the code in `src/`, inside a `#[cfg(test)] mod tests`
 block. Integration tests go in `tests/`, one file per test crate.
+
+The tests never call a real model or the real Tavily API. They use a local
+mock server, so `cargo test` needs no network and uses no Tavily credits,
+even if `TAVILY_API_KEY` is set.
