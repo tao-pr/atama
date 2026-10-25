@@ -7,6 +7,7 @@ pub mod job;
 pub mod parser;
 pub mod passer;
 pub mod printer;
+pub mod profile;
 pub mod tavily;
 pub mod websearch;
 

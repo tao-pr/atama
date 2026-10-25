@@ -8,6 +8,7 @@ use std::thread;
 
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
+use atama::profile::ModelProfile;
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
@@ -899,6 +900,17 @@ fn download_fails_when_target_path_is_a_directory() {
     assert!(err.contains("cannot create file"), "error was: {err}");
 }
 
+/// The model profile `p`: the model `test-model` on the server at
+/// `base_url`, without an API key.
+fn profile(base_url: &str) -> ModelProfile {
+    ModelProfile {
+        name: "p".into(),
+        model: "test-model".into(),
+        base_url: base_url.into(),
+        api_key_env: None,
+    }
+}
+
 #[test]
 fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
     let (url, requests) = serve(vec![(
@@ -907,11 +919,8 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
     )]);
     let actor = Actor::AgentTool {
         agent: AgentType::Coder,
-        params: vec![
-            "model=test-model".into(),
-            format!("base_url={url}"),
-            "task=find it".into(),
-        ],
+        params: vec!["model=p".into(), "task=find it".into()],
+        profile: Some(profile(&url)),
     };
     assert_eq!(actor.act("the input"), Ok("done".to_string()));
     let request = requests.recv().unwrap();
@@ -927,7 +936,8 @@ fn act_with_debug_writes_agent_debug_output_only() {
     let url = closed_url();
     let actor = Actor::AgentTool {
         agent: AgentType::Coder,
-        params: vec!["model=m".into(), format!("base_url={url}"), "task=t".into()],
+        params: vec!["model=p".into(), "task=t".into()],
+        profile: Some(profile(&url)),
     };
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
@@ -948,7 +958,8 @@ fn agent_tool_fails_when_the_model_server_is_unreachable() {
     let url = closed_url();
     let actor = Actor::AgentTool {
         agent: AgentType::Coder,
-        params: vec!["model=m".into(), format!("base_url={url}"), "task=t".into()],
+        params: vec!["model=p".into(), "task=t".into()],
+        profile: Some(profile(&url)),
     };
     let err = actor.act("").unwrap_err();
     assert!(

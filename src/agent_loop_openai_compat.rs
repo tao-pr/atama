@@ -12,8 +12,9 @@
 //!
 //! Compatibility is a property of the server, not of the model. Any model on
 //! one of these servers works with the loop if the model supports tool calls.
-//! Set the `base_url=` param (or `ATAMA_AGENT_BASE_URL`) to the base URL, and
-//! `model=` to a model identifier of that server. These URLs are examples
+//! In a model profile of the job (see [`crate::profile`]), set `base_url=`
+//! to the base URL, and `model=` to a model identifier of that server. These
+//! URLs are examples
 //! from the providers' documentation. Make sure that they are current before
 //! you use them.
 //!
@@ -41,6 +42,7 @@ use std::io::Write;
 use serde_json::Value;
 
 use crate::actor::AgentType;
+use crate::profile::ModelProfile;
 
 pub mod agent_options;
 pub mod openai;
@@ -154,11 +156,17 @@ impl<'a> AgentToolLoop<'a> {
         self.tools.iter().map(|tool| tool.name()).collect()
     }
 
-    /// Runs the agent with `params` from the action statement and `input`,
-    /// the output of the previous action or task, with the environment of
-    /// the process (see [`AgentToolLoop::run_loop_with_env`]).
-    pub fn run_loop(&mut self, params: &[String], input: &str) -> Result<String, String> {
-        self.run_loop_with_env(params, input, &|name| std::env::var(name).ok())
+    /// Runs the agent with `params` from the action statement, the model
+    /// `profile` that its `model=` names, and `input`, the output of the
+    /// previous action or task, with the environment of the process (see
+    /// [`AgentToolLoop::run_loop_with_env`]).
+    pub fn run_loop(
+        &mut self,
+        params: &[String],
+        profile: Option<&ModelProfile>,
+        input: &str,
+    ) -> Result<String, String> {
+        self.run_loop_with_env(params, profile, input, &|name| std::env::var(name).ok())
     }
 
     /// Runs the agent like [`AgentToolLoop::run_loop`]. `env` returns the
@@ -174,10 +182,11 @@ impl<'a> AgentToolLoop<'a> {
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
+        profile: Option<&ModelProfile>,
         input: &str,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
-        let config = AgentConfig::from_params(self.agent, params, env)?;
+        let config = AgentConfig::from_params(self.agent, params, profile, env)?;
         self.max_steps = config.max_steps;
         let summary = config.summary();
         self.write_debug(format!(

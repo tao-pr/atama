@@ -2,10 +2,11 @@
 
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
-use atama::agent_loop_openai_compat::agent_options::{API_KEY_ENV, AgentConfig};
+use atama::agent_loop_openai_compat::agent_options::AgentConfig;
+use atama::profile::ModelProfile;
 use atama::tavily::DEFAULT_BASE_URL;
 use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
-use atama::{Event, Hook, Trigger, parse_job};
+use atama::{Event, Hook, ParseError, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
@@ -157,8 +158,163 @@ fn parses_agent_tool_actions() {
             Actor::AgentTool {
                 agent,
                 params: params.into_iter().map(Into::into).collect(),
+                profile: None,
             },
             "{statement}"
+        );
+    }
+}
+
+#[test]
+fn reads_model_profiles_from_the_config_block() {
+    let job = parse_job(
+        "```config\n\
+         local: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1\n\
+         \n\
+         cloud: model=gpt-5,base_url=https://api.openai.com/v1 , api_key=OPENAI_API_KEY\n\
+         ```\n\
+         \n\
+         # Job\n\
+         ## A\n\
+         - actions:\n  \
+           - agent:coder model=local task=t\n  \
+           - agent:summarizer model=cloud\n",
+    )
+    .expect("job should parse");
+    let profiles: Vec<ModelProfile> = job.tasks[0]
+        .actions
+        .iter()
+        .map(|actor| match actor {
+            Actor::AgentTool {
+                profile: Some(profile),
+                ..
+            } => profile.clone(),
+            other => panic!("expected an agent with a profile, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        profiles,
+        [
+            ModelProfile {
+                name: "local".into(),
+                model: "qwen3.5:0.8b".into(),
+                base_url: "http://localhost:11434/v1".into(),
+                api_key_env: None,
+            },
+            ModelProfile {
+                name: "cloud".into(),
+                model: "gpt-5".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                api_key_env: Some("OPENAI_API_KEY".into()),
+            },
+        ]
+    );
+    // The printed action keeps the profile name.
+    assert_eq!(
+        job.tasks[0].actions[0].to_string(),
+        "agent:coder model=local task=t"
+    );
+}
+
+#[test]
+fn rejects_invalid_model_profiles() {
+    let job =
+        |config: &str, action: &str| format!("{config}# Job\n## A\n- actions:\n  - {action}\n");
+    let profile = "```config\np: model=m, base_url=http://x.test\n```\n";
+    let cases = [
+        (
+            job("", "agent:coder model=p"),
+            4,
+            "unknown model profile `p`: the job has no ```config block with model profiles",
+        ),
+        (
+            job(profile, "agent:coder model=q"),
+            7,
+            "unknown model profile `q`, expected `p`",
+        ),
+        (
+            job(profile, "agent:coder task=t"),
+            7,
+            "`agent:coder` needs `model=<profile>`, the name of a model profile in the \
+             ```config block at the start of the job",
+        ),
+        (
+            job("```config\np model=m\n```\n", "mock"),
+            2,
+            "`p model=m` is not a profile, expected `<name>: model=<id>, base_url=<url>`",
+        ),
+        (
+            job("```config\nmy p: model=m\n```\n", "mock"),
+            2,
+            "`my p` is not a profile name, use one word as in `local-qwen`",
+        ),
+        (
+            job("```config\n: model=m\n```\n", "mock"),
+            2,
+            "`` is not a profile name, use one word as in `local-qwen`",
+        ),
+        (
+            job("```config\np: model\n```\n", "mock"),
+            2,
+            "unexpected `model` in profile `p`, expected `key=value`",
+        ),
+        (
+            job("```config\np: key=k\n```\n", "mock"),
+            2,
+            "unknown setting `key` in profile `p`, expected `model=`, `base_url=` or `api_key=`",
+        ),
+        (
+            job("```config\np: model=\n```\n", "mock"),
+            2,
+            "setting `model` in profile `p` has no value",
+        ),
+        (
+            job("```config\np: model=a, model=b\n```\n", "mock"),
+            2,
+            "setting `model` in profile `p` is set twice",
+        ),
+        (
+            job("```config\np: base_url=http://x.test\n```\n", "mock"),
+            2,
+            "profile `p` needs `model=`",
+        ),
+        (
+            job("```config\np: model=m\n```\n", "mock"),
+            2,
+            "profile `p` needs `base_url=`",
+        ),
+        (
+            job(
+                "```config\np: model=m, base_url=u\n\np: model=n, base_url=u\n```\n",
+                "mock",
+            ),
+            4,
+            "profile `p` is defined twice",
+        ),
+        (
+            job(&format!("{profile}```config\n```\n"), "mock"),
+            4,
+            "more than one ```config block",
+        ),
+        (
+            job("```config\np: model=m, base_url=u\n", "mock"),
+            1,
+            "the ```config block has no closing ```",
+        ),
+        (
+            "# Job\n```config\n```\n## A\n- actions: mock\n".to_string(),
+            2,
+            "the ```config block must come before the `# <job name>` heading",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line,
+                message: message.to_string()
+            }),
+            "{text}"
         );
     }
 }
@@ -559,27 +715,36 @@ fn sample_agents_job_searches_and_then_summarizes() {
         research.topic
     );
 
-    let agents: Vec<(AgentType, &Vec<String>)> = actions
+    let agents: Vec<(AgentType, &Vec<String>, &Option<ModelProfile>)> = actions
         .iter()
         .filter_map(|actor| match actor {
-            Actor::AgentTool { agent, params } => Some((*agent, params)),
+            Actor::AgentTool {
+                agent,
+                params,
+                profile,
+            } => Some((*agent, params, profile)),
             _ => None,
         })
         .collect();
-    let [(AgentType::Summarizer, summarizer)] = agents.as_slice() else {
+    let [(AgentType::Summarizer, summarizer, profile)] = agents.as_slice() else {
         panic!("expected one summarizer agent, got {agents:?}");
     };
-    // Every param is a valid option. The summarizer sets the local Ollama
-    // model in the action, so the environment changes only the API key.
-    let env = |name: &str| match name {
-        API_KEY_ENV => Some("key-1".to_string()),
-        _ => Some("from-env".to_string()),
-    };
+    // The summarizer uses the local Ollama profile, which needs no API key.
+    assert_eq!(
+        profile.as_ref(),
+        Some(&ModelProfile {
+            name: "local-qwen".into(),
+            model: "qwen3.5:0.8b".into(),
+            base_url: "http://localhost:11434/v1".into(),
+            api_key_env: None,
+        })
+    );
+    let no_env = |_: &str| None;
     let config =
-        AgentConfig::from_params(AgentType::Summarizer, summarizer, env).expect("valid options");
+        AgentConfig::from_params(AgentType::Summarizer, summarizer, profile.as_ref(), &no_env)
+            .expect("valid options");
     assert_eq!(config.model, "qwen3.5:0.8b");
-    assert_eq!(config.base_url, "http://localhost:11434/v1");
-    assert_eq!(config.api_key.as_deref(), Some("key-1"));
+    assert_eq!(config.api_key, None);
     assert!(
         !summarizer
             .iter()

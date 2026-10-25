@@ -1,3 +1,8 @@
+```config
+local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
+openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
+```
+
 # Research and summarize
 
 Searches the web for the most common agent loop patterns for agentic
@@ -6,6 +11,18 @@ analyse them. The patterns must be model-agnostic, so that they work with
 any model, and they must fit most common AI workflows. This file is a sample
 of a `websearch` action and a `summarizer` agent. Every file goes into
 `./output/agents/`.
+
+The ```` ```config ```` block at the start of the file defines two model
+profiles. Each line has a profile name, the model identifier, the base URL
+of the server, and, if the server needs a key, the name of the environment
+variable that holds the key. An agent action selects a profile with
+`model=<profile>`. The job file never holds the key itself.
+
+- `local-qwen` is `qwen3.5:0.8b` on the local Ollama server. Ollama needs
+  no key.
+- `openai-gpt5` is `gpt-5` on OpenAI. Atama reads its key from
+  `OPENAI_API_KEY`. The sample does not use it. To use it, change
+  `model=local-qwen` to `model=openai-gpt5` and set `OPENAI_API_KEY`.
 
 Prerequisites:
 
@@ -53,15 +70,12 @@ Prerequisites:
 - The `Extract results` task uses `jq` to read the JSON. To install it, see
   https://jqlang.org/download/.
 
-- The `Summarize research` task sets its model and server in the action:
-  `qwen3.5:0.8b` on the local Ollama server. Atama reads the API key of the
-  model server only from the `ATAMA_AGENT_API_KEY` environment variable,
-  never from the job file. Ollama needs no key, so you can leave it unset.
-  If you change the action to a server that needs a key, for example
-  `https://api.openai.com/v1`, set the key before you run the job:
+- The `Summarize research` task uses the `local-qwen` profile, so it needs
+  no API key. If you change it to `openai-gpt5`, set the key before you run
+  the job:
 
   ```bash
-  export ATAMA_AGENT_API_KEY=<your key>
+  export OPENAI_API_KEY=<your key>
   ```
 
 To run the job:
@@ -120,9 +134,8 @@ output of the task.
 
 ## Summarize research
 
-A `summarizer` agent that uses the local Ollama model. `model=` and
-`base_url=` select `qwen3.5:0.8b` on `localhost:11434`. The API key comes
-from `ATAMA_AGENT_API_KEY`, if it is set.
+A `summarizer` agent that uses the `local-qwen` profile: `qwen3.5:0.8b` on
+the local Ollama server.
 `cat` reads the saved search results, and its output is the input of the
 agent. `task=` tells the model what to take from the search results.
 `expertise=` sets the field of the reader, and `max_output=` limits the
@@ -131,7 +144,7 @@ numbers and source URLs that are important to the key points.
 
 - actions:
   - bash cat ./output/agents/research-raw.json
-  - agent:summarizer model=qwen3.5:0.8b base_url=http://localhost:11434/v1 expertise="agentic AI engineering" max_output="40%" task="You receive an input of a list of agentic loop patterns. You look at the content summarize into just the key points, remember to keep the names, source URLs. The output should be compiled into a single markdown file format with headings, subheadings and bullet points. Each topic should be a heading, and its keypoint summary should be a bullet point list under it."
+  - agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You receive an input of a list of agentic loop patterns. You look at the content summarize into just the key points, remember to keep the names, source URLs. The output should be compiled into a single markdown file format with headings, subheadings and bullet points. Each topic should be a heading, and its keypoint summary should be a bullet point list under it."
 
 ## Save summary
 

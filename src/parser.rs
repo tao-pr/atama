@@ -2,6 +2,8 @@
 //!
 //! The format is line based:
 //!
+//! - A ```` ```config ```` block before the `# <name>` heading defines model
+//!   profiles, one per line (see [`crate::profile`]).
 //! - `# <name>` names the job; text after it is the job description.
 //! - `## <id>` starts a task; its heading text is the task id.
 //! - Top-level `- begin_if:`, `- actions:`, `- if_fail:` and `- if_succeed:`
@@ -19,8 +21,9 @@
 //!     [base_url=<url>]` is [`Actor::WebSearch`].
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
-//!   - `agent:<type> [params...]` is [`Actor::AgentTool`]. The type is
-//!     `coder` or `summarizer`.
+//!   - `agent:<type> model=<profile> [params...]` is [`Actor::AgentTool`].
+//!     The type is `coder` or `summarizer`. The profile must be in the
+//!     ```` ```config ```` block.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
@@ -30,6 +33,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, AgentType, ApiVerb, Auth};
 use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::passer::Passer;
+use crate::profile::{self, Profiles};
 use crate::websearch::{self, WebSearchOptions};
 
 /// An error found while parsing a job config file.
@@ -72,10 +76,41 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut tasks: Vec<ParsedTask> = Vec::new();
     let mut in_actions = false;
     let mut in_code_block = false;
+    let mut profiles = Profiles::new();
+    // The line number of the ```config fence and the lines after it, while
+    // the block is open.
+    let mut config_block: Option<(usize, Vec<&str>)> = None;
+    let mut has_config = false;
 
     for (index, raw_line) in input.lines().enumerate() {
         let line_no = index + 1;
         let line = raw_line.trim_end();
+
+        if let Some((start, lines)) = config_block.as_mut() {
+            if line.trim_start().starts_with("```") {
+                let start = *start;
+                profiles = profile::parse_profiles(lines.iter().copied())
+                    .map_err(|(index, message)| ParseError::new(start + 1 + index, message))?;
+                config_block = None;
+                continue;
+            }
+            lines.push(line);
+            continue;
+        }
+        if line.trim() == "```config" && !in_code_block {
+            if name.is_some() {
+                return Err(ParseError::new(
+                    line_no,
+                    "the ```config block must come before the `# <job name>` heading",
+                ));
+            }
+            if has_config {
+                return Err(ParseError::new(line_no, "more than one ```config block"));
+            }
+            has_config = true;
+            config_block = Some((line_no, Vec::new()));
+            continue;
+        }
 
         if line.trim_start().starts_with("```") {
             in_code_block = !in_code_block;
@@ -151,7 +186,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 current
                     .task
                     .actions
-                    .push(parse_value(action.trim(), line_no, "action")?);
+                    .push(parse_action(action.trim(), line_no, &profiles)?);
                 continue;
             }
             if line.trim().is_empty() {
@@ -171,7 +206,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         current
                             .task
                             .actions
-                            .push(parse_value(value, line_no, "action")?);
+                            .push(parse_action(value, line_no, &profiles)?);
                     }
                     in_actions = true;
                 }
@@ -201,6 +236,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         current.description.push(line.to_string());
     }
 
+    if let Some((start, _)) = config_block {
+        return Err(ParseError::new(
+            start,
+            "the ```config block has no closing ```",
+        ));
+    }
     let Some(name) = name else {
         return Err(ParseError::new(1, "missing `# <job name>` heading"));
     };
@@ -221,6 +262,23 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             })
             .collect(),
     })
+}
+
+/// Parses an action. An agent action also gets the model profile that its
+/// `model=` names.
+fn parse_action(value: &str, line: usize, profiles: &Profiles) -> Result<Actor, ParseError> {
+    let mut actor: Actor = parse_value(value, line, "action")?;
+    if let Actor::AgentTool {
+        agent,
+        params,
+        profile,
+    } = &mut actor
+    {
+        let found = profile::resolve(*agent, params, profiles)
+            .map_err(|message| ParseError::new(line, message))?;
+        *profile = Some(found);
+    }
+    Ok(actor)
 }
 
 /// Checks rules that need the whole job: unique ids and valid trigger references.
@@ -379,6 +437,7 @@ impl FromStr for Actor {
                 Some(agent) => Ok(Actor::AgentTool {
                     agent: agent.parse()?,
                     params: split_quoted(rest)?,
+                    profile: None,
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \

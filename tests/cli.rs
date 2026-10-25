@@ -172,7 +172,10 @@ fn debug_writes_agent_requests_to_stderr() {
     drop(listener);
     let (dir, job) = job_in_temp_dir(
         "debug",
-        &format!("# Job\n## Ask\n- actions: agent:coder model=m base_url={url} task=\"find it\"\n"),
+        &format!(
+            "```config\nm: model=model-1, base_url={url}\n```\n\
+             # Job\n## Ask\n- actions: agent:coder model=m task=\"find it\"\n"
+        ),
     );
 
     let output = run_atama(&["--debug", &job]);
@@ -180,7 +183,7 @@ fn debug_writes_agent_requests_to_stderr() {
     assert!(!output.status.success());
     assert!(
         stderr.contains(&format!(
-            "=== agent:coder configuration ===\nmodel: m\nbase_url: {url}\n"
+            "=== agent:coder configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n"
         )),
         "stderr was: {stderr}"
     );
@@ -198,9 +201,9 @@ fn debug_writes_agent_requests_to_stderr() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn tavily_search_sends_the_key_from_the_environment() {
-    // A server that answers one request and sends back the raw request.
+/// Starts a server that answers one request with `reply`. The thread
+/// returns the raw request.
+fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
@@ -223,7 +226,6 @@ fn tavily_search_sends_the_key_from_the_environment() {
         let mut body = vec![0; content_length];
         reader.read_exact(&mut body).unwrap();
         request.push_str(&String::from_utf8(body).unwrap());
-        let reply = r#"{"results":[]}"#;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
@@ -232,6 +234,52 @@ fn tavily_search_sends_the_key_from_the_environment() {
         .unwrap();
         request
     });
+    (url, server)
+}
+
+#[test]
+fn agent_sends_the_key_from_the_variable_that_its_profile_names() {
+    let (url, server) =
+        serve_once(r#"{"choices":[{"message":{"role":"assistant","content":"done"}}]}"#);
+    let (dir, job) = job_in_temp_dir(
+        "profile-key",
+        &format!(
+            "```config\np: model=model-1, base_url={url}, api_key=ATAMA_TEST_KEY\n```\n\
+             # Job\n## Ask\n- actions: agent:coder model=p task=hi\n"
+        ),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .env("ATAMA_TEST_KEY", "secret-1")
+        .output()
+        .expect("failed to run atama binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout was: {stdout}");
+    assert!(!stdout.contains("secret-1"), "stdout was: {stdout}");
+    let request = server.join().unwrap();
+    assert!(request.starts_with("POST /chat/completions "), "{request}");
+    assert!(
+        request.contains("authorization: Bearer secret-1"),
+        "{request}"
+    );
+    assert!(request.contains(r#""model":"model-1""#), "{request}");
+
+    // Without the variable, the agent fails before it sends a request.
+    let output = run_atama(&[&job]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "model profile `p` needs the API key in `ATAMA_TEST_KEY`, but `ATAMA_TEST_KEY` is not set"
+        ),
+        "stdout was: {stdout}"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn tavily_search_sends_the_key_from_the_environment() {
+    let (url, server) = serve_once(r#"{"results":[]}"#);
     let (dir, job) = job_in_temp_dir(
         "tavily",
         &format!("# Job\n## Search\n- actions: tavily_search base_url={url} max_results=2 rust\n"),

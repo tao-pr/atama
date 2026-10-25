@@ -87,6 +87,7 @@ fn writes_agent_tool_with_its_type_and_params() {
         let actor = Actor::AgentTool {
             agent,
             params: vec!["a".into(), "b".into()],
+            profile: None,
         };
         assert_eq!(actor.to_string(), format!("agent:{name} a b"));
     }

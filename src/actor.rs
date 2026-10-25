@@ -11,6 +11,7 @@ use ureq::{Agent, Body, RequestBuilder};
 
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::passer::Passer;
+use crate::profile::ModelProfile;
 use crate::tavily::SearchConfig;
 use crate::websearch::WebSearchOptions;
 
@@ -58,6 +59,10 @@ pub enum Actor {
         /// The parser removes the quotes around a value (see
         /// [`crate::agent_loop_openai_compat::agent_options::AgentConfig`]).
         params: Vec<String>,
+        /// The model profile that `model=` names. The job parser sets it
+        /// from the ```` ```config ```` block of the job (see
+        /// [`crate::profile`]). An action parsed on its own has `None`.
+        profile: Option<ModelProfile>,
     },
     /// Searches the web with the Tavily API.
     /// Carries the search response as JSON as output
@@ -188,11 +193,19 @@ impl Actor {
                 mime,
                 output_dir,
             } => download(url, auth.as_ref(), mime.as_deref(), output_dir.as_deref()),
-            Actor::AgentTool { agent, params } => {
+            Actor::AgentTool {
+                agent,
+                params,
+                profile,
+            } => {
                 let mut agent_loop = AgentToolLoop::new(*agent);
                 match debug {
-                    Some(debug) => agent_loop.debug(debug).run_loop(params, input),
-                    None => agent_loop.run_loop(params, input),
+                    Some(debug) => {
+                        agent_loop
+                            .debug(debug)
+                            .run_loop(params, profile.as_ref(), input)
+                    }
+                    None => agent_loop.run_loop(params, profile.as_ref(), input),
                 }
             }
             Actor::TavilySearch { params } => {

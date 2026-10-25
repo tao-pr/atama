@@ -33,7 +33,11 @@ The project Atama is an automation pipeline as code. It allows users to create
 a simple pipeline to run with or without agent of their choice in markdown format.
 The conceptual structure of the pipeline looks like:
 
-```markdown
+````markdown
+```config
+<profile name>: model=<id>, base_url=<url>, api_key=<ENV_VAR_NAME_OF_API_KEY>
+```
+
 # name of pipeline
 
 description of the pipeline
@@ -65,7 +69,10 @@ description
 
 description
 
-```
+````
+
+The optional `config` block defines model profiles for agent actions (see
+"Model, debug output and tests" below).
 
 ### Trigger conditions
 
@@ -139,8 +146,9 @@ The code of the loop is in four files:
 
 ### Options of an agent action
 
-Each param of an agent action is an option. Every agent takes `task=`,
-`model=`, `base_url=` and `max_steps=`, and a `summarizer` agent also takes
+Each param of an agent action is an option. Every agent needs
+`model=<profile>` and takes `task=` and `max_steps=`, and a `summarizer`
+agent also takes
 `expertise=` and `max_output=`. A `coder` agent fails on these two options
 (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
@@ -161,7 +169,7 @@ the same way.
 1. Get the tools. `AgentToolLoop::new` gets the tools of the agent type from
    `tools::default_tools`. See "Tools of each agent type" below.
 2. Read the configuration. `run_loop_with_env` reads the options of the
-   action with `AgentConfig::from_params`. `task=` becomes
+   action and the model profile with `AgentConfig::from_params`. `task=` becomes
    `AgentConfig::task`.
 3. Make the task. For `summarizer`, `SummarizerOptions::task` puts the
    instruction, the expertise and the length limit into the task.
@@ -249,15 +257,26 @@ expertise as skills later.
 
 ### Model, debug output and tests
 
-The model comes from `model=`, `base_url=` and `max_steps=` in the action,
-or from the `ATAMA_AGENT_MODEL`, `ATAMA_AGENT_BASE_URL` and
-`ATAMA_AGENT_API_KEY` environment variables. With `--debug`, the loop writes
-each request, reply and tool call to stderr.
+The model comes from a model profile (`src/profile.rs`). A job file can
+start with a ```` ```config ```` block, before the `# <name>` heading. Each
+line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]`, and
+`ModelProfile::from_str` reads it. `parse_job` reads the block with
+`profile::parse_profiles`, and `parse_action` uses `profile::resolve` to
+put the profile that `model=<name>` names into `Actor::AgentTool::profile`.
+An unknown name is a parse error. An action parsed with `str::parse` alone
+has `profile: None`, and it fails when it runs.
+
+`AgentConfig::from_params` takes the profile. It reads the model identifier
+and the base URL from the profile, and the API key from the environment
+variable that `api_key=` names. If that variable is not set, it fails. The
+job file never holds a key. With `--debug`, the loop writes the profile
+name, each request, reply and tool call to stderr.
 
 `run_loop` reads the real environment. Tests call `run_loop_with_env` with a
 fake environment.
 
-In tests, use a mock `ChatClient` and mock tools. Tests must not call a real model.
+In tests, use a mock `ChatClient` and mock tools, or a `ModelProfile` whose
+`base_url` is a local mock server. Tests must not call a real model.
 
 ## Tavily client
 

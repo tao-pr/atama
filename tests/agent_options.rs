@@ -3,9 +3,10 @@
 
 use atama::actor::{Actor, AgentType};
 use atama::agent_loop_openai_compat::agent_options::{
-    API_KEY_ENV, AgentConfig, BASE_URL_ENV, DEFAULT_BASE_URL, DEFAULT_EXPERTISE, DEFAULT_MAX_STEPS,
-    DEFAULT_SUMMARIZER_PROMPT, MODEL_ENV, MaxOutput, SummarizerOptions,
+    AgentConfig, DEFAULT_EXPERTISE, DEFAULT_MAX_STEPS, DEFAULT_SUMMARIZER_PROMPT, MaxOutput,
+    SummarizerOptions,
 };
+use atama::profile::ModelProfile;
 
 fn params(params: &[&str]) -> Vec<String> {
     params.iter().map(|param| param.to_string()).collect()
@@ -15,57 +16,72 @@ fn no_env(_: &str) -> Option<String> {
     None
 }
 
+/// The model profile `m`, for a server that needs no API key.
+fn profile() -> ModelProfile {
+    ModelProfile {
+        name: "m".into(),
+        model: "model-1".into(),
+        base_url: "http://x.test/v1".into(),
+        api_key_env: None,
+    }
+}
+
 #[test]
-fn reads_options_and_task_from_params() {
+fn reads_options_and_task_from_params_and_the_model_from_the_profile() {
     let config = AgentConfig::from_params(
         AgentType::Coder,
-        &params(&[
-            "model=m1",
-            "task=find the news",
-            "base_url=http://x.test/v1",
-            "max_steps=3",
-        ]),
-        no_env,
+        &params(&["model=m", "task=find the news", "max_steps=3"]),
+        Some(&profile()),
+        &no_env,
     )
     .unwrap();
-    assert_eq!(config.model, "m1");
+    assert_eq!(config.profile, "m");
+    assert_eq!(config.model, "model-1");
     assert_eq!(config.base_url, "http://x.test/v1");
     assert_eq!(config.max_steps, 3);
     assert_eq!(config.task, "find the news");
     assert_eq!(config.api_key, None);
-}
-
-#[test]
-fn reads_missing_options_and_the_api_key_from_the_environment() {
-    let env = |name: &str| match name {
-        MODEL_ENV => Some("env-model".to_string()),
-        BASE_URL_ENV => Some("http://env.test/v1".to_string()),
-        API_KEY_ENV => Some("secret".to_string()),
-        _ => None,
-    };
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["task=t"]), env).unwrap();
-    assert_eq!(config.model, "env-model");
-    assert_eq!(config.base_url, "http://env.test/v1");
-    assert_eq!(config.api_key.as_deref(), Some("secret"));
-    assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
 
     let config = AgentConfig::from_params(
         AgentType::Coder,
-        &params(&["model=m", "base_url=http://p.test"]),
-        env,
+        &params(&["model=m"]),
+        Some(&profile()),
+        &no_env,
     )
     .unwrap();
-    assert_eq!(config.model, "m");
-    assert_eq!(config.base_url, "http://p.test");
+    assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
+    assert_eq!(config.task, "");
 }
 
 #[test]
-fn uses_defaults_and_ignores_empty_environment_values() {
-    let env = |name: &str| (name != MODEL_ENV).then(String::new);
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), env).unwrap();
-    assert_eq!(config.base_url, DEFAULT_BASE_URL);
-    assert_eq!(config.api_key, None);
-    assert_eq!(config.task, "");
+fn reads_the_api_key_from_the_variable_that_the_profile_names() {
+    let profile = ModelProfile {
+        api_key_env: Some("MY_KEY".into()),
+        ..profile()
+    };
+    let env = |name: &str| (name == "MY_KEY").then(|| "secret".to_string());
+    let config = AgentConfig::from_params(
+        AgentType::Coder,
+        &params(&["model=m"]),
+        Some(&profile),
+        &env,
+    )
+    .unwrap();
+    assert_eq!(config.api_key.as_deref(), Some("secret"));
+
+    let message = "model profile `m` needs the API key in `MY_KEY`, but `MY_KEY` is not set";
+    for env in [no_env, |_: &str| Some(String::new())] {
+        assert_eq!(
+            AgentConfig::from_params(
+                AgentType::Coder,
+                &params(&["model=m"]),
+                Some(&profile),
+                &env
+            )
+            .err(),
+            Some(message.to_string())
+        );
+    }
 }
 
 #[test]
@@ -73,54 +89,63 @@ fn rejects_invalid_configuration() {
     let cases = [
         (
             vec!["task=t"],
-            "no model: add `model=<id>` or set `ATAMA_AGENT_MODEL`",
+            "`agent:coder` needs `model=<profile>`, the name of a model profile in the \
+             ```config block at the start of the job",
+        ),
+        (
+            vec!["model=other"],
+            "model profile `other` is not defined in the job",
         ),
         (
             vec!["model=m", "find", "it"],
             "unexpected `find`, put the task in `task=\"...\"`",
         ),
         (
-            vec!["model=m", "a=b"],
-            "unknown option `a`, expected `base_url=`, `model=`, `max_steps=`, \
-             `task=`, `expertise=`, `max_output=`",
+            vec!["model=m", "base_url=http://x.test"],
+            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, \
+             `expertise=`, `max_output=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
-        (vec!["model=a", "model=b"], "option `model` is set twice"),
+        (vec!["model=m", "model=m"], "option `model` is set twice"),
         (
-            vec!["model=a", "max_steps=0"],
+            vec!["model=m", "max_steps=0"],
             "`max_steps=0` is not a positive number",
         ),
         (
-            vec!["model=a", "max_steps=x"],
+            vec!["model=m", "max_steps=x"],
             "`max_steps=x` is not a positive number",
         ),
     ];
     for (input, message) in cases {
-        let err = AgentConfig::from_params(AgentType::Coder, &params(&input), no_env)
-            .err()
-            .expect("configuration should be invalid");
+        let err =
+            AgentConfig::from_params(AgentType::Coder, &params(&input), Some(&profile()), &no_env)
+                .err()
+                .expect("configuration should be invalid");
         assert_eq!(err, message, "{input:?}");
     }
-    let env = |name: &str| (name == MODEL_ENV).then(String::new);
-    assert!(AgentConfig::from_params(AgentType::Coder, &params(&["task=t"]), env).is_err());
+    // An action parsed on its own has no profile.
+    assert_eq!(
+        AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), None, &no_env).err(),
+        Some("model profile `m` is not defined in the job".to_string())
+    );
 }
 
 #[test]
 fn reads_quoted_option_values_with_spaces() {
     // The parser removes the quotes, so test the whole path.
-    let actor: Actor = r#"agent:coder model="m 1" task="List \"the\"  changes""#
+    let actor: Actor = r#"agent:coder model="m" task="List \"the\"  changes""#
         .parse()
         .unwrap();
     let Actor::AgentTool {
         agent,
         params: words,
+        ..
     } = actor
     else {
         panic!("expected an agent action");
     };
-    let config = AgentConfig::from_params(agent, &words, no_env).unwrap();
-    assert_eq!(config.model, "m 1");
+    let config = AgentConfig::from_params(agent, &words, Some(&profile()), &no_env).unwrap();
     // Spaces inside the quotes do not change.
     assert_eq!(config.task, r#"List "the"  changes"#);
 }
@@ -128,6 +153,7 @@ fn reads_quoted_option_values_with_spaces() {
 #[test]
 fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
     let mut config = AgentConfig {
+        profile: "p".into(),
         base_url: "http://x.test/v1".into(),
         model: "m".into(),
         api_key: Some("secret-key".into()),
@@ -137,7 +163,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
     };
     assert_eq!(
         config.summary(),
-        "model: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
+        "profile: p\nmodel: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
     );
     config.api_key = None;
     assert!(config.summary().ends_with("\napi key: not set"));
@@ -169,12 +195,13 @@ fn reads_expertise_and_max_output_for_summarizer() {
     let Actor::AgentTool {
         agent,
         params: words,
+        ..
     } = actor
     else {
         panic!("expected an agent action");
     };
     assert_eq!(agent, AgentType::Summarizer);
-    let config = AgentConfig::from_params(agent, &words, no_env).unwrap();
+    let config = AgentConfig::from_params(agent, &words, Some(&profile()), &no_env).unwrap();
     assert_eq!(
         config.summarizer,
         Some(SummarizerOptions {
@@ -183,8 +210,13 @@ fn reads_expertise_and_max_output_for_summarizer() {
         })
     );
 
-    let config =
-        AgentConfig::from_params(AgentType::Summarizer, &params(&["model=m"]), no_env).unwrap();
+    let config = AgentConfig::from_params(
+        AgentType::Summarizer,
+        &params(&["model=m"]),
+        Some(&profile()),
+        &no_env,
+    )
+    .unwrap();
     assert_eq!(
         config.summarizer,
         Some(SummarizerOptions {
@@ -193,7 +225,13 @@ fn reads_expertise_and_max_output_for_summarizer() {
         })
     );
 
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), no_env).unwrap();
+    let config = AgentConfig::from_params(
+        AgentType::Coder,
+        &params(&["model=m"]),
+        Some(&profile()),
+        &no_env,
+    )
+    .unwrap();
     assert_eq!(config.summarizer, None);
 }
 
@@ -243,8 +281,8 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "unknown option `topic`, expected `base_url=`, `model=`, `max_steps=`, \
-             `task=`, `expertise=`, `max_output=`"
+            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, \
+             `expertise=`, `max_output=`"
                 .into(),
         ),
         (
@@ -260,7 +298,7 @@ fn rejects_invalid_summarizer_options() {
     ]);
     for (agent, mut words, message) in cases {
         words.insert(0, "model=m".into());
-        let err = AgentConfig::from_params(agent, &words, no_env)
+        let err = AgentConfig::from_params(agent, &words, Some(&profile()), &no_env)
             .err()
             .expect("configuration should be invalid");
         assert_eq!(err, message, "{agent} {words:?}");

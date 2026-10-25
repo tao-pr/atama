@@ -18,6 +18,7 @@ use atama::agent_loop_openai_compat::agent_options::{
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
 use atama::agent_loop_openai_compat::tools::{Bash, MAX_RESULT_CHARS, default_tools, truncate};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
+use atama::profile::ModelProfile;
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
@@ -92,6 +93,17 @@ fn tool_call_response(id: &str, name: &str, arguments: Value) -> String {
         }],
     }}]})
     .to_string()
+}
+
+/// The model profile `m`: the model `model-1` on the server at `base_url`,
+/// without an API key.
+fn profile(base_url: &str) -> ModelProfile {
+    ModelProfile {
+        name: "m".into(),
+        model: "model-1".into(),
+        base_url: base_url.into(),
+        api_key_env: None,
+    }
 }
 
 fn params(params: &[&str]) -> Vec<String> {
@@ -513,12 +525,8 @@ fn run_loop_uses_max_steps_from_the_params() {
     let (url, _requests) = serve(vec![(200, tool_call_response("c1", "unknown", json!({})))]);
     let err = AgentToolLoop::new(AgentType::Coder)
         .run_loop(
-            &params(&[
-                "model=m",
-                &format!("base_url={url}"),
-                "max_steps=1",
-                "task=t",
-            ]),
+            &params(&["model=m", "max_steps=1", "task=t"]),
+            Some(&profile(&url)),
             "",
         )
         .unwrap_err();
@@ -528,7 +536,7 @@ fn run_loop_uses_max_steps_from_the_params() {
 #[test]
 fn run_loop_fails_on_invalid_configuration() {
     let err = AgentToolLoop::new(AgentType::Coder)
-        .run_loop(&params(&["model=a", "model=b"]), "")
+        .run_loop(&params(&["model=m", "model=m"]), Some(&profile("x")), "")
         .unwrap_err();
     assert_eq!(err, "option `model` is set twice");
 }
@@ -636,26 +644,18 @@ fn debug_writes_the_configuration_without_the_api_key() {
     AgentToolLoop::new(AgentType::Coder)
         .debug(&mut out)
         .run_loop(
-            &params(&[
-                "model=m",
-                &format!("base_url={url}"),
-                "max_steps=4",
-                "task=t",
-            ]),
+            &params(&["model=m", "max_steps=4", "task=t"]),
+            Some(&profile(&url)),
             "",
         )
         .unwrap();
     let out = String::from_utf8(out).unwrap();
 
     let expected = format!(
-        "=== agent:coder configuration ===\nmodel: m\nbase_url: {url}\nmax_steps: 4\napi key: "
+        "=== agent:coder configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n\
+         max_steps: 4\napi key: not set"
     );
     assert!(out.starts_with(&expected), "{out}");
-    let key_line = out.lines().nth(4).unwrap();
-    assert!(
-        key_line == "api key: set" || key_line == "api key: not set",
-        "{out}"
-    );
 }
 
 // Summarizer
@@ -664,16 +664,14 @@ fn debug_writes_the_configuration_without_the_api_key() {
 fn summarizer_sends_the_input_without_tools_and_returns_the_summary() {
     let (url, requests) = serve(vec![(200, text_response("short summary"))]);
     let output = AgentToolLoop::new(AgentType::Summarizer).run_loop_with_env(
-        &params(&[
-            "model=m",
-            &format!("base_url={url}"),
-            "max_output=1 sentence",
-        ]),
+        &params(&["model=m", "max_output=1 sentence"]),
+        Some(&profile(&url)),
         "Rust 1.80 came out on 25 July 2024.",
         &no_env,
     );
     assert_eq!(output, Ok("short summary".to_string()));
     let request = request_json(&requests.recv().unwrap());
+    assert_eq!(request["model"], "model-1");
     assert_eq!(request.get("tools"), None);
     let system = request["messages"][0]["content"].as_str().unwrap();
     assert!(
@@ -699,11 +697,7 @@ fn summarizer_fails_before_asking_the_model_without_an_input() {
     // Nothing listens on this port, so a request would fail with another error.
     let url = closed_url();
     let err = AgentToolLoop::new(AgentType::Summarizer)
-        .run_loop_with_env(
-            &params(&["model=m", &format!("base_url={url}")]),
-            "",
-            &no_env,
-        )
+        .run_loop_with_env(&params(&["model=m"]), Some(&profile(&url)), "", &no_env)
         .unwrap_err();
     assert_eq!(err, "`agent:summarizer` needs an input to summarize");
 }

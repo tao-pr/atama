@@ -29,6 +29,19 @@ description
 ...
 ```
 
+A pipeline can start with a `config` code block, before the top-level
+heading. The block defines model profiles for agent actions (see "Model
+profiles" below):
+
+````markdown
+```config
+local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
+openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
+```
+
+# name of pipeline
+````
+
 A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
 Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
 `jobs/sample_api_calls.md` for a job that uses every action type.
@@ -60,9 +73,9 @@ the type of action, and the other words are its parameters:
   response body from Tavily. See "The `websearch` action" below.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
-- `agent:<type> [task="<text>"] [model=<id>] [base_url=<url>] [max_steps=<n>]`
-  runs an agent, for example
-  `agent:coder model=qwen3.5:0.8b base_url=http://localhost:11434/v1 task="Fix the failing test."`.
+- `agent:<type> model=<profile> [task="<text>"] [max_steps=<n>]` runs an
+  agent with a model profile, for example
+  `agent:coder model=local-qwen task="Fix the failing test."`.
   The type is `coder` or `summarizer`. A `summarizer` agent also takes
   `expertise="<text>"` and `max_output="<size>"`. The output is the
   agent's final reply. See "Agents" below.
@@ -115,16 +128,40 @@ Put a value in double quotes if it has spaces, as in
 text between them unchanged. To put a double quote in a quoted value,
 write `\"`. To put a backslash in a quoted value, write `\\`.
 
-These options and environment variables set up the model:
+These options set up every agent:
 
-- `model=<id>`, or `ATAMA_AGENT_MODEL`, sets the model. You must set one of them.
-- `base_url=<url>`, or `ATAMA_AGENT_BASE_URL`, sets the server. The default is
-  `https://api.openai.com/v1`.
-- `ATAMA_AGENT_API_KEY` sets the API key, which Atama sends as a bearer token.
-  A local server often needs no key. The key is never in the job file or
-  the log.
+- `model=<profile>` selects a model profile from the `config` block. You
+  must set it.
 - `max_steps=<n>` sets the most model replies in one run. The default is 10.
   If the model still calls tools after that, the action fails.
+
+### Model profiles
+
+A model profile is a name for one model on one server. You define the
+profiles in a `config` code block at the start of the job file, before the
+`# <name>` heading. Each line defines one profile:
+
+```text
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]
+```
+
+- `<name>` is the name that agent actions use, as in `model=local-qwen`. It
+  is one word.
+- `model=<id>` is the model identifier that the server knows, for example
+  `qwen3.5:0.8b` or `gpt-5`. You must set it.
+- `base_url=<url>` is the base URL of the server, for example
+  `http://localhost:11434/v1`. You must set it.
+- `api_key=<ENV_VAR>` is the name of the environment variable that holds
+  the API key, for example `OPENAI_API_KEY`. Atama sends the key as a bearer
+  token. Leave it out if the server needs no key, for example Ollama.
+
+The job file holds only the name of the variable, never the key. If a
+profile names a variable that is not set, an action that uses the profile
+fails before it asks the model. Several actions can use the same profile.
+
+Atama reads the profiles when it reads the job file. If a line is not a
+valid profile, or an action names a profile that the block does not
+define, the job does not start. The job can have only one `config` block.
 
 ### The `summarizer` agent
 
@@ -152,7 +189,7 @@ measure a percent of a text well.
 ```markdown
 - actions:
   - bash cat ./notes.md
-  - agent:summarizer model=qwen3.5:0.8b expertise="software engineering" max_output="3 sentences"
+  - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
 ```
 
 The action fails before it asks the model if the input is empty.
@@ -171,8 +208,8 @@ Atama cuts a tool result after 20,000 characters.
 To see what an agent does, add `--debug` before the job file. Atama then
 writes these blocks to stderr for each agent action:
 
-1. The configuration: the model, the base URL, `max_steps`, and whether an
-   API key is set. Atama never writes the key itself. For a `summarizer`
+1. The configuration: the profile name, the model, the base URL,
+   `max_steps`, and whether an API key is set. Atama never writes the key itself. For a `summarizer`
    agent, it also has `expertise` and `max_output`.
 2. For each step, the request: the number of messages, the tools, and the
    messages that are new since the last request, as pretty JSON.

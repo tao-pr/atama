@@ -47,7 +47,7 @@ impl fmt::Display for Actor {
                 write_option(f, "output_dir", output_dir)?;
                 write_auth(f, auth)
             }
-            Actor::AgentTool { agent, params } => {
+            Actor::AgentTool { agent, params, .. } => {
                 write!(f, "agent:{agent}")?;
                 for param in params {
                     write!(f, " {}", quote_param(param))?;
