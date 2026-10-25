@@ -129,10 +129,84 @@ model asks for tool calls, the loop runs them and sends the results back. If
 the model replies without a tool call, that reply is the output.
 `max_steps` limits the number of model replies.
 
-- `openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
-- `tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
-- `websearch` has the `fetch_url` tool, and `coder` has the `bash` tool.
-- `websearch` also has the `tavily_search` tool if `TAVILY_API_KEY` is set (see `tools_for`).
+The code of the loop is in three files:
+
+- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, `AgentConfig` and the `Tool` and `ChatClient` traits.
+- `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
+- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
+
+### Steps of one agent run
+
+`Actor::AgentTool` makes a loop with `AgentToolLoop::new` and calls
+`run_loop`. One run has these steps:
+
+1. Get the tools. `AgentToolLoop::new` gets the tools of the agent type from
+   `tools::default_tools`. See "Tools of each agent type" below.
+2. Read the configuration. `run_loop_with_env` reads the options of the
+   action with `AgentConfig::from_params`.
+3. Search, only for `websearch`. `search_task` searches the topic with
+   Tavily, and puts the prompt, the topic and the results into the task.
+4. Start the conversation. `run_with` makes two messages: the system prompt
+   of the agent type (`system_prompt`) and the user prompt (`user_prompt`).
+   The user prompt is the task and the input of the action.
+5. Make the request. `run_with` calls `ChatClient::chat` with all the
+   messages and all the tools. `OpenAiClient::chat` makes the JSON body with
+   `openai::request_body`, and sends `POST <base_url>/chat/completions`.
+   The `tools` field of the body has the name, the description and the
+   parameter schema of each tool.
+6. Parse the reply. `openai::parse_reply` reads the text and the
+   `tool_calls` of the first choice into a `Reply`. Each `ToolCall` has an
+   id, the name of a tool, and the arguments as a JSON string.
+7. Decide whether to stop. If the reply has no tool calls, `run_with`
+   returns the text of the reply as the output. Else, `run_with` adds the
+   reply to the conversation and goes on.
+8. Call the tools. `run_with` calls the tools in the order of the reply.
+   `call_tool` finds the tool with the same name, parses the arguments as
+   JSON, and calls `Tool::call`. The result goes into the conversation as a
+   tool message with the id of the call.
+9. Go back to step 5. If the model still calls tools after `max_steps`
+   replies, the run fails.
+
+The model, not Atama, decides which tools to call and with which
+arguments. The request has no `tool_choice` field, so the server uses
+`auto`: the model can call any tool in the list, or no tool. Atama
+controls the choice only with the tool list, the tool descriptions and the
+system prompt.
+
+A failed tool call does not stop the loop. If the model names a tool that
+is not in the list, `call_tool` fails with "unknown tool". If the arguments
+are not JSON, or the tool fails, the call also fails. In each case, the
+model gets the error text as the tool result, and it can try again.
+
+### Tools of each agent type
+
+A tool is a type that implements the `Tool` trait. The trait has four
+methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
+`tools::tools_for` gives each agent type its tools:
+
+- `websearch` gets `FetchUrl` (`fetch_url`). It also gets `TavilySearch`
+  (`tavily_search`), but only if `TAVILY_API_KEY` is set.
+- `coder` gets `Bash` (`bash`).
+
+The tools run the same code as the actions of a job file. `fetch_url` runs
+an `Actor::ApiCall` with `GET`, and `bash` runs an `Actor::BashScript`.
+`tavily_search` uses `SearchConfig` from `src/tavily.rs`. If a result is
+longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
+it.
+
+The model of an agent can call only the tools that `tools_for` gives to its
+agent type. For example, a `websearch` agent cannot run `bash`. To give an
+agent type a new tool, do these steps:
+
+1. Write a type that implements `Tool` in `tools.rs`.
+2. Add the tool to the match arm of the agent type in `tools_for`.
+3. If the model must know when to use the tool, tell it in `system_prompt`.
+4. Add tests to `tests/agent_loop_openai_compat.rs`.
+
+`AgentToolLoop::with_tools` replaces the tools of a loop. Tests use it to
+give the loop mock tools.
+
+### The `websearch` agent
 
 A `websearch` agent needs `topic="<text>"` and takes `max_results=<n>`
 (default `DEFAULT_MAX_RESULTS`, 5). `AgentConfig::from_params` takes the
@@ -143,13 +217,15 @@ step, `AgentToolLoop::search_task` sends one Tavily search for the topic. It
 gives the model the prompt, the topic and the results in one user message.
 The prompt is the words that are not options, else `DEFAULT_WEBSEARCH_PROMPT`.
 
-`run_loop` reads the real environment. Tests call `run_loop_with_env` with a
-fake environment, and `search_base_url` with a mock Tavily server.
+### Model, debug output and tests
 
 The model comes from `model=`, `base_url=` and `max_steps=` in the action,
 or from the `ATAMA_AGENT_MODEL`, `ATAMA_AGENT_BASE_URL` and
 `ATAMA_AGENT_API_KEY` environment variables. With `--debug`, the loop writes
 each request, reply and tool call to stderr.
+
+`run_loop` reads the real environment. Tests call `run_loop_with_env` with a
+fake environment, and `search_base_url` with a mock Tavily server.
 
 In tests, use a mock `ChatClient` and mock tools. Tests must not call a real model.
 
