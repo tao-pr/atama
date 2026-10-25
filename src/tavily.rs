@@ -2,8 +2,8 @@
 //! (<https://docs.tavily.com/documentation/api-reference/endpoint/search>).
 //!
 //! A `tavily_search` action ([`Actor::TavilySearch`](crate::Actor::TavilySearch))
-//! and the `tavily_search` tool of the `websearch` agent both send a
-//! `POST <base_url>/search` request. The API key comes only from
+//! and a `websearch` action ([`crate::websearch`]) both send a `POST <base_url>/search` request, and
+//! both return the response body unchanged. The API key comes only from
 //! [`API_KEY_ENV`], so it is never in the job file or the log.
 
 use serde_json::{Map, Value, json};
@@ -30,13 +30,18 @@ pub struct SearchConfig {
     pub topic: Option<String>,
     /// `true`, `false`, `basic` or `advanced`. Tavily uses its default if not set.
     pub include_answer: Option<String>,
+    /// `true`, `false`, `markdown` or `text`: whether each result also has
+    /// the content of its page, and in which format. Tavily uses its
+    /// default if not set.
+    pub include_raw_content: Option<String>,
 }
 
 impl SearchConfig {
     /// Reads the configuration of a `tavily_search` action.
     ///
     /// A param `base_url=<url>`, `max_results=<n>`, `search_depth=<depth>`,
-    /// `topic=<topic>` or `include_answer=<value>` sets that option. The
+    /// `topic=<topic>`, `include_answer=<value>` or
+    /// `include_raw_content=<value>` sets that option. The
     /// other params, joined with spaces, are the query. If there are none,
     /// `input` without surrounding whitespace is the query. `env` returns
     /// the value of an environment variable, or `None` if it is not set.
@@ -53,6 +58,7 @@ impl SearchConfig {
         let mut search_depth = None;
         let mut topic = None;
         let mut include_answer = None;
+        let mut include_raw_content = None;
         let mut query = Vec::new();
         for param in params {
             // A word without `=`, such as `topic`, is part of the query.
@@ -63,6 +69,7 @@ impl SearchConfig {
                 "search_depth" => &mut search_depth,
                 "topic" => &mut topic,
                 "include_answer" => &mut include_answer,
+                "include_raw_content" => &mut include_raw_content,
                 _ => {
                     query.push(param.as_str());
                     continue;
@@ -98,6 +105,7 @@ impl SearchConfig {
             search_depth,
             topic,
             include_answer,
+            include_raw_content,
         })
     }
 
@@ -115,14 +123,15 @@ impl SearchConfig {
         if let Some(topic) = &self.topic {
             body.insert("topic".into(), json!(topic));
         }
-        if let Some(include_answer) = &self.include_answer {
-            // Tavily takes a boolean, or the name of the answer depth.
-            let value = match include_answer.as_str() {
-                "true" => json!(true),
-                "false" => json!(false),
-                depth => json!(depth),
-            };
-            body.insert("include_answer".into(), value);
+        // Tavily takes a boolean, or the name of the answer depth or the
+        // format of the page content.
+        for (key, value) in [
+            ("include_answer", &self.include_answer),
+            ("include_raw_content", &self.include_raw_content),
+        ] {
+            if let Some(value) = value {
+                body.insert(key.into(), flag_value(value));
+            }
         }
         Value::Object(body)
     }
@@ -153,47 +162,19 @@ impl SearchConfig {
     }
 }
 
+/// `true` and `false` as JSON booleans, and other values as JSON strings.
+fn flag_value(value: &str) -> Value {
+    match value {
+        "true" => json!(true),
+        "false" => json!(false),
+        other => json!(other),
+    }
+}
+
 /// Reads the API key from [`API_KEY_ENV`] with `env`. Fails if it is not
 /// set or empty.
 pub fn api_key(env: impl Fn(&str) -> Option<String>) -> Result<String, String> {
     env(API_KEY_ENV)
         .filter(|key| !key.is_empty())
         .ok_or_else(|| format!("no Tavily API key: set `{API_KEY_ENV}`"))
-}
-
-/// Writes a search response as short text for a model: the answer if there
-/// is one, then the title, URL and content of each result.
-///
-/// Fails if `body` is not JSON.
-pub fn format_results(body: &str) -> Result<String, String> {
-    let json: Value =
-        serde_json::from_str(body).map_err(|err| format!("Tavily response is not JSON: {err}"))?;
-    let text = |value: &Value, key: &str| {
-        value
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
-
-    let mut parts = Vec::new();
-    let answer = text(&json, "answer");
-    if !answer.is_empty() {
-        parts.push(format!("Answer: {answer}"));
-    }
-    let results = json.get("results").and_then(Value::as_array);
-    for (index, result) in results.into_iter().flatten().enumerate() {
-        parts.push(format!(
-            "{}. {}\n{}\n{}",
-            index + 1,
-            text(result, "title"),
-            text(result, "url"),
-            text(result, "content")
-        ));
-    }
-    if parts.is_empty() {
-        return Ok("No results.".to_string());
-    }
-    Ok(parts.join("\n\n"))
 }

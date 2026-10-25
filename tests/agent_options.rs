@@ -3,9 +3,8 @@
 
 use atama::actor::{Actor, AgentType};
 use atama::agent_loop_openai_compat::agent_options::{
-    API_KEY_ENV, AgentConfig, BASE_URL_ENV, DEFAULT_BASE_URL, DEFAULT_EXPERTISE,
-    DEFAULT_MAX_RESULTS, DEFAULT_MAX_STEPS, DEFAULT_SUMMARIZER_PROMPT, MODEL_ENV, MaxOutput,
-    SummarizerOptions, WebSearchOptions,
+    API_KEY_ENV, AgentConfig, BASE_URL_ENV, DEFAULT_BASE_URL, DEFAULT_EXPERTISE, DEFAULT_MAX_STEPS,
+    DEFAULT_SUMMARIZER_PROMPT, MODEL_ENV, MaxOutput, SummarizerOptions,
 };
 
 fn params(params: &[&str]) -> Vec<String> {
@@ -83,7 +82,7 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "a=b"],
             "unknown option `a`, expected `base_url=`, `model=`, `max_steps=`, \
-             `task=`, `topic=`, `max_results=`, `expertise=`, `max_output=`",
+             `task=`, `expertise=`, `max_output=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -108,41 +107,9 @@ fn rejects_invalid_configuration() {
 }
 
 #[test]
-fn reads_topic_and_max_results_for_websearch() {
-    let config = AgentConfig::from_params(
-        AgentType::WebSearch,
-        &params(&["model=m", "topic=rust", "max_results=20", "task=list it"]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(
-        config.websearch,
-        Some(WebSearchOptions {
-            topic: "rust".into(),
-            max_results: 20
-        })
-    );
-    assert_eq!(config.task, "list it");
-
-    let config = AgentConfig::from_params(
-        AgentType::WebSearch,
-        &params(&["model=m", "topic=rust"]),
-        no_env,
-    )
-    .unwrap();
-    assert_eq!(
-        config.websearch.map(|options| options.max_results),
-        Some(DEFAULT_MAX_RESULTS)
-    );
-
-    let config = AgentConfig::from_params(AgentType::Coder, &params(&["model=m"]), no_env).unwrap();
-    assert_eq!(config.websearch, None);
-}
-
-#[test]
 fn reads_quoted_option_values_with_spaces() {
     // The parser removes the quotes, so test the whole path.
-    let actor: Actor = r#"agent:websearch model="m 1" topic="latest  stable Rust" max_results="3" task="List \"the\" changes""#
+    let actor: Actor = r#"agent:coder model="m 1" task="List \"the\"  changes""#
         .parse()
         .unwrap();
     let Actor::AgentTool {
@@ -155,68 +122,7 @@ fn reads_quoted_option_values_with_spaces() {
     let config = AgentConfig::from_params(agent, &words, no_env).unwrap();
     assert_eq!(config.model, "m 1");
     // Spaces inside the quotes do not change.
-    assert_eq!(
-        config.websearch,
-        Some(WebSearchOptions {
-            topic: "latest  stable Rust".into(),
-            max_results: 3
-        })
-    );
-    assert_eq!(config.task, r#"List "the" changes"#);
-}
-
-#[test]
-fn rejects_invalid_websearch_options() {
-    let cases = [
-        (
-            AgentType::WebSearch,
-            vec!["topic="],
-            "option `topic` has no value",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "topic=b"],
-            "option `topic` is set twice",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=0"],
-            "`max_results=0` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=21"],
-            "`max_results=21` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["topic=a", "max_results=x"],
-            "`max_results=x` is not a number from 1 to 20",
-        ),
-        (
-            AgentType::WebSearch,
-            vec!["task=t"],
-            "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
-        ),
-        (
-            AgentType::Coder,
-            vec!["topic=a", "task=t"],
-            "option `topic` works only with `agent:websearch`",
-        ),
-        (
-            AgentType::Coder,
-            vec!["max_results=3", "task=t"],
-            "option `max_results` works only with `agent:websearch`",
-        ),
-    ];
-    for (agent, words, message) in cases {
-        let mut words = words;
-        words.insert(0, "model=m");
-        let err = AgentConfig::from_params(agent, &params(&words), no_env)
-            .err()
-            .expect("configuration should be invalid");
-        assert_eq!(err, message, "{agent} {words:?}");
-    }
+    assert_eq!(config.task, r#"List "the"  changes"#);
 }
 
 #[test]
@@ -226,7 +132,6 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         model: "m".into(),
         api_key: Some("secret-key".into()),
         max_steps: 3,
-        websearch: None,
         summarizer: None,
         task: "task".into(),
     };
@@ -237,19 +142,6 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
     config.api_key = None;
     assert!(config.summary().ends_with("\napi key: not set"));
 
-    config.websearch = Some(WebSearchOptions {
-        topic: "rust".into(),
-        max_results: 4,
-    });
-    assert!(
-        config
-            .summary()
-            .ends_with("\napi key: not set\ntopic: rust\nmax_results: 4"),
-        "{}",
-        config.summary()
-    );
-
-    config.websearch = None;
     config.summarizer = Some(SummarizerOptions {
         expertise: "law".into(),
         max_output: None,
@@ -290,7 +182,6 @@ fn reads_expertise_and_max_output_for_summarizer() {
             max_output: Some(MaxOutput::Sentences(3)),
         })
     );
-    assert_eq!(config.websearch, None);
 
     let config =
         AgentConfig::from_params(AgentType::Summarizer, &params(&["model=m"]), no_env).unwrap();
@@ -352,7 +243,9 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "option `topic` works only with `agent:websearch`".into(),
+            "unknown option `topic`, expected `base_url=`, `model=`, `max_steps=`, \
+             `task=`, `expertise=`, `max_output=`"
+                .into(),
         ),
         (
             AgentType::Coder,
@@ -360,8 +253,8 @@ fn rejects_invalid_summarizer_options() {
             "option `expertise` works only with `agent:summarizer`".into(),
         ),
         (
-            AgentType::WebSearch,
-            vec!["topic=rust".into(), "max_output=60%".into()],
+            AgentType::Coder,
+            vec!["max_output=60%".into()],
             "option `max_output` works only with `agent:summarizer`".into(),
         ),
     ]);

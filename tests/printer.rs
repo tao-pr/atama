@@ -49,18 +49,17 @@ fn colors_task_titles_and_hooks() {
 #[test]
 fn highlights_the_agent_type_of_agent_actions() {
     let job = parse_job(
-        "# Job\n## Research\n- actions:\n  - agent:websearch model=m task=\"find it\"\n  \
+        "# Job\n## Research\n- actions:\n  - agent:summarizer expertise=law\n  \
          - agent:coder\n  - bash ls\n",
     )
     .expect("job should parse");
 
     let expected = "\x1b[1mJob: Job\x1b[0m\n  - \x1b[1;36mResearch:\x1b[0m \
-                    \x1b[30;47magent:websearch\x1b[0m model=m task=\"find it\"; \
+                    \x1b[30;47magent:summarizer\x1b[0m expertise=law; \
                     \x1b[30;47magent:coder\x1b[0m; bash ls\n";
     assert_eq!(format_job(&job, true), expected);
 
-    let expected =
-        "Job: Job\n  - Research: agent:websearch model=m task=\"find it\"; agent:coder; bash ls\n";
+    let expected = "Job: Job\n  - Research: agent:summarizer expertise=law; agent:coder; bash ls\n";
     assert_eq!(format_job(&job, false), expected);
 }
 

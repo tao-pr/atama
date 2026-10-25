@@ -109,8 +109,9 @@ its own output. The main actor types are:
 - `BashScript` (`bash <cmd> [args...]`) runs a command in bash. The output is stdout.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
-- `AgentTool` (`agent:<type> ...`) runs an agent. The output is the final reply of the model.
+- `AgentTool` (`agent:<type> ...`) runs an agent, `coder` or `summarizer`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
+- `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `MockPlaceholder` (`mock`) passes its input on unchanged. `MockFail` (`mock fail`) always fails.
 
 `ApiCall` and `DownloadFromUrl` can take an `Auth`. A `Passer` (`src/passer.rs`)
@@ -138,18 +139,19 @@ The code of the loop is in four files:
 
 ### Options of an agent action
 
-Each param of an agent action is an option: `task=`, `model=`, `base_url=`
-and `max_steps=`. A `websearch` agent also takes `topic=` and
-`max_results=`, and a `summarizer` agent also takes `expertise=` and
-`max_output=`. An agent of another type fails on these options
-(`only_for`). A value
-can be in double quotes, so that it can have spaces, as in
+Each param of an agent action is an option. Every agent takes `task=`,
+`model=`, `base_url=` and `max_steps=`, and a `summarizer` agent also takes
+`expertise=` and `max_output=`. A `coder` agent fails on these two options
+(`only_for`). A value can be in double quotes, so that it can have spaces,
+as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
 `src/parser.rs`) splits the params of an `agent:` line at whitespace, but
 not inside quotes, and removes the quotes. Inside quotes, `\"` is a quote and
-`\\` is a backslash. Then `AgentConfig::from_params` reads each param. It fails
-on a word without `=` and on an unknown key. `src/actor/display.rs` puts the
-quotes back when it writes an agent action as a line.
+`\\` is a backslash. Then `Values::read` in `agent_options.rs` reads each
+param for `AgentConfig::from_params`. It fails on a word without `=` and on
+an unknown key. `src/actor/display.rs` puts the quotes back when it writes
+an agent action as a line. The `websearch` action uses `split_quoted` in
+the same way.
 
 ### Steps of one agent run
 
@@ -161,10 +163,8 @@ quotes back when it writes an agent action as a line.
 2. Read the configuration. `run_loop_with_env` reads the options of the
    action with `AgentConfig::from_params`. `task=` becomes
    `AgentConfig::task`.
-3. Make the task. For `websearch`, `search_task` searches the topic with
-   Tavily, and puts the prompt, the topic and the results into the task.
-   For `summarizer`, `SummarizerOptions::task` puts the instruction, the
-   expertise and the length limit into the task.
+3. Make the task. For `summarizer`, `SummarizerOptions::task` puts the
+   instruction, the expertise and the length limit into the task.
 4. Start the conversation. `run_with` makes two messages: the system prompt
    of the agent type (`system_prompt`) and the user prompt (`user_prompt`).
    The user prompt is the task and the input of the action.
@@ -201,26 +201,23 @@ model gets the error text as the tool result, and it can try again.
 
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
-`tools::tools_for` gives each agent type its tools:
+`tools::default_tools` gives each agent type its tools:
 
-- `websearch` gets `FetchUrl` (`fetch_url`). It also gets `TavilySearch`
-  (`tavily_search`), but only if `TAVILY_API_KEY` is set.
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
   field, so the model can only reply with text.
 
-The tools run the same code as the actions of a job file. `fetch_url` runs
-an `Actor::ApiCall` with `GET`, and `bash` runs an `Actor::BashScript`.
-`tavily_search` uses `SearchConfig` from `src/tavily.rs`. If a result is
+The tools run the same code as the actions of a job file. `bash` runs an
+`Actor::BashScript`. If a result is
 longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
 it.
 
-The model of an agent can call only the tools that `tools_for` gives to its
-agent type. For example, a `websearch` agent cannot run `bash`. To give an
+The model of an agent can call only the tools that `default_tools` gives to
+its agent type. For example, a `summarizer` agent cannot run `bash`. To give an
 agent type a new tool, do these steps:
 
 1. Write a type that implements `Tool` in `tools.rs`.
-2. Add the tool to the match arm of the agent type in `tools_for`.
+2. Add the tool to the match arm of the agent type in `default_tools`.
 3. If the model must know when to use the tool, tell it in `system_prompt`.
 4. Add tests to `tests/agent_loop_openai_compat.rs`.
 
@@ -229,16 +226,6 @@ loop are in `tests/agent_loop_openai_compat.rs`.
 
 `AgentToolLoop::with_tools` replaces the tools of a loop. Tests use it to
 give the loop mock tools.
-
-### The `websearch` agent
-
-A `websearch` agent needs `topic="<text>"` and takes `max_results=<n>`
-(default `DEFAULT_MAX_RESULTS`, 5). `AgentConfig::from_params` takes the
-agent type, and it reads these two options into `WebSearchOptions` only for
-`websearch`. Other agent types reject them. Before the first model step,
-`AgentToolLoop::search_task` sends one Tavily search for the topic. It
-gives the model the prompt, the topic and the results in one user message.
-The prompt is the value of `task=`, else `DEFAULT_WEBSEARCH_PROMPT`.
 
 ### The `summarizer` agent
 
@@ -268,7 +255,7 @@ or from the `ATAMA_AGENT_MODEL`, `ATAMA_AGENT_BASE_URL` and
 each request, reply and tool call to stderr.
 
 `run_loop` reads the real environment. Tests call `run_loop_with_env` with a
-fake environment, and `search_base_url` with a mock Tavily server.
+fake environment.
 
 In tests, use a mock `ChatClient` and mock tools. Tests must not call a real model.
 
@@ -281,24 +268,29 @@ bearer token.
 
 - `SearchConfig::from_params` reads the options and the query of an action.
 - `SearchConfig::request_body` makes the JSON body. It has only the options that are set.
-- `SearchConfig::search` sends the request and returns the response JSON.
-- `format_results` turns the response JSON into short text for a model.
+- `SearchConfig::search` sends the request and returns the response body unchanged.
 
-Three parts of Atama use the client. The `tavily_search` action
-(`Actor::TavilySearch`) runs a search in a task, and its output is the
-response JSON. A `websearch` agent searches its topic first with
-`AgentToolLoop::search_task`, and gives the model the text of
-`format_results`. The `tavily_search` tool (`TavilySearch` in `tools.rs`)
-lets the model of a `websearch` agent search again, and it returns the
-text of `format_results`.
-`tools_for` gives the tool to `websearch` only if `TAVILY_API_KEY` is set.
+Two actions use the client, and the output of both is the response body.
+The `tavily_search` action (`Actor::TavilySearch`) takes the options of
+`SearchConfig` and a free-text query. The `websearch` action
+(`Actor::WebSearch`) takes fewer options, in `src/websearch.rs`:
 
-Tests must not call the real Tavily API. Set `base_url=` or
-`TavilySearch::new` to a local mock server. Do not call `std::env::set_var`
+- `websearch topic=<text> [max_results=<n>] [fetch_content=<true|false>] [base_url=<url>]`.
+- The parser reads the options into `WebSearchOptions` with `split_quoted`,
+  `parse_options` and `WebSearchOptions::from_values`, so a wrong option
+  stops the job before it starts.
+- `WebSearchOptions::search` builds a `SearchConfig` and returns the body
+  without changes. `fetch_content=true` sets `include_raw_content` to
+  `markdown`. The action ignores its input and asks no model.
+- `agent:websearch` was the old name. The parser rejects it with a message
+  that names the `websearch` action.
+
+Tests must not call the real Tavily API. Set `base_url=` to a local mock
+server, as `tests/websearch.rs` and `tests/tavily.rs` do. Tests call
+`WebSearchOptions::search` with a fake environment. Do not call `std::env::set_var`
 in tests, because other tests read the environment in parallel. To test
 with `TAVILY_API_KEY`, give the key to a child `atama` process, as
-`tests/cli.rs` does. A test that checks the tools of an agent must not
-expect a fixed list, because the list depends on `TAVILY_API_KEY`.
+`tests/cli.rs` does.
 
 ## Test coverage
 

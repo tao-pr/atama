@@ -12,6 +12,7 @@ use ureq::{Agent, Body, RequestBuilder};
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::passer::Passer;
 use crate::tavily::SearchConfig;
+use crate::websearch::WebSearchOptions;
 
 mod display;
 
@@ -65,6 +66,9 @@ pub enum Actor {
         /// [`SearchConfig::from_params`]).
         params: Vec<String>,
     },
+    /// Searches the web for a topic with the Tavily API. Carries the
+    /// response body from Tavily, unchanged, as output.
+    WebSearch(WebSearchOptions),
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -85,8 +89,6 @@ pub enum ApiVerb {
 /// The type of agent that an [`Actor::AgentTool`] runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentType {
-    /// Searches the web.
-    WebSearch,
     /// Writes code.
     Coder,
     /// Summarizes its input.
@@ -146,6 +148,8 @@ impl Actor {
     ///   `input`, and returns the final reply of the model.
     /// - [`Actor::TavilySearch`] sends a Tavily search request and returns the
     ///   response as JSON. The query is the words of `params`, else `input`.
+    /// - [`Actor::WebSearch`] searches its topic with Tavily and returns the
+    ///   response body unchanged. It ignores `input`.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -157,8 +161,9 @@ impl Actor {
 
     /// Carries out the action like [`Actor::act`]. If `debug` is set, an
     /// [`Actor::AgentTool`] writes each request to the model, each reply and
-    /// each tool call to it (see [`AgentToolLoop::debug`]). The other actors
-    /// ignore `debug`.
+    /// each tool call to it (see [`AgentToolLoop::debug`]). An
+    /// [`Actor::WebSearch`] writes its options and the Tavily response to it
+    /// (see [`WebSearchOptions::search`]). The other actors ignore `debug`.
     pub fn act_with(&self, input: &str, debug: Option<&mut dyn Write>) -> Result<String, String> {
         match self {
             Actor::BashScript { cmd, params } => run_bash(cmd, params, input),
@@ -193,6 +198,7 @@ impl Actor {
             Actor::TavilySearch { params } => {
                 SearchConfig::from_params(params, input, |name| std::env::var(name).ok())?.search()
             }
+            Actor::WebSearch(options) => options.search(&|name| std::env::var(name).ok(), debug),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }

@@ -15,10 +15,12 @@
 //!   - `download <url> [mime=<type>] [output_dir=<dir>] [auth=bearer:<token>]`
 //!     is [`Actor::DownloadFromUrl`].
 //!   - `tavily_search [options...] [query...]` is [`Actor::TavilySearch`].
+//!   - `websearch topic=<text> [max_results=<n>] [fetch_content=<true|false>]
+//!     [base_url=<url>]` is [`Actor::WebSearch`].
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
 //!   - `agent:<type> [params...]` is [`Actor::AgentTool`]. The type is
-//!     `websearch` or `coder`.
+//!     `coder` or `summarizer`.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
@@ -28,6 +30,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, AgentType, ApiVerb, Auth};
 use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::passer::Passer;
+use crate::websearch::{self, WebSearchOptions};
 
 /// An error found while parsing a job config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,6 +359,17 @@ impl FromStr for Actor {
             "tavily_search" => Ok(Actor::TavilySearch {
                 params: params.iter().map(|param| param.to_string()).collect(),
             }),
+            "websearch" => {
+                let params = split_quoted(rest)?;
+                let params: Vec<&str> = params.iter().map(String::as_str).collect();
+                let mut options = parse_options(&params, &websearch::OPTION_KEYS)?;
+                Ok(Actor::WebSearch(WebSearchOptions::from_values(
+                    options.remove("topic"),
+                    options.remove("max_results"),
+                    options.remove("fetch_content"),
+                    options.remove("base_url"),
+                )?))
+            }
             "mock" => Ok(match params.first() {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
@@ -368,7 +382,7 @@ impl FromStr for Actor {
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
-                     `tavily_search`, `mock` or `agent:<type>`"
+                     `tavily_search`, `websearch`, `mock` or `agent:<type>`"
                 )),
             },
         }
@@ -489,12 +503,14 @@ impl FromStr for AgentType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "websearch" => Ok(AgentType::WebSearch),
             "coder" => Ok(AgentType::Coder),
             "summarizer" => Ok(AgentType::Summarizer),
+            "websearch" => Err(
+                "`agent:websearch` is now the `websearch` action, because it asks no model"
+                    .to_string(),
+            ),
             _ => Err(format!(
-                "unknown agent type `{s}`, expected `agent:websearch`, `agent:coder` \
-                 or `agent:summarizer`"
+                "unknown agent type `{s}`, expected `agent:coder` or `agent:summarizer`"
             )),
         }
     }

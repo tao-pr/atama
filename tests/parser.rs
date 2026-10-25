@@ -3,6 +3,8 @@
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
 use atama::agent_loop_openai_compat::agent_options::AgentConfig;
+use atama::tavily::DEFAULT_BASE_URL;
+use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
 use atama::{Event, Hook, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
@@ -130,11 +132,11 @@ fn parses_every_api_verb() {
 #[test]
 fn parses_agent_tool_actions() {
     let cases = [
-        ("agent:websearch", AgentType::WebSearch, vec![]),
+        ("agent:summarizer", AgentType::Summarizer, vec![]),
         (
-            "agent:websearch topic=rust task=\"list the  release notes\"",
-            AgentType::WebSearch,
-            vec!["topic=rust", "task=list the  release notes"],
+            "agent:coder max_steps=3 task=\"fix the  tests\"",
+            AgentType::Coder,
+            vec!["max_steps=3", "task=fix the  tests"],
         ),
         ("agent:coder   fix.md ", AgentType::Coder, vec!["fix.md"]),
         (
@@ -156,6 +158,94 @@ fn parses_agent_tool_actions() {
                 agent,
                 params: params.into_iter().map(Into::into).collect(),
             },
+            "{statement}"
+        );
+    }
+}
+
+#[test]
+fn parses_websearch_actions() {
+    let cases = [
+        (
+            "websearch topic=rust",
+            WebSearchOptions {
+                topic: "rust".into(),
+                max_results: DEFAULT_MAX_RESULTS,
+                fetch_content: false,
+                base_url: DEFAULT_BASE_URL.into(),
+            },
+        ),
+        (
+            "websearch  base_url=http://x.test fetch_content=true max_results=20 topic=\"rust  release\"",
+            WebSearchOptions {
+                topic: "rust  release".into(),
+                max_results: 20,
+                fetch_content: true,
+                base_url: "http://x.test".into(),
+            },
+        ),
+        (
+            "websearch topic=rust fetch_content=false",
+            WebSearchOptions {
+                topic: "rust".into(),
+                max_results: DEFAULT_MAX_RESULTS,
+                fetch_content: false,
+                base_url: DEFAULT_BASE_URL.into(),
+            },
+        ),
+    ];
+    for (statement, options) in cases {
+        let actor: Actor = statement.parse().expect(statement);
+        assert_eq!(actor, Actor::WebSearch(options), "{statement}");
+    }
+}
+
+#[test]
+fn rejects_invalid_websearch_actions() {
+    let cases = [
+        (
+            "websearch",
+            "`websearch` needs a topic, as in `topic=\"latest Rust release\"`",
+        ),
+        (
+            "websearch rust",
+            "unexpected `rust`, expected `topic=` or `max_results=` or `fetch_content=` or `base_url=`",
+        ),
+        (
+            "websearch topic=a model=m",
+            "unknown option `model`, expected `topic=` or `max_results=` or `fetch_content=` or `base_url=`",
+        ),
+        ("websearch topic=a topic=b", "duplicate option `topic`"),
+        ("websearch topic=", "option `topic` has no value"),
+        (
+            "websearch topic=a max_results=0",
+            "`max_results=0` is not a number from 1 to 20",
+        ),
+        (
+            "websearch topic=a max_results=21",
+            "`max_results=21` is not a number from 1 to 20",
+        ),
+        (
+            "websearch topic=a max_results=x",
+            "`max_results=x` is not a number from 1 to 20",
+        ),
+        (
+            "websearch topic=a fetch_content=yes",
+            "`fetch_content=yes` is not `true` or `false`",
+        ),
+        (
+            "websearch topic=\"rust",
+            "a quote in `topic=\"rust` has no closing quote",
+        ),
+        (
+            "agent:websearch topic=rust",
+            "`agent:websearch` is now the `websearch` action, because it asks no model",
+        ),
+    ];
+    for (statement, message) in cases {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Err(message.to_string()),
             "{statement}"
         );
     }
@@ -387,7 +477,7 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
-         `tavily_search`, `mock` or `agent:<type>`"
+         `tavily_search`, `websearch`, `mock` or `agent:<type>`"
     );
 }
 
@@ -448,40 +538,80 @@ fn sample_api_calls_job_uses_every_action_type() {
 }
 
 #[test]
-fn sample_agents_job_configures_two_different_agents() {
+fn sample_agents_job_searches_and_then_summarizes() {
     let job = parse_job(include_str!("../jobs/sample_agents.md")).expect("job should parse");
-    let agents: Vec<(AgentType, &Vec<String>)> = job
-        .tasks
+    let actions: Vec<&Actor> = job.tasks.iter().flat_map(|task| &task.actions).collect();
+
+    let searches: Vec<&WebSearchOptions> = actions
         .iter()
-        .flat_map(|task| &task.actions)
+        .filter_map(|actor| match actor {
+            Actor::WebSearch(options) => Some(options),
+            _ => None,
+        })
+        .collect();
+    let [research] = searches.as_slice() else {
+        panic!("expected one websearch action, got {searches:?}");
+    };
+    assert!(research.fetch_content);
+    assert!(
+        research.topic.contains("agent loop patterns"),
+        "{}",
+        research.topic
+    );
+
+    let agents: Vec<(AgentType, &Vec<String>)> = actions
+        .iter()
         .filter_map(|actor| match actor {
             Actor::AgentTool { agent, params } => Some((*agent, params)),
             _ => None,
         })
         .collect();
-
-    let [(AgentType::WebSearch, research), (AgentType::Coder, coder)] = agents.as_slice() else {
-        panic!("expected a websearch and a coder agent, got {agents:?}");
+    let [(AgentType::Summarizer, summarizer)] = agents.as_slice() else {
+        panic!("expected one summarizer agent, got {agents:?}");
     };
-    // Research sets its options in the action. The coder agent uses the
-    // environment instead.
-    for option in ["model=", "base_url=", "max_steps="] {
-        assert!(research.iter().any(|param| param.starts_with(option)));
-        assert!(!coder.iter().any(|param| param.starts_with(option)));
-    }
-    // Every param is a valid option, and both agents have a task.
+    // Every param is a valid option. The summarizer gets its model from the
+    // environment.
     let env = |_: &str| Some("env-model".to_string());
-    let cases = [
-        (
-            AgentType::WebSearch,
-            research,
-            "From these search results, list",
-        ),
-        (AgentType::Coder, coder, "Write a bash script"),
-    ];
-    for (agent, params, task) in cases {
-        let config = AgentConfig::from_params(agent, params, env).expect("valid options");
-        assert!(config.task.starts_with(task), "{}", config.task);
+    let config =
+        AgentConfig::from_params(AgentType::Summarizer, summarizer, env).expect("valid options");
+    assert_eq!(config.model, "env-model");
+    assert!(
+        config
+            .task
+            .starts_with("The input is a Tavily search response"),
+        "{}",
+        config.task
+    );
+}
+
+#[test]
+fn sample_agents_job_saves_the_research_and_its_summary() {
+    let job = parse_job(include_str!("../jobs/sample_agents.md")).expect("job should parse");
+    let ids: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "Prepare",
+            "Research",
+            "Save raw research",
+            "Summarize research",
+            "Save summary",
+            "Print summary",
+        ]
+    );
+    let actions: Vec<String> = job
+        .tasks
+        .iter()
+        .flat_map(|task| &task.actions)
+        .map(|actor| actor.to_string())
+        .collect();
+    for action in [
+        "bash tee ./output/agents/research-raw.json",
+        "bash cat ./output/agents/research-raw.json",
+        "bash tee ./output/agents/research-summary.md",
+        "bash cat ./output/agents/research-summary.md",
+    ] {
+        assert!(actions.iter().any(|written| written == action), "{action}");
     }
 }
 

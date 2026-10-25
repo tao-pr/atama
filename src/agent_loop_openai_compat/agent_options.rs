@@ -1,9 +1,8 @@
 //! The options of an `agent:<type>` action, and the configuration of one
 //! run of the agent loop that the options make.
 //!
-//! [`AgentConfig::from_params`] reads the options that every agent type
-//! takes. It reads the options of one agent type into [`WebSearchOptions`]
-//! or [`SummarizerOptions`].
+//! [`AgentConfig::from_params`] reads the options of an agent. It reads the
+//! options of a `summarizer` agent into [`SummarizerOptions`].
 
 use crate::actor::AgentType;
 
@@ -17,29 +16,17 @@ pub const BASE_URL_ENV: &str = "ATAMA_AGENT_BASE_URL";
 pub const MODEL_ENV: &str = "ATAMA_AGENT_MODEL";
 /// Environment variable with the API key. Local servers often need none.
 pub const API_KEY_ENV: &str = "ATAMA_AGENT_API_KEY";
-/// Search results that a `websearch` agent analyses if the action sets no
-/// `max_results`.
-pub const DEFAULT_MAX_RESULTS: u32 = 5;
-/// Most search results that a `websearch` agent can ask for. Tavily returns
-/// at most 20.
-pub const MAX_SEARCH_RESULTS: u32 = 20;
-/// Instruction of a `websearch` agent if the action has no `task=`.
-pub const DEFAULT_WEBSEARCH_PROMPT: &str = "Summarize the main facts in the search results \
-     about the topic. Name the URL of the source of each fact.";
-
 /// Expertise of a `summarizer` agent if the action has no `expertise=`.
 pub const DEFAULT_EXPERTISE: &str = "general";
 /// Instruction of a `summarizer` agent if the action has no `task=`.
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 8] = [
+const OPTION_KEYS: [&str; 6] = [
     "base_url",
     "model",
     "max_steps",
     "task",
-    "topic",
-    "max_results",
     "expertise",
     "max_output",
 ];
@@ -49,8 +36,7 @@ const OPTION_KEYS: [&str; 8] = [
 ///
 /// Each param is one option. A param `task=<text>`, `model=<id>`,
 /// `base_url=<url>` or `max_steps=<n>` sets that option for every agent
-/// type. A `websearch` agent also takes `topic=<text>` and `max_results=<n>`
-/// (see [`WebSearchOptions`]), and a `summarizer` agent takes
+/// type. A `summarizer` agent also takes
 /// `expertise=<text>` and `max_output=<size>` (see [`SummarizerOptions`]).
 /// In the job file, a value can be in double quotes, so that it can have
 /// spaces, as in `task="Fix the tests"`. The parser removes the quotes. If
@@ -62,48 +48,10 @@ pub struct AgentConfig {
     pub model: String,
     pub api_key: Option<String>,
     pub max_steps: u32,
-    /// The search options of a `websearch` agent. `None` for other agent
-    /// types.
-    pub websearch: Option<WebSearchOptions>,
     /// The options of a `summarizer` agent. `None` for other agent types.
     pub summarizer: Option<SummarizerOptions>,
-    /// The task. For a `websearch` agent, it is the instruction that tells
-    /// the model how to analyse the search results.
+    /// The task, the instruction for the model.
     pub task: String,
-}
-
-/// The options of a `websearch` agent: what it searches for, and how many
-/// results it analyses.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebSearchOptions {
-    /// What to search for, from `topic=<text>`.
-    pub topic: String,
-    /// Most search results to analyse, from `max_results=<n>`. The default
-    /// is [`DEFAULT_MAX_RESULTS`].
-    pub max_results: u32,
-}
-
-impl WebSearchOptions {
-    /// Reads the options from the values of `topic=` and `max_results=`, if
-    /// the params set them.
-    ///
-    /// Fails if `max_results` is not a number from 1 to
-    /// [`MAX_SEARCH_RESULTS`], or there is no topic.
-    fn from_values(topic: Option<String>, max_results: Option<String>) -> Result<Self, String> {
-        let max_results = match max_results {
-            None => DEFAULT_MAX_RESULTS,
-            Some(value) => value
-                .parse()
-                .ok()
-                .filter(|n| (1..=MAX_SEARCH_RESULTS).contains(n))
-                .ok_or_else(|| {
-                    format!("`max_results={value}` is not a number from 1 to {MAX_SEARCH_RESULTS}")
-                })?,
-        };
-        let topic = topic
-            .ok_or("`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`")?;
-        Ok(WebSearchOptions { topic, max_results })
-    }
 }
 
 /// The options of a `summarizer` agent: the field of the reader, and how
@@ -231,26 +179,24 @@ fn only_for(owner: AgentType, values: &[(&str, &Option<String>)]) -> Result<(), 
     }
 }
 
-impl AgentConfig {
-    /// Reads the configuration of an `agent` action. `env` returns the value
-    /// of an environment variable, or `None` if it is not set.
+/// The value of each option of an agent action, if the params set it.
+#[derive(Default)]
+struct Values {
+    base_url: Option<String>,
+    model: Option<String>,
+    max_steps: Option<String>,
+    task: Option<String>,
+    expertise: Option<String>,
+    max_output: Option<String>,
+}
+
+impl Values {
+    /// Reads each param as one `key=value` option.
     ///
-    /// Fails if a param is not a known option, an option is empty, set twice
-    /// or invalid, there is no model, a `websearch` agent has no topic, or
-    /// another agent type gets `topic=` or `max_results=`.
-    pub fn from_params(
-        agent: AgentType,
-        params: &[String],
-        env: impl Fn(&str) -> Option<String>,
-    ) -> Result<Self, String> {
-        let mut base_url = None;
-        let mut model = None;
-        let mut max_steps = None;
-        let mut task = None;
-        let mut topic = None;
-        let mut max_results = None;
-        let mut expertise = None;
-        let mut max_output = None;
+    /// Fails if a param has no `=`, its key is not in [`OPTION_KEYS`], its
+    /// value is empty, or the params set the key twice.
+    fn read(params: &[String]) -> Result<Self, String> {
+        let mut values = Values::default();
         for param in params {
             let Some((key, value)) = param.split_once('=') else {
                 return Err(format!(
@@ -258,14 +204,12 @@ impl AgentConfig {
                 ));
             };
             let option = match key {
-                "base_url" => &mut base_url,
-                "model" => &mut model,
-                "max_steps" => &mut max_steps,
-                "task" => &mut task,
-                "topic" => &mut topic,
-                "max_results" => &mut max_results,
-                "expertise" => &mut expertise,
-                "max_output" => &mut max_output,
+                "base_url" => &mut values.base_url,
+                "model" => &mut values.model,
+                "max_steps" => &mut values.max_steps,
+                "task" => &mut values.task,
+                "expertise" => &mut values.expertise,
+                "max_output" => &mut values.max_output,
                 _ => {
                     return Err(format!(
                         "unknown option `{key}`, expected {}",
@@ -280,24 +224,39 @@ impl AgentConfig {
                 return Err(format!("option `{key}` is set twice"));
             }
         }
+        Ok(values)
+    }
+}
+
+impl AgentConfig {
+    /// Reads the configuration of an `agent` action. `env` returns the value
+    /// of an environment variable, or `None` if it is not set.
+    ///
+    /// Fails if a param is not a known option, an option is empty, set twice
+    /// or invalid, there is no model, or the params have an option of another
+    /// agent type.
+    pub fn from_params(
+        agent: AgentType,
+        params: &[String],
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, String> {
+        let Values {
+            base_url,
+            model,
+            max_steps,
+            task,
+            expertise,
+            max_output,
+        } = Values::read(params)?;
 
         // The options of one agent type only control that agent, so another
         // agent fails on them instead of ignoring them.
-        if agent != AgentType::WebSearch {
-            only_for(
-                AgentType::WebSearch,
-                &[("topic", &topic), ("max_results", &max_results)],
-            )?;
-        }
         if agent != AgentType::Summarizer {
             only_for(
                 AgentType::Summarizer,
                 &[("expertise", &expertise), ("max_output", &max_output)],
             )?;
         }
-        let websearch = (agent == AgentType::WebSearch)
-            .then(|| WebSearchOptions::from_values(topic, max_results))
-            .transpose()?;
         let summarizer = (agent == AgentType::Summarizer)
             .then(|| SummarizerOptions::from_values(expertise, max_output))
             .transpose()?;
@@ -321,7 +280,6 @@ impl AgentConfig {
             model,
             api_key: env(API_KEY_ENV).filter(|key| !key.is_empty()),
             max_steps,
-            websearch,
             summarizer,
             task: task.unwrap_or_default(),
         })
@@ -331,8 +289,7 @@ impl AgentConfig {
 impl AgentConfig {
     /// The configuration for debug output, one `name: value` line each. It
     /// shows only whether the API key is set, never the key itself. For a
-    /// `websearch` agent, it also shows `topic` and `max_results`, and for a
-    /// `summarizer` agent `expertise` and `max_output`.
+    /// `summarizer` agent, it also shows `expertise` and `max_output`.
     pub fn summary(&self) -> String {
         let key = if self.api_key.is_some() {
             "set"
@@ -343,12 +300,6 @@ impl AgentConfig {
             "model: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
             self.model, self.base_url, self.max_steps
         );
-        if let Some(options) = &self.websearch {
-            summary.push_str(&format!(
-                "\ntopic: {}\nmax_results: {}",
-                options.topic, options.max_results
-            ));
-        }
         if let Some(options) = &self.summarizer {
             let max_output = options
                 .max_output

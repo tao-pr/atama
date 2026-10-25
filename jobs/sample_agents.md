@@ -1,16 +1,17 @@
-# Research and report
+# Research and summarize
 
-Researches the most common agent loop patterns for agentic engineering on the
-web, saves notes about them, and lets a coding agent write and run a small
-report script. The patterns must be model-agnostic, so that they work with
+Searches the web for the most common agent loop patterns for agentic
+engineering, saves the raw search results, and lets a `summarizer` agent
+analyse them. The patterns must be model-agnostic, so that they work with
 any model, and they must fit most common AI workflows. This file is a sample
-that shows two ways to configure an `agent:<type>` action. Every file goes
-into `./output/agents/`.
+of a `websearch` action and a `summarizer` agent. Every file goes into
+`./output/agents/`.
 
 Prerequisites:
 
-- A chat model that supports tool calls, on a server with an OpenAI compatible
-  `/chat/completions` endpoint. The sample uses Ollama on `localhost:11434`:
+- A chat model on a server with an OpenAI compatible `/chat/completions`
+  endpoint, for the `Summarize research` task. The sample uses Ollama on
+  `localhost:11434`:
 
   If you don't have Ollama installed, see https://ollama.com/download.
 
@@ -49,7 +50,7 @@ Prerequisites:
 
   The search uses Tavily API credits.
 
-- The `Write report script` task reads its model from the environment. Set
+- The `Summarize research` task reads its model from the environment. Set
   these variables before you run the job:
 
   ```bash
@@ -59,27 +60,22 @@ Prerequisites:
   export ATAMA_AGENT_API_KEY=<your key>
   ```
 
-The `Write report script` task lets the model run bash commands in the
-directory where you start Atama. Read its task before you run the job.
-
 To run the job:
 
 ```bash
 cargo run -- jobs/sample_agents.md
 ```
 
-To see what each agent sends to the model, what the model replies, and which
-tools it calls with which arguments, add `--debug`. The debug output goes to
-stderr. This command saves it in `debug.log`, and the task log stays in the
+To see the Tavily response and what the summarizer sends to the model and
+what the model replies, add `--debug`. The debug output goes to stderr. This command saves it in `debug.log`, and the task log stays in the
 terminal:
 
 ```bash
 cargo run -- --debug jobs/sample_agents.md 2> debug.log
 ```
 
-If an agent fails or gives a strange answer, read `debug.log`. For example, a
-small model can call a tool with wrong arguments, or stop before it uses a
-tool.
+If a task fails or gives a strange answer, read `debug.log`. For example,
+the input can be too long for a small model.
 
 ## Prepare
 
@@ -90,51 +86,48 @@ Make the output directory.
 
 ## Research
 
-A `websearch` agent with every option in the action itself: `model=` and
-`base_url=` select the model, and `max_steps=6` allows at most 6 model
-replies. Atama first searches `topic=` with Tavily and gets the top 5
-results (`max_results=5`). `task=` is the prompt, which tells the model how
-to analyse the results. The quotes let a value have spaces. The
-model can call `fetch_url` to read a result in full, or `tavily_search` to
-search again. The prompt asks it to use only the search results, because a
-small model can lose the prompt after it reads several full pages. Its final
-reply is the output of the task.
+A `websearch` action searches `topic=` with Tavily and gets the top 5
+results (`max_results=5`). `fetch_content=true` also gets the page of each
+result as markdown. The quotes let a value have spaces. The action asks no
+model. Its output is the JSON response body from Tavily, without changes.
 
 - actions:
-  - agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 max_steps=6 max_results=5 topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows" task="From these search results, list the most common agent loop patterns that work with any model and fit most AI workflows. For each pattern, give its name, how its loop works in one or two sentences, when to use it, and the URL of its source. Name only patterns that the results describe. Use only the search results, and reply with a short markdown list."
+  - websearch max_results=5 fetch_content=true topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows"
 - if_fail: retry=1
 
-## Save notes
+## Save raw research
 
-Write the notes from Research to a file. `tee` also passes them on as the
+Write the Tavily response to a JSON file. `tee` also passes it on as the
 output of the task.
 
 - actions:
-  - bash tee ./output/agents/agent-loop-patterns.md
+  - bash tee ./output/agents/research-raw.json
 
-## Write report script
+## Summarize research
 
-A `coder` agent with only `task=` in the action. It gets its model, server
-and API key from the `ATAMA_AGENT_*` environment variables, and the default
-of 10 steps. The agent can call `bash`. The notes from Save notes are its input.
-
-- actions:
-  - agent:coder task="Write a bash script ./output/agents/report.sh that prints the name and the line count of each .md file in ./output/agents. Make it executable and run it once. Change no files outside ./output/agents. Reply with the output of the script."
-  - bash tee ./output/agents/report.txt
-
-## List output
-
-Print all the files that the job wrote.
+A `summarizer` agent without model options in the action. It gets its
+model, server and API key from the `ATAMA_AGENT_*` environment variables.
+`cat` reads the saved Tavily response, and its output is the input of the
+agent. `task=` tells the model what to take from the search results.
+`expertise=` sets the field of the reader, and `max_output=` limits the
+summary to 40% of the length of the input. The summary keeps the names,
+numbers and source URLs that are important to the key points.
 
 - actions:
-  - bash ls -a ./output/agents
+  - bash cat ./output/agents/research-raw.json
+  - agent:summarizer expertise="agentic AI engineering" max_output="40%" task="The input is a Tavily search response in JSON. From its results, list the most common agent loop patterns that work with any LLM/VLM and fit most AI workflows. For each pattern, give its name, how its loop works in one or two sentences - preferrably in list of one sentences, when to use it, and the URL of its source. Name only patterns that the results describe. Use only the input, and reply with a short markdown list."
 
-## Research failed
+## Save summary
 
-Runs only if Research fails, for example if the model server is not running
-or `TAVILY_API_KEY` is not set.
-`mock` stands in for an alert that Atama cannot send yet.
+Write the summary to a file. `tee` also passes it on as the output of the
+task.
 
-- begin_if: task(Research) fail
 - actions:
-  - mock send an alert
+  - bash tee ./output/agents/research-summary.md
+
+## Print summary
+
+Print the summary file that the job wrote.
+
+- actions:
+  - bash cat ./output/agents/research-summary.md

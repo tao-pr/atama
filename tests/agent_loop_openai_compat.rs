@@ -13,12 +13,10 @@ use serde_json::{Value, json};
 use atama::AgentToolLoop;
 use atama::actor::AgentType;
 use atama::agent_loop_openai_compat::agent_options::{
-    DEFAULT_EXPERTISE, DEFAULT_MAX_RESULTS, DEFAULT_SUMMARIZER_PROMPT, DEFAULT_WEBSEARCH_PROMPT,
+    DEFAULT_EXPERTISE, DEFAULT_SUMMARIZER_PROMPT,
 };
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
-use atama::agent_loop_openai_compat::tools::{
-    Bash, FetchUrl, MAX_RESULT_CHARS, TavilySearch, default_tools, tools_for, truncate,
-};
+use atama::agent_loop_openai_compat::tools::{Bash, MAX_RESULT_CHARS, default_tools, truncate};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 
 /// Starts a local HTTP server that answers one request per response, in order.
@@ -203,11 +201,7 @@ fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
 
 #[test]
 fn has_the_default_tools_of_its_agent_type() {
-    for agent in [
-        AgentType::WebSearch,
-        AgentType::Coder,
-        AgentType::Summarizer,
-    ] {
+    for agent in [AgentType::Coder, AgentType::Summarizer] {
         let agent_loop = AgentToolLoop::new(agent);
         assert_eq!(agent_loop.agent(), agent);
         assert_eq!(agent_loop.tool_names(), names(&default_tools(agent)));
@@ -215,32 +209,20 @@ fn has_the_default_tools_of_its_agent_type() {
 }
 
 #[test]
-fn websearch_gets_tavily_search_only_with_an_api_key() {
-    let no_env = |_: &str| None;
-    let with_key = |name: &str| (name == "TAVILY_API_KEY").then(|| "key".to_string());
-    let empty_key = |name: &str| (name == "TAVILY_API_KEY").then(String::new);
+fn only_coder_gets_tools() {
     let cases = [
-        (tools_for(AgentType::WebSearch, no_env), vec!["fetch_url"]),
-        (
-            tools_for(AgentType::WebSearch, empty_key),
-            vec!["fetch_url"],
-        ),
-        (
-            tools_for(AgentType::WebSearch, with_key),
-            vec!["fetch_url", "tavily_search"],
-        ),
-        (tools_for(AgentType::Coder, with_key), vec!["bash"]),
-        (tools_for(AgentType::Summarizer, with_key), vec![]),
+        (AgentType::Coder, vec!["bash"]),
+        (AgentType::Summarizer, vec![]),
     ];
-    for (tools, expected) in cases {
-        assert_eq!(names(&tools), expected);
+    for (agent, expected) in cases {
+        assert_eq!(names(&default_tools(agent)), expected, "{agent}");
     }
 }
 
 #[test]
 fn returns_the_reply_when_the_model_calls_no_tools() {
     let mut client = ScriptedClient::new(vec![Ok(text("the answer"))]);
-    let output = AgentToolLoop::new(AgentType::WebSearch)
+    let output = AgentToolLoop::new(AgentType::Coder)
         .run_with(&mut client, "find it", "the input")
         .unwrap();
 
@@ -249,16 +231,11 @@ fn returns_the_reply_when_the_model_calls_no_tools() {
         panic!("expected a system and a user message");
     };
     assert!(
-        matches!(system, Message::System(prompt) if prompt.contains("web research agent")),
+        matches!(system, Message::System(prompt) if prompt.contains("coding agent")),
         "{system:?}"
     );
     assert_eq!(*user, Message::User("find it\n\nInput:\nthe input".into()));
-    // The tools depend on `TAVILY_API_KEY` (see `tools_for`), so compare
-    // with the default tools of this process, not a fixed list.
-    assert_eq!(
-        client.tool_names[0],
-        names(&default_tools(AgentType::WebSearch))
-    );
+    assert_eq!(client.tool_names[0], vec!["bash"]);
 }
 
 #[test]
@@ -288,10 +265,10 @@ fn returns_empty_output_for_a_reply_without_text() {
 #[test]
 fn fails_without_a_task_or_an_input() {
     let mut client = ScriptedClient::new(Vec::new());
-    let err = AgentToolLoop::new(AgentType::WebSearch)
+    let err = AgentToolLoop::new(AgentType::Coder)
         .run_with(&mut client, "", " \n")
         .unwrap_err();
-    assert_eq!(err, "`agent:websearch` needs `task=` or an input");
+    assert_eq!(err, "`agent:coder` needs `task=` or an input");
     assert!(client.conversations.is_empty());
 }
 
@@ -305,7 +282,7 @@ fn runs_tool_calls_and_sends_the_results_back() {
         ])),
         Ok(text("done")),
     ]);
-    let output = AgentToolLoop::new(AgentType::WebSearch)
+    let output = AgentToolLoop::new(AgentType::Coder)
         .with_tools(vec![tool])
         .run_with(&mut client, "task", "")
         .unwrap();
@@ -377,13 +354,13 @@ fn fails_when_the_model_does_not_finish_in_max_steps() {
         Ok(calls(&[("1", "lookup", "{}")])),
         Ok(calls(&[("2", "lookup", "{}")])),
     ]);
-    let err = AgentToolLoop::new(AgentType::WebSearch)
+    let err = AgentToolLoop::new(AgentType::Coder)
         .with_tools(vec![tool])
         .max_steps(2)
         .run_with(&mut client, "task", "")
         .unwrap_err();
 
-    assert_eq!(err, "`agent:websearch` did not finish in 2 steps");
+    assert_eq!(err, "`agent:coder` did not finish in 2 steps");
     assert_eq!(arguments.borrow().len(), 2);
 }
 
@@ -531,172 +508,6 @@ fn client_fails_on_bad_responses() {
     );
 }
 
-/// An environment that has only the Tavily API key `key-1`.
-fn tavily_env(name: &str) -> Option<String> {
-    (name == "TAVILY_API_KEY").then(|| "key-1".to_string())
-}
-
-/// A Tavily response with one result.
-fn search_response() -> String {
-    json!({"results": [{"title": "Rust 2.0", "url": "https://r.test", "content": "Released."}]})
-        .to_string()
-}
-
-#[test]
-fn websearch_searches_the_topic_then_the_model_analyses_the_results() {
-    let (page_url, pages) = serve(vec![(200, "page text".to_string())]);
-    let (search_url, searches) = serve(vec![(200, search_response())]);
-    let (url, requests) = serve(vec![
-        (
-            200,
-            tool_call_response(
-                "c1",
-                "fetch_url",
-                json!({"url": format!("{page_url}/news")}),
-            ),
-        ),
-        (200, text_response("summary")),
-    ]);
-
-    let output = AgentToolLoop::new(AgentType::WebSearch)
-        .search_base_url(&search_url)
-        .run_loop_with_env(
-            &params(&[
-                "model=m",
-                &format!("base_url={url}"),
-                "topic=rust release",
-                "task=list the changes",
-            ]),
-            "the input",
-            &tavily_env,
-        );
-
-    assert_eq!(output, Ok("summary".to_string()));
-    let search = searches.recv().unwrap();
-    assert!(search.starts_with("POST /search "), "{search}");
-    assert!(search.contains("authorization: Bearer key-1"), "{search}");
-    assert_eq!(
-        request_json(&search),
-        json!({"query": "rust release", "max_results": DEFAULT_MAX_RESULTS})
-    );
-    assert!(pages.recv().unwrap().starts_with("GET /news "));
-    let first = request_json(&requests.recv().unwrap());
-    assert_eq!(first["model"], "m");
-    assert_eq!(
-        first["messages"][1]["content"],
-        "list the changes\n\nTopic: rust release\n\nSearch results:\n\
-         1. Rust 2.0\nhttps://r.test\nReleased.\n\nInput:\nthe input"
-    );
-    let second = request_json(&requests.recv().unwrap());
-    assert_eq!(
-        second["messages"][3],
-        json!({"role": "tool", "tool_call_id": "c1", "content": "page text"})
-    );
-}
-
-#[test]
-fn websearch_uses_max_results_and_the_default_prompt() {
-    let (search_url, searches) = serve(vec![(200, search_response())]);
-    let (url, requests) = serve(vec![(200, text_response("summary"))]);
-    let mut out = Vec::new();
-
-    AgentToolLoop::new(AgentType::WebSearch)
-        .search_base_url(&search_url)
-        .debug(&mut out)
-        .run_loop_with_env(
-            &params(&[
-                "model=m",
-                &format!("base_url={url}"),
-                "topic=rust",
-                "max_results=2",
-            ]),
-            "",
-            &tavily_env,
-        )
-        .unwrap();
-
-    assert_eq!(request_json(&searches.recv().unwrap())["max_results"], 2);
-    let first = request_json(&requests.recv().unwrap());
-    let prompt = first["messages"][1]["content"].as_str().unwrap();
-    assert!(
-        prompt.starts_with(&format!("{DEFAULT_WEBSEARCH_PROMPT}\n\nTopic: rust\n")),
-        "{prompt}"
-    );
-    let out = String::from_utf8(out).unwrap();
-    assert!(out.contains("\ntopic: rust\nmax_results: 2\n"), "{out}");
-    let pretty =
-        serde_json::to_string_pretty(&serde_json::from_str::<Value>(&search_response()).unwrap())
-            .unwrap();
-    let response = format!("=== agent:websearch search response ===\n{pretty}\n");
-    let results =
-        "=== agent:websearch search: rust (max_results 2) ===\n1. Rust 2.0\nhttps://r.test\n";
-    let response_at = out.find(&response).expect(&out);
-    let results_at = out.find(results).expect(&out);
-    assert!(response_at < results_at, "{out}");
-}
-
-#[test]
-fn websearch_debug_writes_a_search_response_that_is_not_json_as_it_is() {
-    let (search_url, _searches) = serve(vec![(200, "<html>busy</html>".to_string())]);
-    let mut out = Vec::new();
-    let err = AgentToolLoop::new(AgentType::WebSearch)
-        .search_base_url(&search_url)
-        .debug(&mut out)
-        .run_loop_with_env(&params(&["model=m", "topic=rust"]), "", &tavily_env)
-        .unwrap_err();
-
-    assert!(err.starts_with("Tavily response is not JSON"), "{err}");
-    let out = String::from_utf8(out).unwrap();
-    assert!(
-        out.contains("=== agent:websearch search response ===\n<html>busy</html>\n"),
-        "{out}"
-    );
-}
-
-#[test]
-fn websearch_fails_before_asking_the_model_without_topic_or_key() {
-    // Nothing listens on these ports, so a request would fail with another error.
-    let url = closed_url();
-    let cases = [
-        (
-            vec![
-                "model=m".to_string(),
-                format!("base_url={url}"),
-                "task=t".into(),
-            ],
-            "`agent:websearch` needs a topic, as in `topic=\"latest Rust release\"`",
-        ),
-        (
-            vec![
-                "model=m".to_string(),
-                format!("base_url={url}"),
-                "topic=rust".into(),
-            ],
-            "no Tavily API key: set `TAVILY_API_KEY`",
-        ),
-    ];
-    for (params, message) in cases {
-        let err = AgentToolLoop::new(AgentType::WebSearch)
-            .search_base_url(&url)
-            .run_loop_with_env(&params, "", &no_env)
-            .unwrap_err();
-        assert_eq!(err, message);
-    }
-}
-
-#[test]
-fn websearch_fails_when_the_search_fails() {
-    let (search_url, _searches) = serve(vec![(401, "bad key".to_string())]);
-    let err = AgentToolLoop::new(AgentType::WebSearch)
-        .search_base_url(&search_url)
-        .run_loop_with_env(&params(&["model=m", "topic=rust"]), "", &tavily_env)
-        .unwrap_err();
-    assert_eq!(
-        err,
-        format!("`{search_url}/search` responded with 401 Unauthorized: bad key")
-    );
-}
-
 #[test]
 fn run_loop_uses_max_steps_from_the_params() {
     let (url, _requests) = serve(vec![(200, tool_call_response("c1", "unknown", json!({})))]);
@@ -723,66 +534,6 @@ fn run_loop_fails_on_invalid_configuration() {
 }
 
 // Tools
-
-#[test]
-fn fetch_url_returns_the_response_body() {
-    let (url, requests) = serve(vec![(200, "hello".to_string()), (404, "gone".to_string())]);
-    let mut tool = FetchUrl;
-    assert_eq!(tool.name(), "fetch_url");
-    assert_eq!(tool.parameters()["required"], json!(["url"]));
-
-    assert_eq!(
-        tool.call(&json!({"url": format!("{url}/a")})),
-        Ok("hello".into())
-    );
-    assert!(requests.recv().unwrap().starts_with("GET /a "));
-    let err = tool.call(&json!({"url": url})).unwrap_err();
-    assert!(err.contains("responded with 404"), "{err}");
-    assert_eq!(
-        tool.call(&json!({"link": "x"})),
-        Err("missing string argument `url`".into())
-    );
-}
-
-#[test]
-fn tavily_search_tool_returns_the_results_as_text() {
-    let body = json!({
-        "answer": "Rust 2.0",
-        "results": [{"title": "Rust Blog", "url": "https://r.test", "content": "News."}],
-    })
-    .to_string();
-    let (url, requests) = serve(vec![(200, body), (500, "down".to_string())]);
-    let mut tool = TavilySearch::new(&url, "key-1");
-    assert_eq!(tool.name(), "tavily_search");
-    assert!(tool.description().contains("fetch_url"));
-    assert_eq!(tool.parameters()["required"], json!(["query"]));
-
-    assert_eq!(
-        tool.call(&json!({"query": "rust", "max_results": 1, "topic": "news"})),
-        Ok("Answer: Rust 2.0\n\n1. Rust Blog\nhttps://r.test\nNews.".into())
-    );
-    let request = requests.recv().unwrap();
-    assert!(request.starts_with("POST /search "), "{request}");
-    assert!(request.contains("authorization: Bearer key-1"), "{request}");
-    let sent: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-    assert_eq!(
-        sent,
-        json!({"query": "rust", "max_results": 1, "topic": "news", "include_answer": true})
-    );
-
-    let err = tool
-        .call(&json!({"query": "rust", "max_results": null}))
-        .unwrap_err();
-    assert!(err.contains("responded with 500"), "{err}");
-    assert_eq!(
-        tool.call(&json!({"query": "rust", "max_results": -1})),
-        Err("argument `max_results` is not a positive integer".into())
-    );
-    assert_eq!(
-        tool.call(&json!({"q": "rust"})),
-        Err("missing string argument `query`".into())
-    );
-}
 
 #[test]
 fn bash_tool_returns_stdout_or_the_error() {
@@ -831,7 +582,7 @@ fn debug_writes_requests_replies_and_tool_calls() {
         Ok(text("the answer")),
     ]);
     let mut out = Vec::new();
-    let output = AgentToolLoop::new(AgentType::WebSearch)
+    let output = AgentToolLoop::new(AgentType::Coder)
         .with_tools(vec![lookup, failing])
         .debug(&mut out)
         .run_with(&mut client, "find it", "")
@@ -846,12 +597,12 @@ fn debug_writes_requests_replies_and_tool_calls() {
     assert_eq!(
         blocks,
         [
-            "=== agent:websearch step 1: request (2 messages, 2 new, tools: lookup, failing) ===",
-            "=== agent:websearch step 1: response (2 tool calls) ===",
-            "=== agent:websearch step 1: tool call 1 of 2: lookup (id call-1) ===",
-            "=== agent:websearch step 1: tool call 2 of 2: failing (id call-2) ===",
-            "=== agent:websearch step 2: request (5 messages, 3 new, tools: lookup, failing) ===",
-            "=== agent:websearch step 2: response (0 tool calls) ===",
+            "=== agent:coder step 1: request (2 messages, 2 new, tools: lookup, failing) ===",
+            "=== agent:coder step 1: response (2 tool calls) ===",
+            "=== agent:coder step 1: tool call 1 of 2: lookup (id call-1) ===",
+            "=== agent:coder step 1: tool call 2 of 2: failing (id call-2) ===",
+            "=== agent:coder step 2: request (5 messages, 3 new, tools: lookup, failing) ===",
+            "=== agent:coder step 2: response (0 tool calls) ===",
         ],
         "{out}"
     );

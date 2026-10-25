@@ -13,8 +13,9 @@ fn writes_actions_back_as_statements() {
         "download https://x.test/a.zip mime=application/zip output_dir=out",
         "mock",
         "mock fail",
-        "agent:websearch",
-        "agent:websearch topic=rust task=\"list the  release notes\"",
+        "agent:summarizer",
+        "websearch topic=rust",
+        "websearch topic=\"rust  release notes\" max_results=3 fetch_content=true base_url=http://x.test",
         "agent:coder task=fix.md",
         "agent:summarizer expertise=law max_output=\"3 sentences\"",
         r#"agent:coder task="say \"hi\" \\ a\\b" "" "a b" a=b\c"#,
@@ -78,8 +79,8 @@ fn hides_auth_secrets_when_written_back() {
 #[test]
 fn writes_agent_tool_with_its_type_and_params() {
     let cases = [
-        (AgentType::WebSearch, "websearch"),
         (AgentType::Coder, "coder"),
+        (AgentType::Summarizer, "summarizer"),
     ];
     for (agent, name) in cases {
         assert_eq!(agent.to_string(), name);

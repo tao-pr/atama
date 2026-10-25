@@ -32,7 +32,7 @@ description
 A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
 Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
 `jobs/sample_api_calls.md` for a job that uses every action type.
-`jobs/sample_agents.md` shows two ways to configure an agent.
+`jobs/sample_agents.md` shows a `websearch` action and a `summarizer` agent.
 
 Each action is one line of words separated by spaces. The first word selects
 the type of action, and the other words are its parameters:
@@ -49,21 +49,23 @@ the type of action, and the other words are its parameters:
   `Authorization: Bearer <token>`. The printed job and the log show the token
   as `***`.
 - `tavily_search [max_results=<n>] [search_depth=<depth>] [topic=<topic>]
-  [include_answer=<value>] [query...]` searches the web with the
+  [include_answer=<value>] [include_raw_content=<value>] [query...]` searches the web with the
   [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search),
   for example `tavily_search max_results=3 latest stable Rust release`. The
   words that are not options are the query. If there are none, the input is
   the query. The output is the Tavily response as JSON. See "Tavily search"
   below.
+- `websearch topic="<text>" [max_results=<n>] [fetch_content=<true|false>]`
+  searches the web for a topic with Tavily. The output is the exact JSON
+  response body from Tavily. See "The `websearch` action" below.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
 - `agent:<type> [task="<text>"] [model=<id>] [base_url=<url>] [max_steps=<n>]`
   runs an agent, for example
   `agent:coder model=qwen3.5:0.8b base_url=http://localhost:11434/v1 task="Fix the failing test."`.
-  The type is `websearch`, `coder` or `summarizer`. A `websearch` agent also
-  needs `topic="<text>"`, and takes `max_results=<n>`. A `summarizer` agent
-  also takes `expertise="<text>"` and `max_output="<size>"`. The output is
-  the agent's final reply. See "Agents" below.
+  The type is `coder` or `summarizer`. A `summarizer` agent also takes
+  `expertise="<text>"` and `max_output="<size>"`. The output is the
+  agent's final reply. See "Agents" below.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
@@ -93,10 +95,10 @@ work out its dependencies.
 
 ## Agents
 
-An `agent:<type>` action runs an agent loop. The agent loop sends the task to
-a chat model, runs the tools that the model asks for, and sends the results
-back. When the model replies without a tool call, that reply is the output of
-the action.
+An `agent:coder` or `agent:summarizer` action runs an agent loop. The agent
+loop sends the task to a chat model, runs the tools that the model asks for,
+and sends the results back. When the model replies without a tool call, that
+reply is the output of the action.
 
 The agent works with any model on a server with an OpenAI compatible
 `/chat/completions` endpoint, for example OpenAI, Ollama, vLLM or LM Studio.
@@ -123,40 +125,6 @@ These options and environment variables set up the model:
   the log.
 - `max_steps=<n>` sets the most model replies in one run. The default is 10.
   If the model still calls tools after that, the action fails.
-
-### The `websearch` agent
-
-A `websearch` agent searches a topic first, and then lets the model analyse
-the results. It needs `TAVILY_API_KEY` (see "Tavily search" below). It has
-these options, in addition to the model options above:
-
-- `topic="<text>"` sets what to search for. You must set it.
-- `max_results=<n>` sets the most search results to analyse, from 1 to 20.
-  The default is 5.
-
-`task=` is the prompt: the instruction that tells the model how to analyse
-the results. If the action has no `task=`, the prompt is: "Summarize the main facts in the search results about the topic.
-Name the URL of the source of each fact."
-
-```markdown
-- actions:
-  - agent:websearch model=qwen3.5:0.8b max_results=5 topic="latest stable Rust release" task="List the version, the release date and three notable changes."
-```
-
-The agent runs these steps:
-
-1. Atama sends one Tavily search for the topic, with `max_results`.
-2. Atama gives the model one message with the prompt, the topic and the
-   results. The title, URL and content of each result are in the message. If
-   the action has an input, it comes after the results.
-3. The model analyses the results. It can call tools to get more facts,
-   for example `fetch_url` to read a result in full.
-4. The final reply of the model is the output of the action.
-
-The action fails before it asks the model if the topic is not set,
-`TAVILY_API_KEY` is not set, or the search fails. `topic=` and
-`max_results=` work only with `agent:websearch`. Another agent fails if you
-give it one of these options.
 
 ### The `summarizer` agent
 
@@ -194,10 +162,6 @@ The action fails before it asks the model if the input is empty.
 
 Each type of agent has its own tools:
 
-- `websearch` has `fetch_url`, which sends a `GET` request to a URL. If
-  `TAVILY_API_KEY` is set, it also has `tavily_search`, which makes one more
-  search with Tavily and returns the answer and the results as text. See
-  "Tavily search" below.
 - `coder` has `bash`, which runs a command in the directory where you start
   Atama.
 - `summarizer` has no tools.
@@ -208,21 +172,16 @@ To see what an agent does, add `--debug` before the job file. Atama then
 writes these blocks to stderr for each agent action:
 
 1. The configuration: the model, the base URL, `max_steps`, and whether an
-   API key is set. Atama never writes the key itself. For a `websearch`
-   agent, it also has `topic` and `max_results`. For a `summarizer` agent,
-   it also has `expertise` and `max_output`.
-2. For a `websearch` agent, the search. One block has the response body
-   from Tavily as pretty JSON, with every field that Tavily sends. If the body
-   is not JSON, the block shows it as it is. The next block has the topic,
-   `max_results`, and the results as the model gets them.
-3. For each step, the request: the number of messages, the tools, and the
+   API key is set. Atama never writes the key itself. For a `summarizer`
+   agent, it also has `expertise` and `max_output`.
+2. For each step, the request: the number of messages, the tools, and the
    messages that are new since the last request, as pretty JSON.
-4. The model's reply, as pretty JSON.
-5. One block per tool call, with the tool name, the call id, the arguments
+3. The model's reply, as pretty JSON.
+4. One block per tool call, with the tool name, the call id, the arguments
    as pretty JSON, and the result: `ok` and its length, or the error.
 
 Each block starts with a line such as
-`=== agent:websearch step 1: tool call 1 of 2: fetch_url (id call-1) ===`.
+`=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`.
 The task log stays on stdout, so `2> debug.log` saves the debug output in a
 separate file. `--debug` has no effect in a dry run, because a dry run runs
 no agents.
@@ -235,9 +194,8 @@ permissions. Use it only in a directory and with a model that you trust.
 Atama has a small client for the
 [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search).
 It sends `POST https://api.tavily.com/search` directly, without an SDK. You
-can use Tavily in three ways: as a `tavily_search` action in a task, as the
-first search of a `websearch` agent, or as the `tavily_search` tool of a
-`websearch` agent.
+can use Tavily in two ways: with the `websearch` action, or with the
+`tavily_search` action. Both return the Tavily response as JSON.
 
 Each search uses Tavily API credits. To use Tavily, set your API key before
 you run Atama:
@@ -248,6 +206,40 @@ export TAVILY_API_KEY=<your key>
 
 Atama reads the key only from `TAVILY_API_KEY`. It sends the key as a
 bearer token, and it never writes the key in the job file or the log.
+
+### The `websearch` action
+
+A `websearch` action sends one Tavily search for a topic. It asks no model.
+Its output is the JSON response body from Tavily, exactly as Tavily sends
+it. A later action can read the JSON, or a `summarizer` agent can analyse
+it. The action ignores its input. It has these options:
+
+- `topic="<text>"` sets what to search for. You must set it.
+- `max_results=<n>` sets the most search results, from 1 to 20. The default
+  is 5.
+- `fetch_content=true` also gets the content of each result page, as
+  markdown. Atama then sends `include_raw_content=markdown` to Tavily, and
+  each result in the response has a `raw_content` field. The default is
+  `false`.
+- `base_url=<url>` sets the server. The default is `https://api.tavily.com`.
+
+```markdown
+- actions:
+  - websearch max_results=5 fetch_content=true topic="latest stable Rust release"
+  - bash tee ./search.json
+```
+
+Atama reads the options when it reads the job file. If the topic is not
+set, an option is unknown, or a value is invalid, the job does not start.
+The action fails if `TAVILY_API_KEY` is not set or the search fails.
+
+With `--debug`, the action writes its options and the Tavily response, as
+pretty JSON, to stderr. If the response is not JSON, Atama writes it as it
+is. The output of the action is always the response without changes.
+
+`websearch` was `agent:websearch` before. A job file that still has
+`agent:websearch` does not start, and the error tells you to use
+`websearch`.
 
 ### The `tavily_search` action
 
@@ -270,23 +262,11 @@ its default:
 - `search_depth=<depth>` sets the depth, for example `basic` or `advanced`.
 - `topic=<topic>` sets the kind of search, for example `general`, `news` or `finance`.
 - `include_answer=<value>` asks for a short answer: `true`, `false`, `basic` or `advanced`.
+- `include_raw_content=<value>` asks for the content of each result page: `true`, `false`, `markdown` or `text`.
 - `base_url=<url>` sets the server. The default is `https://api.tavily.com`.
 
 The action fails if `TAVILY_API_KEY` is not set, the query is empty, or
 Tavily responds with an error status.
-
-### The `tavily_search` agent tool
-
-A `websearch` agent always searches its topic first (see "The `websearch`
-agent" above). If the model needs more results, it can call the
-`tavily_search` tool, next to `fetch_url`. The model gives the tool a
-`query`, and optionally `max_results` and `topic`. In the tool, `topic` is
-the kind of search, `general`, `news` or `finance`, not the `topic=` option
-of the action. The tool always asks Tavily for a short answer.
-
-The tool returns text, not JSON, so that the model gets less text to read.
-The text has the answer, then the title, URL and content of each result. The
-model can then read a result in full with `fetch_url`.
 
 ## Building
 

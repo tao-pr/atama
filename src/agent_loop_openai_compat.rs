@@ -41,13 +41,12 @@ use std::io::Write;
 use serde_json::Value;
 
 use crate::actor::AgentType;
-use crate::tavily::{self, SearchConfig};
 
 pub mod agent_options;
 pub mod openai;
 pub mod tools;
 
-use agent_options::{AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_WEBSEARCH_PROMPT, WebSearchOptions};
+use agent_options::{AgentConfig, DEFAULT_MAX_STEPS};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,8 +106,6 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
-    /// Base URL of the Tavily API for the search of a `websearch` agent.
-    search_base_url: String,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
 }
@@ -121,15 +118,13 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
-            search_base_url: tavily::DEFAULT_BASE_URL.to_string(),
             debug: None,
         }
     }
 
-    /// Writes debug output to `out`: the configuration, for a `websearch`
-    /// agent the Tavily response body as pretty JSON and the results that
-    /// the model gets, and for each step the new messages of the request,
-    /// the model's reply, and each tool call with its arguments and result.
+    /// Writes debug output to `out`: the configuration, and for each step the
+    /// new messages of the request, the model's reply, and each tool call
+    /// with its arguments and result.
     /// Messages are pretty JSON in the chat completions format. The API key
     /// is never written.
     pub fn debug(mut self, out: impl Write + 'a) -> Self {
@@ -146,13 +141,6 @@ impl<'a> AgentToolLoop<'a> {
     /// Sets the most model replies that one run asks for.
     pub fn max_steps(mut self, max_steps: u32) -> Self {
         self.max_steps = max_steps;
-        self
-    }
-
-    /// Sets the base URL of the Tavily API for the search of a `websearch`
-    /// agent. The default is [`tavily::DEFAULT_BASE_URL`].
-    pub fn search_base_url(mut self, url: &str) -> Self {
-        self.search_base_url = url.to_string();
         self
     }
 
@@ -178,13 +166,11 @@ impl<'a> AgentToolLoop<'a> {
     ///
     /// Reads the configuration with [`AgentConfig::from_params`], talks to
     /// the model with an [`openai::OpenAiClient`], and returns the model's
-    /// final reply. A `websearch` agent first searches its topic with Tavily
-    /// (see [`AgentToolLoop::search_task`]). A `summarizer` agent adds its
-    /// expertise and length limit to the task (see
-    /// [`agent_options::SummarizerOptions::task`]).
+    /// final reply. A `summarizer` agent adds its expertise and length limit
+    /// to the task (see [`agent_options::SummarizerOptions::task`]).
     ///
-    /// Fails if the configuration is invalid, the search of a `websearch`
-    /// agent fails, or a `summarizer` agent has no input.
+    /// Fails if the configuration is invalid, or a `summarizer` agent has no
+    /// input.
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
@@ -198,60 +184,13 @@ impl<'a> AgentToolLoop<'a> {
             "=== agent:{} configuration ===\n{summary}",
             self.agent
         ));
-        let task = match (&config.websearch, &config.summarizer) {
-            (Some(options), _) => self.search_task(options, &config.task, env)?,
-            (_, Some(options)) => options.task(&config.task, input)?,
-            (None, None) => config.task.clone(),
+        let task = match &config.summarizer {
+            Some(options) => options.task(&config.task, input)?,
+            None => config.task.clone(),
         };
         let mut client =
             openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone());
         self.run_with(&mut client, &task, input)
-    }
-
-    /// Searches the topic of a `websearch` agent with Tavily, and returns
-    /// the task for the model: the instruction, the topic and the results.
-    ///
-    /// The search asks for `options.max_results` results. The instruction is
-    /// `prompt`, or [`DEFAULT_WEBSEARCH_PROMPT`] if it is empty.
-    ///
-    /// Fails if `env` has no Tavily API key, or the search fails.
-    pub fn search_task(
-        &mut self,
-        options: &WebSearchOptions,
-        prompt: &str,
-        env: &dyn Fn(&str) -> Option<String>,
-    ) -> Result<String, String> {
-        let WebSearchOptions { topic, max_results } = options;
-        let search = SearchConfig {
-            base_url: self.search_base_url.clone(),
-            api_key: tavily::api_key(env)?,
-            query: topic.clone(),
-            max_results: Some(*max_results),
-            search_depth: None,
-            topic: None,
-            include_answer: None,
-        };
-        let body = search.search()?;
-        if self.debug.is_some() {
-            self.write_debug(format!(
-                "=== agent:{} search response ===\n{}",
-                self.agent,
-                pretty_json(&body)
-            ));
-        }
-        let results = tools::truncate(tavily::format_results(&body)?);
-        self.write_debug(format!(
-            "=== agent:{} search: {topic} (max_results {max_results}) ===\n{results}",
-            self.agent
-        ));
-        let prompt = if prompt.is_empty() {
-            DEFAULT_WEBSEARCH_PROMPT
-        } else {
-            prompt
-        };
-        Ok(format!(
-            "{prompt}\n\nTopic: {topic}\n\nSearch results:\n{results}"
-        ))
     }
 
     /// Runs the loop with `client`.
@@ -389,13 +328,6 @@ fn user_prompt(task: &str, input: &str) -> Option<String> {
 
 fn system_prompt(agent: AgentType) -> &'static str {
     match agent {
-        AgentType::WebSearch => {
-            "You are a web research agent. The user message has an instruction, a \
-             topic, and web search results for the topic. Analyse the results as the \
-             instruction says. Use the tools only if you need more facts, for example \
-             to read a result in full. When you are done, reply with the answer only, \
-             without tool calls."
-        }
         AgentType::Coder => {
             "You are a coding agent that works in the current directory. Use the \
              tools to read, change and test code for the task. When you are done, \

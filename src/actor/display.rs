@@ -7,6 +7,7 @@
 use std::fmt;
 
 use super::{Actor, AgentType, Auth};
+use crate::{tavily, websearch};
 
 /// Writes the action statement that parses back into this actor, for
 /// example `bash npm ci` or `api_call POST https://example.com payload={}`.
@@ -60,6 +61,20 @@ impl fmt::Display for Actor {
                 }
                 Ok(())
             }
+            Actor::WebSearch(options) => {
+                let topic = quote_param(&format!("topic={}", options.topic));
+                write!(f, "websearch {topic}")?;
+                if options.max_results != websearch::DEFAULT_MAX_RESULTS {
+                    write!(f, " max_results={}", options.max_results)?;
+                }
+                if options.fetch_content {
+                    write!(f, " fetch_content=true")?;
+                }
+                if options.base_url != tavily::DEFAULT_BASE_URL {
+                    write!(f, " base_url={}", options.base_url)?;
+                }
+                Ok(())
+            }
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }
@@ -70,7 +85,6 @@ impl fmt::Display for Actor {
 impl fmt::Display for AgentType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            AgentType::WebSearch => "websearch",
             AgentType::Coder => "coder",
             AgentType::Summarizer => "summarizer",
         })

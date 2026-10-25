@@ -7,12 +7,12 @@ use std::thread;
 
 use serde_json::json;
 
-use atama::tavily::{API_KEY_ENV, DEFAULT_BASE_URL, SearchConfig, api_key, format_results};
+use atama::tavily::{API_KEY_ENV, DEFAULT_BASE_URL, SearchConfig, api_key};
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
 /// Returns the server's base URL and a receiver that gets each raw request.
-fn serve(responses: Vec<(u16, String)>) -> (String, Receiver<String>) {
+fn serve<B: AsRef<[u8]> + Send + 'static>(responses: Vec<(u16, B)>) -> (String, Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("cannot bind test server");
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (requests, received) = mpsc::channel();
@@ -43,10 +43,10 @@ fn serve(responses: Vec<(u16, String)>) -> (String, Receiver<String>) {
             write!(
                 stream,
                 "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
+                body.as_ref().len()
             )
             .unwrap();
-            stream.write_all(body.as_bytes()).unwrap();
+            stream.write_all(body.as_ref()).unwrap();
         }
     });
 
@@ -82,6 +82,7 @@ fn reads_the_query_and_the_defaults() {
             search_depth: None,
             topic: None,
             include_answer: None,
+            include_raw_content: None,
         }
     );
 }
@@ -95,6 +96,7 @@ fn reads_every_option() {
             "search_depth=advanced",
             "topic=news",
             "include_answer=basic",
+            "include_raw_content=markdown",
             "rust",
         ]),
         "",
@@ -106,6 +108,7 @@ fn reads_every_option() {
     assert_eq!(config.search_depth.as_deref(), Some("advanced"));
     assert_eq!(config.topic.as_deref(), Some("news"));
     assert_eq!(config.include_answer.as_deref(), Some("basic"));
+    assert_eq!(config.include_raw_content.as_deref(), Some("markdown"));
     assert_eq!(config.query, "rust");
 }
 
@@ -187,6 +190,19 @@ fn request_body_has_only_the_options_that_are_set() {
             })
         );
     }
+
+    let mut raw = self::config("rust");
+    for (value, expected) in [
+        ("true", json!(true)),
+        ("false", json!(false)),
+        ("markdown", json!("markdown")),
+    ] {
+        raw.include_raw_content = Some(value.into());
+        assert_eq!(
+            raw.request_body(),
+            json!({"query": "rust", "include_raw_content": expected})
+        );
+    }
 }
 
 // Search
@@ -222,6 +238,18 @@ fn search_fails_on_error_status() {
 }
 
 #[test]
+fn search_fails_on_a_response_that_is_not_utf8() {
+    let (url, _requests) = serve(vec![(200, vec![0xff, 0xfe])]);
+    let mut config = config("rust");
+    config.base_url = url.clone();
+    let err = config.search().unwrap_err();
+    assert!(
+        err.starts_with(&format!("cannot read response from `{url}/search`")),
+        "{err}"
+    );
+}
+
+#[test]
 fn search_fails_when_the_server_is_unreachable() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -234,41 +262,4 @@ fn search_fails_when_the_server_is_unreachable() {
         err.starts_with(&format!("request to `{url}/search` failed")),
         "{err}"
     );
-}
-
-// Results
-
-#[test]
-fn formats_the_answer_and_the_results() {
-    let body = json!({
-        "query": "Who is Leo Messi?",
-        "answer": " A footballer. ",
-        "results": [
-            {"title": "Messi | Britannica", "url": "https://b.test", "content": "Born in 1987.", "score": 0.8},
-            {"title": "Messi", "url": "https://w.test"},
-        ],
-    })
-    .to_string();
-    assert_eq!(
-        format_results(&body),
-        Ok("Answer: A footballer.\n\n\
-            1. Messi | Britannica\nhttps://b.test\nBorn in 1987.\n\n\
-            2. Messi\nhttps://w.test\n"
-            .to_string())
-    );
-}
-
-#[test]
-fn formats_a_response_without_results() {
-    assert_eq!(
-        format_results(r#"{"answer":null}"#),
-        Ok("No results.".into())
-    );
-    assert_eq!(format_results("{}"), Ok("No results.".into()));
-}
-
-#[test]
-fn fails_on_a_response_that_is_not_json() {
-    let err = format_results("<html>").unwrap_err();
-    assert!(err.starts_with("Tavily response is not JSON"), "{err}");
 }
