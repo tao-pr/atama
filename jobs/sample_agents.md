@@ -50,13 +50,17 @@ Prerequisites:
 
   The search uses Tavily API credits.
 
-- The `Summarize research` task reads its model from the environment. Set
-  these variables before you run the job:
+- The `Extract results` task uses `jq` to read the JSON. To install it, see
+  https://jqlang.org/download/.
+
+- The `Summarize research` task sets its model and server in the action:
+  `qwen3.5:0.8b` on the local Ollama server. Atama reads the API key of the
+  model server only from the `ATAMA_AGENT_API_KEY` environment variable,
+  never from the job file. Ollama needs no key, so you can leave it unset.
+  If you change the action to a server that needs a key, for example
+  `https://api.openai.com/v1`, set the key before you run the job:
 
   ```bash
-  export ATAMA_AGENT_BASE_URL=http://localhost:11434/v1
-  export ATAMA_AGENT_MODEL=qwen3.5:0.8b
-  # Only if the server needs a key, for example https://api.openai.com/v1
   export ATAMA_AGENT_API_KEY=<your key>
   ```
 
@@ -95,9 +99,20 @@ model. Its output is the JSON response body from Tavily, without changes.
   - websearch max_results=5 fetch_content=true topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows"
 - if_fail: retry=1
 
+## Extract results
+
+Keep only the `results` array of the Tavily response, so that the next tasks
+do not get the other fields, such as `query` and `response_time`. Atama gives
+the output of Research to `jq` on stdin. `jq .results` writes the array as
+one JSON value. `.results[]` would write each result as a separate JSON
+value, and then the output is not one JSON document.
+
+- actions:
+  - bash jq .results
+
 ## Save raw research
 
-Write the Tavily response to a JSON file. `tee` also passes it on as the
+Write the search results to a JSON file. `tee` also passes them on as the
 output of the task.
 
 - actions:
@@ -105,9 +120,10 @@ output of the task.
 
 ## Summarize research
 
-A `summarizer` agent without model options in the action. It gets its
-model, server and API key from the `ATAMA_AGENT_*` environment variables.
-`cat` reads the saved Tavily response, and its output is the input of the
+A `summarizer` agent that uses the local Ollama model. `model=` and
+`base_url=` select `qwen3.5:0.8b` on `localhost:11434`. The API key comes
+from `ATAMA_AGENT_API_KEY`, if it is set.
+`cat` reads the saved search results, and its output is the input of the
 agent. `task=` tells the model what to take from the search results.
 `expertise=` sets the field of the reader, and `max_output=` limits the
 summary to 40% of the length of the input. The summary keeps the names,
@@ -115,7 +131,7 @@ numbers and source URLs that are important to the key points.
 
 - actions:
   - bash cat ./output/agents/research-raw.json
-  - agent:summarizer expertise="agentic AI engineering" max_output="40%" task="The input is a Tavily search response in JSON. From its results, list the most common agent loop patterns that work with any LLM/VLM and fit most AI workflows. For each pattern, give its name, how its loop works in one or two sentences - preferrably in list of one sentences, when to use it, and the URL of its source. Name only patterns that the results describe. Use only the input, and reply with a short markdown list."
+  - agent:summarizer model=qwen3.5:0.8b base_url=http://localhost:11434/v1 expertise="agentic AI engineering" max_output="40%" task="You receive an input of a list of agentic loop patterns. You look at the content summarize into just the key points, remember to keep the names, source URLs. The output should be compiled into a single markdown file format with headings, subheadings and bullet points. Each topic should be a heading, and its keypoint summary should be a bullet point list under it."
 
 ## Save summary
 

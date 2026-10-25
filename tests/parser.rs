@@ -2,7 +2,7 @@
 
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
-use atama::agent_loop_openai_compat::agent_options::AgentConfig;
+use atama::agent_loop_openai_compat::agent_options::{API_KEY_ENV, AgentConfig};
 use atama::tavily::DEFAULT_BASE_URL;
 use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
 use atama::{Event, Hook, Trigger, parse_job};
@@ -569,16 +569,25 @@ fn sample_agents_job_searches_and_then_summarizes() {
     let [(AgentType::Summarizer, summarizer)] = agents.as_slice() else {
         panic!("expected one summarizer agent, got {agents:?}");
     };
-    // Every param is a valid option. The summarizer gets its model from the
-    // environment.
-    let env = |_: &str| Some("env-model".to_string());
+    // Every param is a valid option. The summarizer sets the local Ollama
+    // model in the action, so the environment changes only the API key.
+    let env = |name: &str| match name {
+        API_KEY_ENV => Some("key-1".to_string()),
+        _ => Some("from-env".to_string()),
+    };
     let config =
         AgentConfig::from_params(AgentType::Summarizer, summarizer, env).expect("valid options");
-    assert_eq!(config.model, "env-model");
+    assert_eq!(config.model, "qwen3.5:0.8b");
+    assert_eq!(config.base_url, "http://localhost:11434/v1");
+    assert_eq!(config.api_key.as_deref(), Some("key-1"));
     assert!(
-        config
-            .task
-            .starts_with("The input is a Tavily search response"),
+        !summarizer
+            .iter()
+            .any(|param| param.split('=').next().unwrap().contains("key")),
+        "the job file must not have an API key: {summarizer:?}"
+    );
+    assert!(
+        config.task.starts_with("You receive an input"),
         "{}",
         config.task
     );
@@ -593,6 +602,7 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
         [
             "Prepare",
             "Research",
+            "Extract results",
             "Save raw research",
             "Summarize research",
             "Save summary",
@@ -606,6 +616,7 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
         .map(|actor| actor.to_string())
         .collect();
     for action in [
+        "bash jq .results",
         "bash tee ./output/agents/research-raw.json",
         "bash cat ./output/agents/research-raw.json",
         "bash tee ./output/agents/research-summary.md",
