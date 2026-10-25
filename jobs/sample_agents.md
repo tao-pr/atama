@@ -126,25 +126,28 @@ value, and then the output is not one JSON document.
 
 ## Save raw research
 
-Write the search results to a JSON file. `tee` also passes them on as the
-output of the task.
+Write each search result to its own JSON file: the first result goes to
+`./output/agents/research-raw/result-1.json`, the second to `result-2.json`,
+and so on. `jobs/scripts/split_json_array.sh` does the split with `jq`,
+because a `bash` action passes its words to the command without a shell.
+The script then prints the array again, so the array is also the output of
+the task. If the input is not a JSON array, the script fails.
 
 - actions:
-  - bash tee ./output/agents/research-raw.json
+  - bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw
 
 ## Summarize research
 
 A `summarizer` agent that uses the `local-qwen` profile: `qwen3.5:0.8b` on
 the local Ollama server.
-`cat` reads the saved search results, and its output is the input of the
-agent. `task=` tells the model what to take from the search results.
+The input of the agent is the output of Save raw research: the array of
+search results. `task=` tells the model what to take from the search results.
 `expertise=` sets the field of the reader, and `max_output=` limits the
 summary to 40% of the length of the input. The summary keeps the names,
 numbers and source URLs that are important to the key points.
 
 - actions:
-  - bash cat ./output/agents/research-raw.json
-  - agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You receive an input of a list of agentic loop patterns. You look at the content summarize into just the key points, remember to keep the names, source URLs. The output should be compiled into a single markdown file format with headings, subheadings and bullet points. Each topic should be a heading, and its keypoint summary should be a bullet point list under it."
+  - agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given a list of JSON object, which you will convert into a markdown file. Each item has a title, a URL, and the page content, which you will convert into heading and summarize the content. Summarize the key points of each page, keeping the names, and source URLs without changes, and your task is to summarize the 'raw_content'."
 
 ## Save summary
 

@@ -46,6 +46,8 @@ A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
 Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
 `jobs/sample_api_calls.md` for a job that uses every action type.
 `jobs/sample_agents.md` shows a `websearch` action and a `summarizer` agent.
+`jobs/scripts/` has helper scripts that the sample jobs call, and
+`tests/sample_scripts.rs` tests them.
 
 Each action is one line of words separated by spaces. The first word selects
 the type of action, and the other words are its parameters:
