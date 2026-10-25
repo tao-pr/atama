@@ -49,7 +49,7 @@ fn read_json(path: &Path) -> Value {
 }
 
 #[test]
-fn split_writes_each_element_to_its_own_file_and_prints_the_array() {
+fn split_writes_each_element_to_its_own_file_and_prints_the_paths() {
     if !has_jq() {
         eprintln!("skipped: jq is not installed");
         return;
@@ -60,11 +60,15 @@ fn split_writes_each_element_to_its_own_file_and_prints_the_array() {
 
     let output = split(&out, input);
     assert!(output.status.success(), "{output:?}");
-    // The output is the input, for the next task.
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        format!("{input}\n")
-    );
+    // The output is the path of each file, one per line, in order.
+    let paths: Vec<PathBuf> = (1..=3)
+        .map(|n| out.join(format!("result-{n}.json")))
+        .collect();
+    let expected: String = paths
+        .iter()
+        .map(|path| format!("{}\n", path.display()))
+        .collect();
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
     let mut files: Vec<String> = fs::read_dir(&out)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -89,6 +93,7 @@ fn split_writes_no_file_for_an_empty_array() {
     let dir = temp_dir("split-empty");
     let output = split(&dir, "[]");
     assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
     fs::remove_dir_all(dir).unwrap();
 }

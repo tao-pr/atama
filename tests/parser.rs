@@ -780,6 +780,7 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
     for action in [
         "bash jq .results",
         "bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw",
+        "bash xargs jq -s .",
         "bash tee ./output/agents/research-summary.md",
         "bash cat ./output/agents/research-summary.md",
     ] {

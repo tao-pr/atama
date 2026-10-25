@@ -130,8 +130,9 @@ Write each search result to its own JSON file: the first result goes to
 `./output/agents/research-raw/result-1.json`, the second to `result-2.json`,
 and so on. `jobs/scripts/split_json_array.sh` does the split with `jq`,
 because a `bash` action passes its words to the command without a shell.
-The script then prints the array again, so the array is also the output of
-the task. If the input is not a JSON array, the script fails.
+The script prints the path of each file, one per line, so the list of files
+is the output of the task. If the input is not a JSON array, the script
+fails.
 
 - actions:
   - bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw
@@ -140,13 +141,15 @@ the task. If the input is not a JSON array, the script fails.
 
 A `summarizer` agent that uses the `local-qwen` profile: `qwen3.5:0.8b` on
 the local Ollama server.
-The input of the agent is the output of Save raw research: the array of
-search results. `task=` tells the model what to take from the search results.
+The input of the task is the list of files from Save raw research. `xargs`
+gives the paths to `jq -s .`, which reads the files and writes them as one
+JSON array. That array is the input of the agent. `task=` tells the model what to take from the search results.
 `expertise=` sets the field of the reader, and `max_output=` limits the
 summary to 40% of the length of the input. The summary keeps the names,
 numbers and source URLs that are important to the key points.
 
 - actions:
+  - bash xargs jq -s .
   - agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given a list of JSON object, which you will convert into a markdown file. Each item has a title, a URL, and the page content, which you will convert into heading and summarize the content. Summarize the key points of each page, keeping the names, and source URLs without changes, and your task is to summarize the 'raw_content'."
 
 ## Save summary
