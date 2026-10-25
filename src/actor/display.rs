@@ -53,6 +53,13 @@ impl fmt::Display for Actor {
                 }
                 Ok(())
             }
+            Actor::TavilySearch { params } => {
+                write!(f, "tavily_search")?;
+                for param in params {
+                    write!(f, " {param}")?;
+                }
+                Ok(())
+            }
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }

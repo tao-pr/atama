@@ -1004,3 +1004,13 @@ fn download_fails_when_the_connection_closes_early() {
         "error was: {err}"
     );
 }
+
+#[test]
+fn tavily_search_fails_on_invalid_params() {
+    // The test with a real request is in `tests/cli.rs`, because it needs
+    // `TAVILY_API_KEY` and only a child process can set it safely.
+    let actor = Actor::TavilySearch {
+        params: vec!["max_results=x".into(), "q".into()],
+    };
+    assert_eq!(actor.act(""), Err("`max_results=x` is not a number".into()));
+}

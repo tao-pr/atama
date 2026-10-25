@@ -11,9 +11,12 @@ use atama::TIMESTAMP_FORMAT;
 use chrono::NaiveDateTime;
 
 /// Runs the `atama` binary with the given arguments and returns its output.
+/// It removes `TAVILY_API_KEY`, so the tools of a `websearch` agent do not
+/// depend on the shell that runs the tests.
 fn run_atama(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_atama"))
         .args(args)
+        .env_remove("TAVILY_API_KEY")
         .output()
         .expect("failed to run atama binary")
 }
@@ -194,6 +197,68 @@ fn debug_writes_agent_requests_to_stderr() {
 
     let output = run_atama(&[&job]);
     assert!(output.stderr.is_empty(), "stderr was: {:?}", output.stderr);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn tavily_search_sends_the_key_from_the_environment() {
+    // A server that answers one request and sends back the raw request.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut request = String::new();
+        let mut content_length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                content_length = value.trim().parse().unwrap();
+            }
+            request.push_str(&line);
+            if line == "\r\n" {
+                break;
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).unwrap();
+        request.push_str(&String::from_utf8(body).unwrap());
+        let reply = r#"{"results":[]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+            reply.len()
+        )
+        .unwrap();
+        request
+    });
+    let (dir, job) = job_in_temp_dir(
+        "tavily",
+        &format!("# Job\n## Search\n- actions: tavily_search base_url={url} max_results=2 rust\n"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .env("TAVILY_API_KEY", "key-1")
+        .output()
+        .expect("failed to run atama binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout was: {stdout}");
+    assert!(
+        stdout.contains(r#"| {"results":[]}"#),
+        "stdout was: {stdout}"
+    );
+    assert!(!stdout.contains("key-1"), "stdout was: {stdout}");
+
+    let request = server.join().unwrap();
+    assert!(request.starts_with("POST /search "), "{request}");
+    assert!(request.contains("authorization: Bearer key-1"), "{request}");
+    assert!(
+        request.ends_with(r#"{"query":"rust","max_results":2}"#),
+        "{request}"
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 

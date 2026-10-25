@@ -14,7 +14,7 @@ use atama::AgentToolLoop;
 use atama::actor::AgentType;
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
 use atama::agent_loop_openai_compat::tools::{
-    Bash, FetchUrl, MAX_RESULT_CHARS, default_tools, truncate,
+    Bash, FetchUrl, MAX_RESULT_CHARS, TavilySearch, default_tools, tools_for, truncate,
 };
 use atama::agent_loop_openai_compat::{
     API_KEY_ENV, AgentConfig, BASE_URL_ENV, ChatClient, DEFAULT_BASE_URL, DEFAULT_MAX_STEPS,
@@ -284,21 +284,38 @@ fn rejects_invalid_configuration() {
 
 // Loop
 
+fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
+    tools.iter().map(|tool| tool.name().to_string()).collect()
+}
+
 #[test]
 fn has_the_default_tools_of_its_agent_type() {
-    let cases = [
-        (AgentType::WebSearch, vec!["fetch_url"]),
-        (AgentType::Coder, vec!["bash"]),
-    ];
-    for (agent, names) in cases {
+    for agent in [AgentType::WebSearch, AgentType::Coder] {
         let agent_loop = AgentToolLoop::new(agent);
         assert_eq!(agent_loop.agent(), agent);
-        assert_eq!(agent_loop.tool_names(), names);
-        let tools: Vec<String> = default_tools(agent)
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect();
-        assert_eq!(tools, names);
+        assert_eq!(agent_loop.tool_names(), names(&default_tools(agent)));
+    }
+}
+
+#[test]
+fn websearch_gets_tavily_search_only_with_an_api_key() {
+    let no_env = |_: &str| None;
+    let with_key = |name: &str| (name == "TAVILY_API_KEY").then(|| "key".to_string());
+    let empty_key = |name: &str| (name == "TAVILY_API_KEY").then(String::new);
+    let cases = [
+        (tools_for(AgentType::WebSearch, no_env), vec!["fetch_url"]),
+        (
+            tools_for(AgentType::WebSearch, empty_key),
+            vec!["fetch_url"],
+        ),
+        (
+            tools_for(AgentType::WebSearch, with_key),
+            vec!["fetch_url", "tavily_search"],
+        ),
+        (tools_for(AgentType::Coder, with_key), vec!["bash"]),
+    ];
+    for (tools, expected) in cases {
+        assert_eq!(names(&tools), expected);
     }
 }
 
@@ -318,7 +335,12 @@ fn returns_the_reply_when_the_model_calls_no_tools() {
         "{system:?}"
     );
     assert_eq!(*user, Message::User("find it\n\nInput:\nthe input".into()));
-    assert_eq!(client.tool_names[0], ["fetch_url"]);
+    // The tools depend on `TAVILY_API_KEY` (see `tools_for`), so compare
+    // with the default tools of this process, not a fixed list.
+    assert_eq!(
+        client.tool_names[0],
+        names(&default_tools(AgentType::WebSearch))
+    );
 }
 
 #[test]
@@ -671,6 +693,46 @@ fn fetch_url_returns_the_response_body() {
     assert_eq!(
         tool.call(&json!({"link": "x"})),
         Err("missing string argument `url`".into())
+    );
+}
+
+#[test]
+fn tavily_search_tool_returns_the_results_as_text() {
+    let body = json!({
+        "answer": "Rust 2.0",
+        "results": [{"title": "Rust Blog", "url": "https://r.test", "content": "News."}],
+    })
+    .to_string();
+    let (url, requests) = serve(vec![(200, body), (500, "down".to_string())]);
+    let mut tool = TavilySearch::new(&url, "key-1");
+    assert_eq!(tool.name(), "tavily_search");
+    assert!(tool.description().contains("fetch_url"));
+    assert_eq!(tool.parameters()["required"], json!(["query"]));
+
+    assert_eq!(
+        tool.call(&json!({"query": "rust", "max_results": 1, "topic": "news"})),
+        Ok("Answer: Rust 2.0\n\n1. Rust Blog\nhttps://r.test\nNews.".into())
+    );
+    let request = requests.recv().unwrap();
+    assert!(request.starts_with("POST /search "), "{request}");
+    assert!(request.contains("authorization: Bearer key-1"), "{request}");
+    let sent: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(
+        sent,
+        json!({"query": "rust", "max_results": 1, "topic": "news", "include_answer": true})
+    );
+
+    let err = tool
+        .call(&json!({"query": "rust", "max_results": null}))
+        .unwrap_err();
+    assert!(err.contains("responded with 500"), "{err}");
+    assert_eq!(
+        tool.call(&json!({"query": "rust", "max_results": -1})),
+        Err("argument `max_results` is not a positive integer".into())
+    );
+    assert_eq!(
+        tool.call(&json!({"q": "rust"})),
+        Err("missing string argument `query`".into())
     );
 }
 

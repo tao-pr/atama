@@ -151,6 +151,27 @@ fn parses_agent_tool_actions() {
 }
 
 #[test]
+fn parses_tavily_search_actions() {
+    let cases = [
+        ("tavily_search", vec![]),
+        (
+            "tavily_search max_results=3 rust release notes",
+            vec!["max_results=3", "rust", "release", "notes"],
+        ),
+    ];
+    for (statement, params) in cases {
+        let actor: Actor = statement.parse().expect(statement);
+        assert_eq!(
+            actor,
+            Actor::TavilySearch {
+                params: params.into_iter().map(Into::into).collect(),
+            },
+            "{statement}"
+        );
+    }
+}
+
+#[test]
 fn rejects_invalid_actions() {
     let cases = [
         ("", "action is empty"),
@@ -347,7 +368,7 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
-         `mock` or `agent:<type>`"
+         `tavily_search`, `mock` or `agent:<type>`"
     );
 }
 

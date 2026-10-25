@@ -7,6 +7,7 @@ pub mod job;
 pub mod parser;
 pub mod passer;
 pub mod printer;
+pub mod tavily;
 
 pub use actor::Actor;
 pub use agent_loop_openai_compat::AgentToolLoop;

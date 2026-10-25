@@ -5,18 +5,38 @@ use serde_json::{Value, json};
 
 use super::Tool;
 use crate::actor::{Actor, AgentType, ApiVerb};
+use crate::tavily::{self, SearchConfig};
 
 /// Most characters of a tool result that the model gets. A longer result is
 /// cut, so that one web page or one command cannot fill the model's context.
 pub const MAX_RESULT_CHARS: usize = 20_000;
 
+/// The tools that each agent type gets, with the environment of the process
+/// (see [`tools_for`]).
+pub fn default_tools(agent: AgentType) -> Vec<Box<dyn Tool>> {
+    tools_for(agent, |name| std::env::var(name).ok())
+}
+
 /// The tools that each agent type gets:
 ///
-/// - `websearch` gets [`FetchUrl`].
+/// - `websearch` gets [`FetchUrl`], and also [`TavilySearch`] if `env` has
+///   the Tavily API key ([`tavily::API_KEY_ENV`]).
 /// - `coder` gets [`Bash`].
-pub fn default_tools(agent: AgentType) -> Vec<Box<dyn Tool>> {
+///
+/// `env` returns the value of an environment variable, or `None` if it is
+/// not set.
+pub fn tools_for(agent: AgentType, env: impl Fn(&str) -> Option<String>) -> Vec<Box<dyn Tool>> {
     match agent {
-        AgentType::WebSearch => vec![Box::new(FetchUrl)],
+        AgentType::WebSearch => {
+            let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(FetchUrl)];
+            if let Ok(api_key) = tavily::api_key(env) {
+                tools.push(Box::new(TavilySearch::new(
+                    tavily::DEFAULT_BASE_URL,
+                    &api_key,
+                )));
+            }
+            tools
+        }
         AgentType::Coder => vec![Box::new(Bash)],
     }
 }
@@ -84,6 +104,78 @@ impl Tool for Bash {
         }
         .act("")?;
         Ok(truncate(output))
+    }
+}
+
+/// `tavily_search`: searches the web with the Tavily API and returns the
+/// answer and the results as text (see [`tavily::format_results`]).
+pub struct TavilySearch {
+    base_url: String,
+    api_key: String,
+}
+
+impl TavilySearch {
+    /// Makes a tool that sends requests to `base_url` with `api_key`.
+    pub fn new(base_url: &str, api_key: &str) -> Self {
+        TavilySearch {
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+        }
+    }
+}
+
+impl Tool for TavilySearch {
+    fn name(&self) -> &str {
+        "tavily_search"
+    }
+
+    fn description(&self) -> &str {
+        "Searches the web and returns a short answer and the title, URL and content \
+         of each result. Use fetch_url to read a result in full."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "max_results": {
+                    "type": "integer",
+                    "description": "Most results to return, from 1 to 20. The default is 5.",
+                },
+                "topic": {
+                    "type": "string",
+                    "enum": ["general", "news", "finance"],
+                    "description": "The kind of search. The default is general.",
+                },
+            },
+            "required": ["query"],
+        })
+    }
+
+    fn call(&mut self, arguments: &Value) -> Result<String, String> {
+        let max_results = match arguments.get("max_results") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or("argument `max_results` is not a positive integer")?,
+            ),
+        };
+        let config = SearchConfig {
+            base_url: self.base_url.clone(),
+            api_key: self.api_key.clone(),
+            query: string_argument(arguments, "query")?,
+            max_results,
+            search_depth: None,
+            topic: arguments
+                .get("topic")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            include_answer: Some("true".to_string()),
+        };
+        Ok(truncate(tavily::format_results(&config.search()?)?))
     }
 }
 

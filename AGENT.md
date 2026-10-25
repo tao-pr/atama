@@ -110,6 +110,7 @@ its own output. The main actor types are:
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
 - `AgentTool` (`agent:<type> ...`) runs an agent. The output is the final reply of the model.
+- `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `MockPlaceholder` (`mock`) passes its input on unchanged. `MockFail` (`mock fail`) always fails.
 
 `ApiCall` and `DownloadFromUrl` can take an `Auth`. A `Passer` (`src/passer.rs`)
@@ -131,6 +132,7 @@ the model replies without a tool call, that reply is the output.
 - `openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
 - `tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
 - `websearch` has the `fetch_url` tool, and `coder` has the `bash` tool.
+- `websearch` also has the `tavily_search` tool if `TAVILY_API_KEY` is set (see `tools_for`).
 
 The model comes from `model=`, `base_url=` and `max_steps=` in the action,
 or from the `ATAMA_AGENT_MODEL`, `ATAMA_AGENT_BASE_URL` and

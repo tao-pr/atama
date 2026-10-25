@@ -14,6 +14,7 @@
 //!     [auth=bearer:<token>]` is [`Actor::ApiCall`].
 //!   - `download <url> [mime=<type>] [output_dir=<dir>] [auth=bearer:<token>]`
 //!     is [`Actor::DownloadFromUrl`].
+//!   - `tavily_search [options...] [query...]` is [`Actor::TavilySearch`].
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
 //!   - `agent:<type> [params...]` is [`Actor::AgentTool`]. The type is
@@ -349,6 +350,9 @@ impl FromStr for Actor {
                     output_dir: options.remove("output_dir"),
                 })
             }
+            "tavily_search" => Ok(Actor::TavilySearch {
+                params: params.iter().map(|param| param.to_string()).collect(),
+            }),
             "mock" => Ok(match params.first() {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
@@ -360,7 +364,7 @@ impl FromStr for Actor {
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
-                     `mock` or `agent:<type>`"
+                     `tavily_search`, `mock` or `agent:<type>`"
                 )),
             },
         }

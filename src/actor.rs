@@ -11,6 +11,7 @@ use ureq::{Agent, Body, RequestBuilder};
 
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::passer::Passer;
+use crate::tavily::SearchConfig;
 
 mod display;
 
@@ -54,6 +55,13 @@ pub enum Actor {
         agent: AgentType,
         /// Parameters for the agent, in order. Each type of agent will
         /// define its own parameters.
+        params: Vec<String>,
+    },
+    /// Searches the web with the Tavily API.
+    /// Carries the search response as JSON as output
+    TavilySearch {
+        /// Options and query words, in order (see
+        /// [`SearchConfig::from_params`]).
         params: Vec<String>,
     },
     /// Does nothing. Carries its input as output unchanged.
@@ -132,7 +140,9 @@ impl Actor {
     ///   `output_dir`, or in `atama/` in the system temp directory, and is
     ///   named after the last part of the URL path. It ignores `input`.
     /// - [`Actor::AgentTool`] runs an [`AgentToolLoop`] with `params` and
-    ///   `input`. The loop is not implemented yet, and always fails.
+    ///   `input`, and returns the final reply of the model.
+    /// - [`Actor::TavilySearch`] sends a Tavily search request and returns the
+    ///   response as JSON. The query is the words of `params`, else `input`.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -176,6 +186,9 @@ impl Actor {
                     Some(debug) => agent_loop.debug(debug).run_loop(params, input),
                     None => agent_loop.run_loop(params, input),
                 }
+            }
+            Actor::TavilySearch { params } => {
+                SearchConfig::from_params(params, input, |name| std::env::var(name).ok())?.search()
             }
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),

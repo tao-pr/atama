@@ -16,6 +16,8 @@ fn writes_actions_back_as_statements() {
         "agent:websearch",
         "agent:websearch rust release notes",
         "agent:coder fix.md",
+        "tavily_search",
+        "tavily_search topic=news rust release notes",
     ];
     for statement in statements {
         let actor: Actor = statement.parse().expect(statement);

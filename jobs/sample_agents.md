@@ -82,7 +82,8 @@ Make the output directory.
 A `websearch` agent with every option in the action itself: `model=` and
 `base_url=` select the model, and `max_steps=6` allows at most 6 model
 replies. The other words are the task. The agent can call `fetch_url` to read
-web pages. Its final reply is the output of the task.
+web pages. If `TAVILY_API_KEY` is set, it can also call `tavily_search` to
+search the web. Its final reply is the output of the task.
 
 - actions:
   - agent:websearch model=qwen3.5:0.8b base_url=http://localhost:11434/v1 max_steps=6 Find the latest stable Rust release on https://blog.rust-lang.org and list its version, its release date and three notable changes as a short markdown list.

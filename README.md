@@ -48,6 +48,14 @@ the type of action, and the other words are its parameters:
 - Add `auth=bearer:<token>` to an `api_call` or `download` action to send
   `Authorization: Bearer <token>`. The printed job and the log show the token
   as `***`.
+- `tavily_search [max_results=<n>] [search_depth=<depth>] [topic=<topic>]
+  [include_answer=<value>] [query...]` searches the web with the
+  [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search),
+  for example `tavily_search max_results=3 latest stable Rust release`. The
+  words that are not options are the query. If there are none, the input is
+  the query. The output is the Tavily response as JSON. Set the API key in
+  `TAVILY_API_KEY`. Atama sends it as a bearer token and never writes it
+  in the log.
 - `mock` does nothing and passes its input on as its output.
 - `mock fail` always fails.
 - `agent:<type> [model=<id>] [base_url=<url>] [max_steps=<n>] <task...>`
@@ -109,7 +117,9 @@ These options and environment variables set up the model:
 
 Each type of agent has its own tools:
 
-- `websearch` has `fetch_url`, which sends a `GET` request to a URL.
+- `websearch` has `fetch_url`, which sends a `GET` request to a URL. If
+  `TAVILY_API_KEY` is set, it also has `tavily_search`, which searches the
+  web with Tavily and returns the answer and the results as text.
 - `coder` has `bash`, which runs a command in the directory where you start
   Atama.
 
