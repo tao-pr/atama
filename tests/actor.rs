@@ -1021,3 +1021,63 @@ fn tavily_search_fails_on_invalid_params() {
     };
     assert_eq!(actor.act(""), Err("`max_results=x` is not a number".into()));
 }
+
+// Foreach
+
+fn for_each(action: Actor) -> Actor {
+    Actor::ForEach(Box::new(action))
+}
+
+#[test]
+fn foreach_runs_the_action_once_for_each_line_and_joins_the_outputs() {
+    // `tr` gets one line without its newline, so its output has none. Each
+    // output gets a newline, so each item starts on a new line.
+    let actor = for_each(bash("tr", &["a-z", "A-Z"]));
+    assert_eq!(actor.act("apple\nbanana\n"), Ok("APPLE\nBANANA\n".into()));
+
+    // An output that ends with a newline gets no second one. Blank lines
+    // are not items.
+    let actor = for_each(bash("awk", &["{print\"item:\",$0}"]));
+    assert_eq!(
+        actor.act("a\n\n   \nb c"),
+        Ok("item: a\nitem: b c\n".into())
+    );
+}
+
+#[test]
+fn foreach_runs_nothing_for_an_input_without_items() {
+    // `mock fail` would fail if it ran.
+    let actor = for_each(Actor::MockFail);
+    assert_eq!(actor.act(""), Ok(String::new()));
+    assert_eq!(actor.act("\n \n"), Ok(String::new()));
+}
+
+#[test]
+fn foreach_fails_at_the_first_item_that_fails() {
+    let actor = for_each(bash("grep", &["a"]));
+    let err = actor.act("a\nb\nc").unwrap_err();
+    assert!(
+        err.starts_with("`foreach` failed at item 2 (`b`): "),
+        "error was: {err}"
+    );
+}
+
+#[test]
+fn foreach_gives_the_debug_output_to_each_run() {
+    let url = closed_url();
+    let actor = for_each(Actor::AgentTool {
+        agent: AgentType::Coder,
+        params: vec!["model=p".into()],
+        profile: Some(profile(&url)),
+    });
+    let mut out = Vec::new();
+    assert!(actor.act_with("one\ntwo", Some(&mut out)).is_err());
+    let out = String::from_utf8(out).unwrap();
+    // The first run fails, so only it writes debug output.
+    assert_eq!(
+        out.matches("=== agent:coder configuration ===").count(),
+        1,
+        "{out}"
+    );
+    assert!(out.contains("\"content\": \"one\""), "{out}");
+}

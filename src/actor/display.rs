@@ -75,6 +75,7 @@ impl fmt::Display for Actor {
                 }
                 Ok(())
             }
+            Actor::ForEach(action) => write!(f, "foreach {action}"),
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }

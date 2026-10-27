@@ -19,6 +19,8 @@
 //!   - `tavily_search [options...] [query...]` is [`Actor::TavilySearch`].
 //!   - `websearch topic=<text> [max_results=<n>] [fetch_content=<true|false>]
 //!     [base_url=<url>]` is [`Actor::WebSearch`].
+//!   - `foreach <action>` is [`Actor::ForEach`]. The action after `foreach`
+//!     is any other action, as in `foreach bash wc -c`.
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
 //!   - `agent:<type> model=<profile> [params...]` is [`Actor::AgentTool`].
@@ -268,11 +270,16 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 /// `model=` names.
 fn parse_action(value: &str, line: usize, profiles: &Profiles) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
+    // The agent of a `foreach` action needs its profile too.
+    let agent_actor = match &mut actor {
+        Actor::ForEach(inner) => inner.as_mut(),
+        other => other,
+    };
     if let Actor::AgentTool {
         agent,
         params,
         profile,
-    } = &mut actor
+    } = agent_actor
     {
         let found = profile::resolve(*agent, params, profiles)
             .map_err(|message| ParseError::new(line, message))?;
@@ -428,6 +435,16 @@ impl FromStr for Actor {
                     options.remove("base_url"),
                 )?))
             }
+            "foreach" => {
+                if rest.trim().is_empty() {
+                    return Err("`foreach` needs an action, as in `foreach bash wc -c`".to_string());
+                }
+                let action: Actor = rest.parse()?;
+                if matches!(action, Actor::ForEach(_)) {
+                    return Err("`foreach` cannot run another `foreach`".to_string());
+                }
+                Ok(Actor::ForEach(Box::new(action)))
+            }
             "mock" => Ok(match params.first() {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
@@ -441,7 +458,7 @@ impl FromStr for Actor {
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
-                     `tavily_search`, `websearch`, `mock` or `agent:<type>`"
+                     `tavily_search`, `websearch`, `foreach`, `mock` or `agent:<type>`"
                 )),
             },
         }

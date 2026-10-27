@@ -119,6 +119,7 @@ its own output. The main actor types are:
 - `AgentTool` (`agent:<type> ...`) runs an agent, `coder` or `summarizer`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
+- `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
 - `MockPlaceholder` (`mock`) passes its input on unchanged. `MockFail` (`mock fail`) always fails.
 
 `ApiCall` and `DownloadFromUrl` can take an `Auth`. A `Passer` (`src/passer.rs`)

@@ -15,6 +15,8 @@ fn writes_actions_back_as_statements() {
         "mock fail",
         "agent:summarizer",
         "websearch topic=rust",
+        "foreach bash wc -c",
+        "foreach agent:summarizer model=p max_output=\"3 sentences\"",
         "websearch topic=\"rust  release notes\" max_results=3 fetch_content=true base_url=http://x.test",
         "agent:coder task=fix.md",
         "agent:summarizer expertise=law max_output=\"3 sentences\"",

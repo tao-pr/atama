@@ -278,6 +278,26 @@ fn agent_sends_the_key_from_the_variable_that_its_profile_names() {
 }
 
 #[test]
+fn sample_foreach_job_writes_one_line_for_each_item() {
+    // Run the sample in a temporary directory, because it writes to
+    // `./output/foreach`.
+    let (dir, job) = job_in_temp_dir("foreach", include_str!("../jobs/sample_foreach.md"));
+    let output = Command::new(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .current_dir(&dir)
+        .output()
+        .expect("failed to run atama binary");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(dir.join("output/foreach/results.txt")).unwrap(),
+        "[item: apple] has 5 characters\n\
+         [item: banana] has 6 characters\n\
+         [item: cherry] has 6 characters\n"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn tavily_search_sends_the_key_from_the_environment() {
     let (url, server) = serve_once(r#"{"results":[]}"#);
     let (dir, job) = job_in_temp_dir(

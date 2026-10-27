@@ -51,16 +51,16 @@ fn highlights_the_agent_type_of_agent_actions() {
     let job = parse_job(
         "```config\np: model=m, base_url=http://x.test\n```\n\
          # Job\n## Research\n- actions:\n  - agent:summarizer model=p expertise=law\n  \
-         - agent:coder model=p\n  - bash ls\n",
+         - foreach agent:coder model=p\n  - bash ls\n",
     )
     .expect("job should parse");
 
     let expected = "\x1b[1mJob: Job\x1b[0m\n  - \x1b[1;36mResearch:\x1b[0m \
                     \x1b[30;47magent:summarizer\x1b[0m model=p expertise=law; \
-                    \x1b[30;47magent:coder\x1b[0m model=p; bash ls\n";
+                    foreach \x1b[30;47magent:coder\x1b[0m model=p; bash ls\n";
     assert_eq!(format_job(&job, true), expected);
 
-    let expected = "Job: Job\n  - Research: agent:summarizer model=p expertise=law; agent:coder model=p; bash ls\n";
+    let expected = "Job: Job\n  - Research: agent:summarizer model=p expertise=law; foreach agent:coder model=p; bash ls\n";
     assert_eq!(format_job(&job, false), expected);
 }
 

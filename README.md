@@ -46,41 +46,35 @@ A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
 Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
 `jobs/sample_api_calls.md` for a job that uses every action type.
 `jobs/sample_agents.md` shows a `websearch` action and a `summarizer` agent.
+`jobs/sample_foreach.md` shows the `foreach` action prefix.
 `jobs/scripts/` has helper scripts that the sample jobs call, and
 `tests/sample_scripts.rs` tests them.
 
 Each action is one line of words separated by spaces. The first word selects
 the type of action, and the other words are its parameters:
 
-- `bash <command> [arguments...]` runs the command in bash, for example
-  `bash npm ci`. The output is stdout.
-- `api_call <verb> <url> [payload=<text>] [input_file=<path>]` sends an HTTP
-  request, for example `api_call GET https://example.com`. The verb is one of
-  GET, POST, PUT, DELETE, PATCH or HEAD, in any case. The output is the
-  response body.
-- `download <url> [mime=<type>] [output_dir=<dir>]` downloads a file. The
-  output is the path of the downloaded file.
-- Add `auth=bearer:<token>` to an `api_call` or `download` action to send
-  `Authorization: Bearer <token>`. The printed job and the log show the token
-  as `***`.
-- `tavily_search [max_results=<n>] [search_depth=<depth>] [topic=<topic>]
-  [include_answer=<value>] [include_raw_content=<value>] [query...]` searches the web with the
-  [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search),
-  for example `tavily_search max_results=3 latest stable Rust release`. The
-  words that are not options are the query. If there are none, the input is
-  the query. The output is the Tavily response as JSON. See "Tavily search"
-  below.
-- `websearch topic="<text>" [max_results=<n>] [fetch_content=<true|false>]`
-  searches the web for a topic with Tavily. The output is the exact JSON
-  response body from Tavily. See "The `websearch` action" below.
-- `mock` does nothing and passes its input on as its output.
-- `mock fail` always fails.
-- `agent:<type> model=<profile> [task="<text>"] [max_steps=<n>]` runs an
-  agent with a model profile, for example
-  `agent:coder model=local-qwen task="Fix the failing test."`.
-  The type is `coder` or `summarizer`. A `summarizer` agent also takes
-  `expertise="<text>"` and `max_output="<size>"`. The output is the
-  agent's final reply. See "Agents" below.
+| Action | What it does | Output |
+| --- | --- | --- |
+| `bash <command> [args...]` | Runs a command in bash. | stdout |
+| `api_call <verb> <url> [options...]` | Sends an HTTP request. | The response body |
+| `download <url> [options...]` | Downloads a file. | The file path |
+| `tavily_search [options...] [query...]` | Searches the web with Tavily. | The response JSON |
+| `websearch topic="<text>" [options...]` | Searches the web for one topic. | The response JSON, unchanged |
+| `agent:<type> model=<profile> [options...]` | Runs a `coder` or `summarizer` agent. | The final reply of the model |
+| `foreach <action>` | Runs the action once for each input line. | All outputs, one after the other |
+| `mock` | Does nothing. | The input, unchanged |
+| `mock fail` | Always fails. | None |
+
+For example: `bash npm ci`, `api_call GET https://example.com`,
+`websearch topic="latest Rust release"` and
+`agent:coder model=local-qwen task="Fix the failing test."`.
+
+The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD. Its options
+are `payload=<text>` and `input_file=<path>`, which set the request body.
+The options of `download` are `mime=<type>` and `output_dir=<dir>`. To send
+`Authorization: Bearer <token>`, add `auth=bearer:<token>` to an `api_call`
+or `download` action. The log shows the token as `***`. The sections below
+explain the other actions.
 
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
@@ -107,6 +101,36 @@ The `if_fail` and `if_succeed` hooks run when a task finishes:
 
 Atama evaluates the job into a graph, using each task's `begin_if` condition to
 work out its dependencies.
+
+### The `foreach` prefix
+
+Put `foreach` before an action to run the action once for each line of its
+input. Each run gets one line, without its newline, as its input. The
+action after `foreach` is a normal action, for example
+`foreach bash ./my_script.sh` or `foreach agent:summarizer model=local-qwen`.
+
+```markdown
+## List items
+
+- actions:
+  - bash printf %s\n apple banana cherry
+
+## Describe each item
+
+- actions:
+  - foreach bash awk {print"[item:",$0"]","has",length($0),"characters"}
+```
+
+The runs follow the order of the lines. Atama skips blank lines. The output
+of `foreach` is the outputs of all runs, one after the other. If an output
+does not end with a newline, Atama adds one, so that the output of each
+item starts on a new line. An input without lines runs the action zero
+times, and the output is empty.
+
+If one run fails, `foreach` stops and fails, and the error names the item,
+as in "`foreach` failed at item 2 (`banana`): ...". A `foreach` action
+cannot run another `foreach` action. With `--debug`, each run writes its
+own debug output.
 
 ## Agents
 

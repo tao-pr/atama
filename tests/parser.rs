@@ -320,6 +320,92 @@ fn rejects_invalid_model_profiles() {
 }
 
 #[test]
+fn parses_foreach_actions() {
+    let actor: Actor = "foreach  bash wc -c".parse().unwrap();
+    assert_eq!(
+        actor,
+        Actor::ForEach(Box::new(Actor::BashScript {
+            cmd: "wc".into(),
+            params: vec!["-c".into()],
+        }))
+    );
+    let actor: Actor = "foreach websearch topic=\"rust  news\"".parse().unwrap();
+    assert!(
+        matches!(&actor, Actor::ForEach(inner) if matches!(**inner, Actor::WebSearch(_))),
+        "{actor:?}"
+    );
+
+    let cases = [
+        (
+            "foreach",
+            "`foreach` needs an action, as in `foreach bash wc -c`",
+        ),
+        (
+            "foreach   ",
+            "`foreach` needs an action, as in `foreach bash wc -c`",
+        ),
+        (
+            "foreach foreach bash ls",
+            "`foreach` cannot run another `foreach`",
+        ),
+        (
+            "foreach bash",
+            "`bash` needs a command, as in `bash npm ci`",
+        ),
+    ];
+    for (statement, message) in cases {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Err(message.to_string()),
+            "{statement}"
+        );
+    }
+}
+
+#[test]
+fn gives_the_agent_of_a_foreach_action_its_profile() {
+    let job = parse_job(
+        "```config\np: model=m, base_url=http://x.test\n```\n\
+         # Job\n## A\n- actions:\n  - foreach agent:summarizer model=p\n",
+    )
+    .expect("job should parse");
+    let Actor::ForEach(inner) = &job.tasks[0].actions[0] else {
+        panic!("expected a foreach action");
+    };
+    assert!(
+        matches!(&**inner, Actor::AgentTool { profile: Some(profile), .. } if profile.name == "p"),
+        "{inner:?}"
+    );
+
+    let err = parse_job("# Job\n## A\n- actions:\n  - foreach agent:coder model=q\n").unwrap_err();
+    assert_eq!(err.line, 4);
+    assert!(
+        err.message.starts_with("unknown model profile `q`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn sample_foreach_job_lists_items_and_runs_one_action_for_each() {
+    let job = parse_job(include_str!("../jobs/sample_foreach.md")).expect("job should parse");
+    let actions: Vec<String> = job
+        .tasks
+        .iter()
+        .flat_map(|task| &task.actions)
+        .map(|actor| actor.to_string())
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            "bash mkdir -p ./output/foreach",
+            "bash printf %s\\n apple banana cherry",
+            "foreach bash awk {print\"[item:\",$0\"]\",\"has\",length($0),\"characters\"}",
+            "bash tee ./output/foreach/results.txt",
+        ]
+    );
+}
+
+#[test]
 fn parses_websearch_actions() {
     let cases = [
         (
@@ -633,7 +719,7 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
-         `tavily_search`, `websearch`, `mock` or `agent:<type>`"
+         `tavily_search`, `websearch`, `foreach`, `mock` or `agent:<type>`"
     );
 }
 

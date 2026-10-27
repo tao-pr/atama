@@ -74,6 +74,10 @@ pub enum Actor {
     /// Searches the web for a topic with the Tavily API. Carries the
     /// response body from Tavily, unchanged, as output.
     WebSearch(WebSearchOptions),
+    /// Runs the action once for each line of its input, with that line as
+    /// the input. Carries the outputs of all runs, in order, one after the
+    /// other, as output.
+    ForEach(Box<Actor>),
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -155,6 +159,10 @@ impl Actor {
     ///   response as JSON. The query is the words of `params`, else `input`.
     /// - [`Actor::WebSearch`] searches its topic with Tavily and returns the
     ///   response body unchanged. It ignores `input`.
+    /// - [`Actor::ForEach`] runs its action once for each line of `input`
+    ///   that is not blank, in order, with the line as the input (see
+    ///   [`for_each`]). It returns the outputs one after the other, and
+    ///   each output ends with a newline.
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -212,10 +220,40 @@ impl Actor {
                 SearchConfig::from_params(params, input, |name| std::env::var(name).ok())?.search()
             }
             Actor::WebSearch(options) => options.search(&|name| std::env::var(name).ok(), debug),
+            Actor::ForEach(action) => for_each(action, input, debug),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }
     }
+}
+
+/// Runs `action` once for each line of `input` that is not blank, with the
+/// line, without its newline, as the input. Returns the outputs in order,
+/// one after the other. An output that does not end with a newline gets
+/// one, so that the output of each line starts on a new line. `debug` goes
+/// to each run.
+///
+/// Fails at the first run that fails, and says which line it was.
+fn for_each(
+    action: &Actor,
+    input: &str,
+    mut debug: Option<&mut dyn Write>,
+) -> Result<String, String> {
+    let mut output = String::new();
+    for (index, line) in input
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        let item = action
+            .act_with(line, debug.as_mut().map(|out| &mut **out as &mut dyn Write))
+            .map_err(|err| format!("`foreach` failed at item {} (`{line}`): {err}", index + 1))?;
+        output.push_str(&item);
+        if !item.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    Ok(output)
 }
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {

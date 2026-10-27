@@ -109,8 +109,12 @@ pub fn format_job(job: &Job, color: bool) -> String {
 
 /// Writes the action as its statement. With `color`, the `agent:<type>` word
 /// of an agent action has a light background, so the reader sees which
-/// steps run an agent and with which model.
+/// steps run an agent and with which model. The agent of a `foreach` action
+/// has the same background.
 fn format_action(action: &Actor, color: bool) -> String {
+    if let Actor::ForEach(inner) = action {
+        return format!("foreach {}", format_action(inner, color));
+    }
     let statement = action.to_string();
     let Actor::AgentTool { agent, .. } = action else {
         return statement;
