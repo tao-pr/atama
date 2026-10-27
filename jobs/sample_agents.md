@@ -97,9 +97,13 @@ the input can be too long for a small model.
 
 ## Prepare
 
-Make the output directory.
+Delete the files of an earlier run, and make the output directory again.
+`rm -rf` deletes the whole directory, because Atama gives `*` to a command
+as plain text, without a shell, so `rm -f ./output/agents/*` deletes
+nothing.
 
 - actions:
+  - bash rm -rf ./output/agents
   - bash mkdir -p ./output/agents
 
 ## Research
@@ -139,18 +143,18 @@ fails.
 
 ## Summarize research
 
-A `summarizer` agent that uses the `local-qwen` profile: `qwen3.5:0.8b` on
-the local Ollama server.
+Summarize each search result on its own, with a `summarizer` agent that
+uses the `local-qwen` profile: `qwen3.5:0.8b` on the local Ollama server.
+
 The input of the task is the list of files from Save raw research. `xargs`
-gives the paths to `jq -s .`, which reads the files and writes them as one
-JSON array. That array is the input of the agent. `task=` tells the model what to take from the search results.
-`expertise=` sets the field of the reader, and `max_output=` limits the
-summary to 40% of the length of the input. The summary keeps the names,
-numbers and source URLs that are important to the key points.
+gives the paths to `jq -c .`, which writes the JSON of each file on one
+line. `foreach` then runs the agent once for each line, so each run gets
+one search result. Each run writes the summary of its result in markdown.
+The output of the task is the summaries, one after the other.
 
 - actions:
-  - bash xargs jq -s .
-  - agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given a list of JSON object, which you will convert into a markdown file. Each item has a title, a URL, and the page content, which you will convert into heading and summarize the content. Summarize the key points of each page, keeping the names, and source URLs without changes, and your task is to summarize the 'raw_content'."
+  - bash xargs jq -c .
+  - foreach agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading and a summary of the content. Summarize the key points of the page, keeping the names, and source URLs without changes, and your task is to summarize the 'raw_content'."
 
 ## Save summary
 

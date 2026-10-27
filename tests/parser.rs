@@ -397,10 +397,11 @@ fn sample_foreach_job_lists_items_and_runs_one_action_for_each() {
     assert_eq!(
         actions,
         [
+            "bash rm -rf ./output/foreach",
             "bash mkdir -p ./output/foreach",
             "bash printf %s\\n apple banana cherry",
             "foreach bash awk {print\"[item:\",$0\"]\",\"has\",length($0),\"characters\"}",
-            "bash tee ./output/foreach/results.txt",
+            "bash tee ./output/foreach/concat.txt",
         ]
     );
 }
@@ -801,19 +802,23 @@ fn sample_agents_job_searches_and_then_summarizes() {
         research.topic
     );
 
+    // The summarizer runs once for each search result, in a `foreach`.
     let agents: Vec<(AgentType, &Vec<String>, &Option<ModelProfile>)> = actions
         .iter()
         .filter_map(|actor| match actor {
-            Actor::AgentTool {
-                agent,
-                params,
-                profile,
-            } => Some((*agent, params, profile)),
+            Actor::ForEach(inner) => match inner.as_ref() {
+                Actor::AgentTool {
+                    agent,
+                    params,
+                    profile,
+                } => Some((*agent, params, profile)),
+                _ => None,
+            },
             _ => None,
         })
         .collect();
     let [(AgentType::Summarizer, summarizer, profile)] = agents.as_slice() else {
-        panic!("expected one summarizer agent, got {agents:?}");
+        panic!("expected one summarizer agent in a foreach, got {agents:?}");
     };
     // The summarizer uses the local Ollama profile, which needs no API key.
     assert_eq!(
@@ -864,9 +869,10 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
         .map(|actor| actor.to_string())
         .collect();
     for action in [
+        "bash rm -rf ./output/agents",
         "bash jq .results",
         "bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw",
-        "bash xargs jq -s .",
+        "bash xargs jq -c .",
         "bash tee ./output/agents/research-summary.md",
         "bash cat ./output/agents/research-summary.md",
     ] {

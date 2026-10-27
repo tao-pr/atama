@@ -289,7 +289,7 @@ fn sample_foreach_job_writes_one_line_for_each_item() {
         .expect("failed to run atama binary");
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
-        fs::read_to_string(dir.join("output/foreach/results.txt")).unwrap(),
+        fs::read_to_string(dir.join("output/foreach/concat.txt")).unwrap(),
         "[item: apple] has 5 characters\n\
          [item: banana] has 6 characters\n\
          [item: cherry] has 6 characters\n"

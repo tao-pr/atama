@@ -13,11 +13,11 @@ cargo run -- jobs/sample_foreach.md
 
 ## Prepare
 
-Make the output directory.
+Delete the output of an earlier run, and make the output directory again.
 
 - actions:
+  - bash rm -rf ./output/foreach
   - bash mkdir -p ./output/foreach
-  - bash rm -f ./output/foreach/*
 
 ## List items
 
