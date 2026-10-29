@@ -109,12 +109,12 @@ nothing.
 ## Research
 
 A `websearch` action searches `topic=` with Tavily and gets the top 5
-results (`max_results=5`). `fetch_content=true` also gets the page of each
+results (`max_results=3`). `fetch_content=true` also gets the page of each
 result as markdown. The quotes let a value have spaces. The action asks no
 model. Its output is the JSON response body from Tavily, without changes.
 
 - actions:
-  - websearch max_results=5 fetch_content=true topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows"
+  - websearch max_results=3 fetch_content=false topic="most common model-agnostic agent loop patterns for agentic engineering and AI workflows"
 - if_fail: retry=1
 
 ## Extract results
@@ -154,7 +154,7 @@ The output of the task is the summaries, one after the other.
 
 - actions:
   - bash xargs jq -c .
-  - foreach agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading and a summary of the content. Summarize the key points of the page, keeping the names, and source URLs without changes, and your task is to summarize the 'raw_content'."
+  - foreach agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
 
 ## Save summary
 
