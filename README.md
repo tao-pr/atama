@@ -66,6 +66,7 @@ other words are its parameters:
 | Action | What it does | Output |
 | --- | --- | --- |
 | `bash <command> [args...]` | Runs a command in bash. | stdout |
+| `bash-sandbox <command> [args...]` | Runs a command in bash in the macOS sandbox. | stdout |
 | `api_call <verb> <url> [options...]` | Sends an HTTP request. | The response body |
 | `download <url> [options...]` | Downloads a file. | The file path |
 | `tavily_search [options...] [query...]` | Searches the web with Tavily. | The response JSON |
@@ -92,6 +93,21 @@ takes `mime=<type>` and `output_dir=<dir>`.
 
 To send `Authorization: Bearer <token>`, add `auth=bearer:<token>`. The log
 shows the token as `***`.
+
+### `bash-sandbox`
+
+`bash-sandbox` runs a command as `bash` does, but inside the macOS sandbox
+(`sandbox-exec`). The command has no network, and it can read and write
+files only in the working directory. It cannot run `sudo`, `su` or `login`,
+and it stops if Atama runs as root.
+
+The command can also read the system directories that it needs to run
+programs, such as `/usr` and `/opt/homebrew`. The home directory is closed,
+so `PATH` has only system directories, and programs such as `pyenv` shims
+do not run. The profile is in `src/actor/bash_sandbox.sb`.
+
+`bash-sandbox` works only on macOS. A tool that needs a temporary directory
+outside the working directory can fail or print warnings.
 
 ### `read_file`
 

@@ -14,6 +14,7 @@
 //! - An action is whitespace-separated tokens: the action name, then its
 //!   parameters. The name selects the [`Actor`]:
 //!   - `bash <cmd> [params...]` is [`Actor::BashScript`].
+//!   - `bash-sandbox <cmd> [params...]` is [`Actor::BashSandbox`].
 //!   - `api_call <verb> <url> [payload=<text>] [input_file=<path>]
 //!     [auth=bearer:<token>]` is [`Actor::ApiCall`].
 //!   - `download <url> [mime=<type>] [output_dir=<dir>] [auth=bearer:<token>]`
@@ -418,13 +419,16 @@ impl FromStr for Actor {
         }
         let params: Vec<&str> = rest.split_whitespace().collect();
         match name {
-            "bash" => {
+            "bash" | "bash-sandbox" => {
                 let (cmd, params) = params
                     .split_first()
-                    .ok_or("`bash` needs a command, as in `bash npm ci`")?;
-                Ok(Actor::BashScript {
-                    cmd: cmd.to_string(),
-                    params: params.iter().map(|param| param.to_string()).collect(),
+                    .ok_or_else(|| format!("`{name}` needs a command, as in `{name} npm ci`"))?;
+                let cmd = cmd.to_string();
+                let params = params.iter().map(|param| param.to_string()).collect();
+                Ok(if name == "bash" {
+                    Actor::BashScript { cmd, params }
+                } else {
+                    Actor::BashSandbox { cmd, params }
                 })
             }
             "api_call" => {
@@ -522,7 +526,7 @@ impl FromStr for Actor {
                     output_schema: None,
                 }),
                 None => Err(format!(
-                    "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
+                    "unknown action `{other}`, expected `bash`, `bash-sandbox`, `api_call`, `download`, \
                      `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, \
                      `mock` or `agent:<type>`"
                 )),

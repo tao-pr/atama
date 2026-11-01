@@ -54,11 +54,13 @@ CPU.
 
 ## Run code
 
-Run the program, so that the log shows its output. The task fails if the
-agent wrote no program, or the program fails.
+Run the program, so that the log shows its output. A model wrote the
+program, so `bash-sandbox` runs it in the macOS sandbox, without network
+and with files only in the working directory. The task fails if the agent
+wrote no program, or the program fails.
 
 - actions:
-  - bash python3 ./output/coder/solution.py
+  - bash-sandbox python3 ./output/coder/solution.py
 
 ## Explain code
 

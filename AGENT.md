@@ -114,6 +114,7 @@ Each actor gets the output of the previous action as its input, and returns
 its own output. The main actor types are:
 
 - `BashScript` (`bash <cmd> [args...]`) runs a command in bash. The output is stdout.
+- `BashSandbox` (`bash-sandbox <cmd> [args...]`) runs a command in bash inside `sandbox-exec`, on macOS only. The profile, `src/actor/bash_sandbox.sb`, denies the network, `sudo`, `su` and `login`, and files outside the working directory, except the system directories that programs need. `run_bash_sandbox` in `src/actor.rs` sets `PATH` to `SANDBOX_PATH` and stops if the user is root.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
 - `AgentTool` (`agent:<type> ...`) runs an agent, `coder` or `summarizer`. The output is the final reply of the model.

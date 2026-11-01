@@ -17,8 +17,12 @@ use crate::{tavily, websearch};
 impl fmt::Display for Actor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Actor::BashScript { cmd, params } => {
-                write!(f, "bash {cmd}")?;
+            Actor::BashScript { cmd, params } | Actor::BashSandbox { cmd, params } => {
+                let name = match self {
+                    Actor::BashScript { .. } => "bash",
+                    _ => "bash-sandbox",
+                };
+                write!(f, "{name} {cmd}")?;
                 for param in params {
                     write!(f, " {param}")?;
                 }

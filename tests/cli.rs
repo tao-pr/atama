@@ -468,3 +468,28 @@ fn no_color_turns_off_colors_in_a_terminal() {
     assert!(!output.contains('\x1b'), "output was: {output:?}");
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_fails_if_the_working_directory_is_gone() {
+    let (dir, job) = job_in_temp_dir("sandbox-cwd", "# Job\n## A\n- actions: bash-sandbox true\n");
+    // Atama starts in `gone`, which bash deletes first.
+    let gone = dir.join("gone");
+    fs::create_dir_all(&gone).unwrap();
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg("cd \"$1\" && rmdir \"$1\" && exec \"$2\" \"$3\"")
+        .arg("bash")
+        .arg(&gone)
+        .arg(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .output()
+        .expect("failed to run atama binary");
+    assert!(!output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("cannot read the working directory: "),
+        "stdout was: {stdout}"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

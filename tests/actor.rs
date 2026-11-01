@@ -1229,3 +1229,95 @@ fn write_file_fails_if_it_cannot_write() {
         );
     }
 }
+
+// bash-sandbox
+
+fn sandbox(cmd: &str, params: &[&str]) -> Actor {
+    Actor::BashSandbox {
+        cmd: cmd.into(),
+        params: params.iter().map(|param| param.to_string()).collect(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_runs_a_command_with_the_input_and_the_params() {
+    assert_eq!(
+        sandbox("tr", &["a-z", "A-Z"]).act("abc\n"),
+        Ok("ABC\n".to_string())
+    );
+    assert_eq!(
+        sandbox("printenv", &["PATH"]).act(""),
+        Ok(format!("{}\n", atama::actor::SANDBOX_PATH))
+    );
+    let err = sandbox("false", &[]).act("").unwrap_err();
+    assert!(
+        err.starts_with("`false` failed with exit status: 1"),
+        "{err}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_reads_and_writes_in_the_working_directory() {
+    // The tests run in the package root, so `target/` is in the working
+    // directory.
+    let dir = format!("target/bash-sandbox-{}", std::process::id());
+    let path = format!("{dir}/out.txt");
+    assert_eq!(sandbox("mkdir", &["-p", &dir]).act(""), Ok(String::new()));
+    assert_eq!(
+        sandbox("tee", &[&path]).act("data\n"),
+        Ok("data\n".to_string())
+    );
+    assert_eq!(sandbox("cat", &[&path]).act(""), Ok("data\n".to_string()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_denies_files_outside_the_working_directory() {
+    // `temp_dir` is in `target/`, so this test uses the temp directory of
+    // the system.
+    let outside = std::env::temp_dir().join(format!("atama-sandbox-{}", std::process::id()));
+    let outside = outside.to_string_lossy().into_owned();
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = format!("{outside}/out.txt");
+    let err = sandbox("tee", &[&file]).act("data").unwrap_err();
+    assert!(err.contains("Operation not permitted"), "{err}");
+    assert!(!std::path::Path::new(&file).exists());
+    std::fs::remove_dir_all(&outside).unwrap();
+
+    // The home directory has secrets, such as SSH keys.
+    let home = std::env::var("HOME").unwrap();
+    let err = sandbox("ls", &[&home]).act("").unwrap_err();
+    assert!(err.contains("Operation not permitted"), "{err}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_denies_the_network_and_sudo() {
+    // A local server that the command cannot reach.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let err = sandbox("nc", &["-z", "-w", "2", "127.0.0.1", &port])
+        .act("")
+        .unwrap_err();
+    assert!(err.starts_with("`nc` failed"), "{err}");
+    listener.set_nonblocking(true).unwrap();
+    assert!(listener.accept().is_err(), "the sandbox let `nc` connect");
+
+    let err = sandbox("sudo", &["-n", "true"]).act("").unwrap_err();
+    assert!(
+        err.contains("/usr/bin/sudo: Operation not permitted"),
+        "{err}"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn bash_sandbox_fails_without_macos() {
+    assert_eq!(
+        sandbox("true", &[]).act(""),
+        Err("`bash-sandbox` needs `sandbox-exec`, which only macOS has".to_string())
+    );
+}

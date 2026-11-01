@@ -98,6 +98,9 @@ pub enum Actor {
         /// The path of the file.
         path: String,
     },
+    /// Runs a command in bash inside the macOS sandbox (`sandbox-exec`), with
+    /// the profile [`SANDBOX_PROFILE`]. Carries stdout as output.
+    BashSandbox { cmd: String, params: Vec<String> },
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -204,6 +207,7 @@ impl Actor {
     pub fn act_with(&self, input: &str, debug: Option<&mut dyn Write>) -> Result<String, String> {
         match self {
             Actor::BashScript { cmd, params } => run_bash(cmd, params, input),
+            Actor::BashSandbox { cmd, params } => run_bash_sandbox(cmd, params, input),
             Actor::ApiCall {
                 verb,
                 url,
@@ -335,16 +339,81 @@ fn write_file(path: &str, input: &str) -> Result<String, String> {
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {
     // `"$@"` passes `params` to `cmd` as separate arguments, unchanged.
-    let mut child = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg("-c")
         .arg(format!("{cmd} \"$@\""))
         .arg("bash")
-        .args(params)
+        .args(params);
+    run_command(command, "bash", cmd, input)
+}
+
+/// The macOS sandbox profile of [`Actor::BashSandbox`]: no network, no
+/// `sudo`, `su` or `login`, and files only in the working directory, which
+/// is the `CWD` parameter. The command can also read the system
+/// directories that it needs to run programs.
+pub const SANDBOX_PROFILE: &str = include_str!("actor/bash_sandbox.sb");
+
+/// The `PATH` in the sandbox. The sandbox cannot read the home directory,
+/// so it cannot run programs there, such as the shims of `pyenv`.
+pub const SANDBOX_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
+/// Runs `cmd` with `params` in bash inside `sandbox-exec`, with
+/// [`SANDBOX_PROFILE`] and the working directory of the process as `CWD`.
+/// The command gets [`SANDBOX_PATH`] as its `PATH`. It stops at once if it
+/// runs as root.
+///
+/// Fails if the working directory cannot be read, or the command fails,
+/// for example because the sandbox denies it.
+#[cfg(target_os = "macos")]
+fn run_bash_sandbox(cmd: &str, params: &[String], input: &str) -> Result<String, String> {
+    // A sandbox rule matches the real path, without symbolic links, such as
+    // `/private/tmp` for `/tmp`.
+    let cwd = std::env::current_dir().and_then(|dir| dir.canonicalize());
+    let cwd = cwd.map_err(|err| format!("cannot read the working directory: {err}"))?;
+    let script = format!(
+        "if [ \"$EUID\" -eq 0 ]; then echo '`bash-sandbox` does not run as root' >&2; exit 1; fi\n\
+         export PATH={SANDBOX_PATH}\n\
+         {cmd} \"$@\""
+    );
+    let mut command = Command::new("/usr/bin/sandbox-exec");
+    command
+        .arg("-D")
+        .arg(format!("CWD={}", cwd.display()))
+        .arg("-p")
+        .arg(SANDBOX_PROFILE)
+        .arg("/bin/bash")
+        .arg("-c")
+        .arg(script)
+        .arg("bash")
+        .args(params);
+    run_command(command, "sandbox-exec", cmd, input)
+}
+
+/// Fails, because only macOS has `sandbox-exec`.
+#[cfg(not(target_os = "macos"))]
+fn run_bash_sandbox(_cmd: &str, _params: &[String], _input: &str) -> Result<String, String> {
+    Err("`bash-sandbox` needs `sandbox-exec`, which only macOS has".to_string())
+}
+
+/// Runs `command` with `input` on stdin, and returns its stdout. `program`
+/// names the program in the error if it cannot start, and `cmd` names the
+/// command in the other errors.
+///
+/// Fails if the program cannot start, or the command exits with a non-zero
+/// status or prints output that is not UTF-8.
+fn run_command(
+    mut command: Command,
+    program: &str,
+    cmd: &str,
+    input: &str,
+) -> Result<String, String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("cannot start bash: {err}"))?;
+        .map_err(|err| format!("cannot start {program}: {err}"))?;
 
     // Write stdin from another thread, so a command that prints a lot before
     // it reads its input cannot block forever.

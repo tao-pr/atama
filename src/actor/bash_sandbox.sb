@@ -1,0 +1,52 @@
+;; The macOS sandbox profile of a `bash-sandbox` action (see `sandbox-exec(1)`).
+;;
+;; The command can read and write only in the working directory, the `CWD`
+;; parameter. It can read the system directories that it needs to run
+;; programs, and it has no network. It cannot run `sudo`, `su` or `login`.
+;; The last rule that matches an operation decides.
+(version 1)
+(deny default)
+
+;; Run programs, and send signals only to processes in the same sandbox.
+(allow process-fork)
+(allow process-exec)
+(deny process-exec
+  (literal "/usr/bin/sudo")
+  (literal "/usr/bin/su")
+  (literal "/usr/bin/login"))
+(allow signal (target same-sandbox))
+(allow sysctl-read)
+
+;; `whoami` and `id` look up the user name.
+(allow mach-lookup (global-name "com.apple.system.opendirectoryd.libinfo"))
+
+;; File metadata, such as the size, but not the content of a file or the
+;; names in a directory.
+(allow file-read-metadata)
+
+;; The programs and libraries of the system, Homebrew and the Command Line
+;; Tools, and the time zone.
+(allow file-read*
+  (literal "/")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/usr")
+  (subpath "/System")
+  (subpath "/opt/homebrew")
+  (subpath "/Library/Developer/CommandLineTools")
+  (subpath "/private/var/db/dyld")
+  (subpath "/private/var/db/timezone")
+  (subpath "/private/var/select")
+  (literal "/private/etc/localtime")
+  (literal "/dev/random")
+  (literal "/dev/urandom"))
+(allow file-read* file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/tty"))
+
+;; No rule allows `network*`, so `(deny default)` blocks all network
+;; access, also to `localhost`.
+
+;; The working directory.
+(allow file-read* file-write* (subpath (param "CWD")))

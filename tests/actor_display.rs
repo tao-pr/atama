@@ -28,6 +28,7 @@ fn writes_actions_back_as_statements() {
         "read_file \"my notes.txt\"",
         "foreach read_file",
         "write_file ./out.txt",
+        "bash-sandbox python3 ./solution.py",
         "write_file \"my out.txt\"",
     ];
     for statement in statements {

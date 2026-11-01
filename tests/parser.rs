@@ -723,7 +723,7 @@ fn shows_parse_error_with_its_line() {
 
     assert_eq!(
         err.to_string(),
-        "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
+        "line 3: unknown action `npm`, expected `bash`, `bash-sandbox`, `api_call`, `download`, \
          `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, `mock` or \
          `agent:<type>`"
     );
@@ -1247,6 +1247,11 @@ fn sample_coder_job_writes_code_and_explains_it() {
     assert!(actions.contains(&&Actor::WriteFile {
         path: "./output/coder/explanation.txt".into()
     }));
+    // The code of the model runs in the sandbox.
+    assert!(actions.contains(&&Actor::BashSandbox {
+        cmd: "python3".into(),
+        params: vec!["./output/coder/solution.py".into()],
+    }));
 
     // The coder runs before the summarizer, and both use the local profile.
     let agents: Vec<(AgentType, &Vec<String>)> = actions
@@ -1292,4 +1297,23 @@ fn sample_coder_job_writes_code_and_explains_it() {
 
     // The task file is in the repository.
     assert!(include_str!("../jobs/tasks/coding_task.md").starts_with("# Coding task"));
+}
+
+#[test]
+fn parses_bash_sandbox_actions() {
+    assert_eq!(
+        "bash-sandbox  python3 ./a.py -v".parse::<Actor>(),
+        Ok(Actor::BashSandbox {
+            cmd: "python3".into(),
+            params: vec!["./a.py".into(), "-v".into()],
+        })
+    );
+    assert_eq!(
+        "bash-sandbox".parse::<Actor>(),
+        Err("`bash-sandbox` needs a command, as in `bash-sandbox npm ci`".to_string())
+    );
+    assert_eq!(
+        "bash".parse::<Actor>(),
+        Err("`bash` needs a command, as in `bash npm ci`".to_string())
+    );
 }
