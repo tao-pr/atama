@@ -107,7 +107,7 @@ answer to the query, which helps the small model. The output is the Tavily
 response of each city, one after the other.
 
 - actions:
-  - foreach tavily_search max_results=3 include_answer=basic
+  - foreach tavily_search max_results=1 include_answer=basic
 - if_fail: retry=1
 
 ## Shorten results
