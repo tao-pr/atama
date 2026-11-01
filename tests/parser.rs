@@ -882,7 +882,7 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
         "bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw",
         "bash xargs jq -c .",
         "bash tee ./output/agents/research-summary.md",
-        "bash cat ./output/agents/research-summary.md",
+        "read_file ./output/agents/research-summary.md",
     ] {
         assert!(actions.iter().any(|written| written == action), "{action}");
     }

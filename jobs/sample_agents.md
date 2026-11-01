@@ -196,7 +196,8 @@ task.
 
 ## Print summary
 
-Print the summary file that the job wrote.
+Print the summary file that the job wrote. `read_file` reads the file
+without a shell command, and keeps its lines unchanged.
 
 - actions:
-  - bash cat ./output/agents/research-summary.md
+  - read_file ./output/agents/research-summary.md
