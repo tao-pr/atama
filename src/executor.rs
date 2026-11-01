@@ -7,9 +7,17 @@
 //!
 //! Each action gets the output of the action before it as its input. The
 //! first action of a task gets the output of the last task that succeeded.
+//!
+//! The actions of an `actions-parallel` task run at the same time, at most
+//! `max` of them with `actions-parallel:max=<n>`, and each gets the input of
+//! the task. Such a task passes no output on, so the next
+//! task gets an empty input.
 
 use std::fmt;
 use std::io::{self, Write};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use crate::actor::Actor;
 use crate::job::{Event, Hook, Job, Task, Trigger};
@@ -23,11 +31,37 @@ pub trait ActionRunner {
     /// Runs the action with `input`, the output of the previous action or
     /// task. Returns the action's output, or an error message if it failed.
     fn run(&mut self, action: &Actor, input: &str) -> Result<String, String>;
+
+    /// Runs `actions` at the same time, each with `input`, and returns their
+    /// results in the order of `actions`. At most `max` actions run at the
+    /// same time, or all of them if `max` is `None`. The default runs them
+    /// one after the other with [`ActionRunner::run`].
+    fn run_parallel(
+        &mut self,
+        actions: &[Actor],
+        input: &str,
+        max: Option<usize>,
+    ) -> Vec<Result<String, String>> {
+        let _ = max;
+        actions
+            .iter()
+            .map(|action| self.run(action, input))
+            .collect()
+    }
 }
 
 impl<R: ActionRunner + ?Sized> ActionRunner for &mut R {
     fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
         (**self).run(action, input)
+    }
+
+    fn run_parallel(
+        &mut self,
+        actions: &[Actor],
+        input: &str,
+        max: Option<usize>,
+    ) -> Vec<Result<String, String>> {
+        (**self).run_parallel(actions, input, max)
     }
 }
 
@@ -46,13 +80,60 @@ impl ActorRunner {
     }
 }
 
-impl ActionRunner for ActorRunner {
-    fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
+impl ActorRunner {
+    fn act(&self, action: &Actor, input: &str) -> Result<String, String> {
         if self.debug {
             action.act_with(input, Some(&mut io::stderr()))
         } else {
             action.act(input)
         }
+    }
+}
+
+impl ActionRunner for ActorRunner {
+    fn run(&mut self, action: &Actor, input: &str) -> Result<String, String> {
+        self.act(action, input)
+    }
+
+    /// Starts `max` threads, or one per action if `max` is `None`. Each
+    /// thread takes the next action that has not started, until none is
+    /// left, so at most `max` actions run at the same time. Waits for all
+    /// of them. A panic in an action stops the job.
+    fn run_parallel(
+        &mut self,
+        actions: &[Actor],
+        input: &str,
+        max: Option<usize>,
+    ) -> Vec<Result<String, String>> {
+        let runner = &*self;
+        let workers = max.unwrap_or(actions.len()).min(actions.len());
+        let next = AtomicUsize::new(0);
+        let results: Vec<Mutex<Option<Result<String, String>>>> =
+            actions.iter().map(|_| Mutex::new(None)).collect();
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::SeqCst);
+                        let Some(action) = actions.get(index) else {
+                            break;
+                        };
+                        let result = runner.act(action, input);
+                        *results[index]
+                            .lock()
+                            .expect("no thread panics with the lock") = Some(result);
+                    }
+                });
+            }
+        });
+        results
+            .into_iter()
+            .map(|slot| {
+                slot.into_inner()
+                    .expect("no thread panics with the lock")
+                    .expect("a thread ran every action")
+            })
+            .collect()
     }
 }
 
@@ -235,7 +316,10 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             }
 
             let (status, attempts, output) = self.run_task(task, &last_output)?;
-            if let Some(output) = output {
+            if task.parallel {
+                // An `actions-parallel` task passes no output on.
+                last_output.clear();
+            } else if let Some(output) = output {
                 last_output = output;
             }
             reports[index].status = status;
@@ -290,7 +374,12 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                 self.log(format_args!("[{}] retry {attempt} of {retries}", task.id))?;
             }
 
-            match self.run_actions(task, input)? {
+            let result = if task.parallel {
+                self.run_parallel_actions(task, input)?
+            } else {
+                self.run_actions(task, input)?
+            };
+            match result {
                 Ok(output) => {
                     self.log(format_args!("[{}] succeeded", task.id))?;
                     return Ok((TaskStatus::Succeeded, attempt + 1, Some(output)));
@@ -326,6 +415,47 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             }
         }
         Ok(Ok(output))
+    }
+
+    /// Runs the task's actions at the same time, each with `input`, and waits
+    /// for all of them. Then logs each action and its output, in the order
+    /// of the task. Fails if any action fails, with the errors of all failed
+    /// actions. Returns an empty output, because the task passes no output
+    /// on.
+    fn run_parallel_actions(
+        &mut self,
+        task: &Task,
+        input: &str,
+    ) -> io::Result<Result<String, String>> {
+        let limit = task
+            .max_parallel
+            .map_or(String::new(), |max| format!(", at most {max} at a time"));
+        self.log(format_args!(
+            "[{}] running {} actions in parallel{limit}",
+            task.id,
+            task.actions.len()
+        ))?;
+        let results = self
+            .runner
+            .run_parallel(&task.actions, input, task.max_parallel);
+        let mut errors = Vec::new();
+        for (action, result) in task.actions.iter().zip(results) {
+            let command = action.to_string();
+            self.log(format_args!("[{}] $ {command}", task.id))?;
+            match result {
+                Ok(output) => {
+                    for line in output.lines() {
+                        self.log(format_args!("[{}] | {line}", task.id))?;
+                    }
+                }
+                Err(message) => errors.push(format!("`{command}`: {message}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(Ok(String::new()))
+        } else {
+            Ok(Err(errors.join("; ")))
+        }
     }
 
     /// Writes one line of a task, after the timestamp if timestamps are on.

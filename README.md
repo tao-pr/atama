@@ -85,6 +85,28 @@ For example: `bash npm ci`, `api_call GET https://example.com`,
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
 
+### `actions-parallel`
+
+Use `- actions-parallel:` in place of `- actions:` to run the actions of a
+task at the same time. Each action gets the input of the task, and the task
+passes no output on, so the next task gets an empty input.
+
+```markdown
+## Notify
+
+- actions-parallel:
+  - write_file ./output/report.txt
+  - api_call POST https://example.com/hook
+```
+
+`- actions-parallel:max=2` runs at most 2 actions at the same time. The
+others wait until an action finishes. Without `max=`, all actions run at the
+same time.
+
+The log shows each action and its output in the order of the task, after
+all actions finish. If an action fails, the task fails with the errors of
+all failed actions. A retry runs all actions again.
+
 ### `api_call` and `download`
 
 The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD.

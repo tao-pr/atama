@@ -61,7 +61,7 @@ impl ActionRunner for ScriptedRunner {
 }
 
 /// Parses `input`, runs it with `runner`, and returns the report and log.
-fn run(input: &str, runner: &mut ScriptedRunner) -> (JobReport, String) {
+fn run<R: ActionRunner>(input: &str, runner: &mut R) -> (JobReport, String) {
     let job = parse_job(input).expect("job should parse");
     let mut log = Vec::new();
     let report = Executor::new(&job, runner, &mut log)
@@ -563,4 +563,341 @@ fn actor_runner_runs_actions_with_and_without_debug() {
         assert!(report.succeeded(), "log was:\n{log}");
         assert!(log.contains("[A] | hi"), "log was:\n{log}");
     }
+}
+
+// actions-parallel
+
+#[test]
+fn parallel_actions_get_the_same_input_and_pass_no_output_on() {
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        "# Job\n\
+         ## A\n- actions: bash first\n\
+         ## B\n- actions-parallel:\n  - bash left\n  - bash right\n\
+         ## C\n- actions: bash last\n",
+        &mut runner,
+    );
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert_eq!(runner.calls, ["first", "left", "right", "last"]);
+    // Both parallel actions get the output of A, and C gets no input.
+    assert_eq!(runner.inputs, ["", "first ", "first ", ""]);
+    assert!(
+        log.contains(
+            "[B] running 2 actions in parallel\n\
+             [B] $ bash left\n\
+             [B] | first left \n\
+             [B] $ bash right\n\
+             [B] | first right \n\
+             [B] succeeded\n"
+        ),
+        "log was:\n{log}"
+    );
+}
+
+#[test]
+fn a_parallel_task_fails_with_the_errors_of_all_failed_actions() {
+    let mut runner = ScriptedRunner::default().fail("left", 2).fail("right", 1);
+    let (report, log) = run(
+        "# Job\n\
+         ## A\n- actions: bash first\n\
+         ## B\n- actions-parallel:\n  - bash left\n  - bash right\n  - bash ok\n- if_fail: retry=1\n\
+         ## C\n- begin_if: prev task fail\n- actions: bash last\n",
+        &mut runner,
+    );
+    assert_eq!(
+        report
+            .tasks
+            .iter()
+            .map(|task| task.status)
+            .collect::<Vec<_>>(),
+        [
+            TaskStatus::Succeeded,
+            TaskStatus::Failed,
+            TaskStatus::Succeeded
+        ]
+    );
+    // A retry runs every action again, also the ones that succeeded.
+    assert_eq!(runner.calls_to("ok"), 2);
+    assert!(
+        log.contains("[B] failed: `bash left`: scripted failure; `bash right`: scripted failure\n"),
+        "log was:\n{log}"
+    );
+    assert!(
+        log.contains("[B] failed: `bash left`: scripted failure\n"),
+        "log was:\n{log}"
+    );
+    // A failed parallel task also passes no output on.
+    assert_eq!(runner.inputs.last().unwrap(), "");
+}
+
+#[test]
+fn actor_runner_runs_parallel_actions_at_the_same_time() {
+    let job = parse_job(
+        "# Job\n## A\n- actions-parallel:\n  - bash sleep 1\n  - bash sleep 1\n  - bash sleep 1\n  - bash printf done\n",
+    )
+    .unwrap();
+    let mut log = Vec::new();
+    let start = std::time::Instant::now();
+    let report = Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
+    let elapsed = start.elapsed();
+    let log = String::from_utf8(log).unwrap();
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert!(log.contains("[A] | done\n"), "log was:\n{log}");
+    // One after the other, the three sleeps take 3 seconds.
+    assert!(elapsed.as_secs_f64() < 2.5, "took {elapsed:?}");
+}
+
+#[test]
+fn actor_runner_reports_a_failed_parallel_action() {
+    let mut runner = ActorRunner::default();
+    let results = runner.run_parallel(
+        &[
+            "bash printf ok".parse().unwrap(),
+            "mock fail".parse().unwrap(),
+        ],
+        "",
+        None,
+    );
+    assert_eq!(
+        results,
+        [Ok("ok".to_string()), Err("mock failure".to_string())]
+    );
+    let mut debug = ActorRunner::default().debug(true);
+    assert_eq!(
+        debug.run_parallel(&["mock".parse().unwrap()], "in", Some(5)),
+        [Ok("in".to_string())]
+    );
+}
+
+/// Runs `job` with the real runner, and returns the report, the log and how
+/// long the job took.
+fn run_for_real(job: &str) -> (JobReport, String, std::time::Duration) {
+    let job = parse_job(job).unwrap();
+    let mut log = Vec::new();
+    let start = std::time::Instant::now();
+    let report = Executor::new(&job, ActorRunner::default(), &mut log)
+        .run()
+        .unwrap();
+    let elapsed = start.elapsed();
+    (report, String::from_utf8(log).unwrap(), elapsed)
+}
+
+#[test]
+fn max_limits_how_many_parallel_actions_run_at_the_same_time() {
+    let sleeps = "  - bash sleep 0.5\n".repeat(4);
+    // At most one at a time: the four sleeps take 2 seconds.
+    let (report, log, elapsed) =
+        run_for_real(&format!("# Job\n## A\n- actions-parallel:max=1\n{sleeps}"));
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert!(
+        log.contains("[A] running 4 actions in parallel, at most 1 at a time\n"),
+        "log was:\n{log}"
+    );
+    assert!(elapsed.as_secs_f64() >= 2.0, "took {elapsed:?}");
+
+    // At most two at a time: two rounds of two sleeps take 1 second.
+    let (report, log, elapsed) =
+        run_for_real(&format!("# Job\n## A\n- actions-parallel:max=2\n{sleeps}"));
+    assert!(report.succeeded(), "log was:\n{log}");
+    let seconds = elapsed.as_secs_f64();
+    assert!((1.0..1.9).contains(&seconds), "took {elapsed:?}");
+}
+
+#[test]
+fn max_keeps_the_order_and_the_input_of_each_action() {
+    // A limit larger than the number of actions runs all of them at once.
+    let (report, log, _) = run_for_real(
+        "# Job\n## A\n- actions: bash printf in\n\
+         ## B\n- actions-parallel:max=8\n  - bash sed s/in/one/\n  - bash sed s/in/two/\n  - mock fail\n",
+    );
+    assert!(!report.succeeded());
+    assert!(
+        log.contains(
+            "[B] $ bash sed s/in/one/\n[B] | one\n[B] $ bash sed s/in/two/\n[B] | two\n[B] $ mock fail\n"
+        ),
+        "log was:\n{log}"
+    );
+    assert!(
+        log.contains("[B] failed: `mock fail`: mock failure\n"),
+        "log was:\n{log}"
+    );
+}
+
+/// Makes an empty directory for one test of `tests/fixtures/concurrency.sh`.
+fn concurrency_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("atama-concurrency-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Makes a job with task A, which has `parallel_field` and one action of
+/// `tests/fixtures/concurrency.sh` for each name in `names`, and task B,
+/// which prints the order in which the actions of A ended.
+fn concurrency_job(
+    dir: &std::path::Path,
+    parallel_field: &str,
+    names: &[&str],
+    wait_for: usize,
+) -> String {
+    let dir = dir.display();
+    let actions: String = names
+        .iter()
+        .map(|name| {
+            format!("  - bash bash tests/fixtures/concurrency.sh {dir} {name} {wait_for}\n")
+        })
+        .collect();
+    format!("# Job\n## A\n- {parallel_field}\n{actions}## B\n- actions: bash cat {dir}/order\n")
+}
+
+/// The number of actions that ran at the same time, as each action of
+/// `tests/fixtures/concurrency.sh` saw it when it started.
+fn peaks(dir: &std::path::Path) -> Vec<usize> {
+    std::fs::read_to_string(dir.join("peaks"))
+        .unwrap()
+        .lines()
+        .map(|line| line.trim().parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn without_max_all_parallel_actions_run_at_the_same_time() {
+    let dir = concurrency_dir("all");
+    let names = ["a", "b", "c", "d", "e"];
+    // Each action waits until all five started. If one action had to wait
+    // for another to end, the five would never run together, and the
+    // actions would fail.
+    let (report, log, _) = run_for_real(&concurrency_job(&dir, "actions-parallel:", &names, 5));
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert!(
+        log.contains("[A] running 5 actions in parallel\n"),
+        "log was:\n{log}"
+    );
+    assert_eq!(report.tasks[1].status, TaskStatus::Succeeded);
+    let mut ended: Vec<String> = std::fs::read_to_string(dir.join("order"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    ended.sort();
+    assert_eq!(ended, names);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn max_1_runs_one_action_at_a_time_and_then_goes_to_the_next_task() {
+    let dir = concurrency_dir("max1");
+    let names = ["a", "b", "c", "d"];
+    let (report, log, _) =
+        run_for_real(&concurrency_job(&dir, "actions-parallel:max=1", &names, 0));
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert!(
+        log.contains("[A] running 4 actions in parallel, at most 1 at a time\n"),
+        "log was:\n{log}"
+    );
+    // Each action saw only itself running.
+    assert_eq!(peaks(&dir), [1, 1, 1, 1]);
+    // Each action ran once. With one at a time, they ran in the order of
+    // the task.
+    assert!(
+        log.contains("[A] | a\n[A] $ bash bash tests/fixtures/concurrency.sh"),
+        "log was:\n{log}"
+    );
+    // B started after all actions of A ended, and saw all of them.
+    assert_eq!(
+        report
+            .tasks
+            .iter()
+            .map(|task| task.status)
+            .collect::<Vec<_>>(),
+        [TaskStatus::Succeeded, TaskStatus::Succeeded]
+    );
+    assert!(
+        log.contains("[B] | a\n[B] | b\n[B] | c\n[B] | d\n"),
+        "log was:\n{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn max_1_never_lets_two_actions_run_together() {
+    let dir = concurrency_dir("max1-wait");
+    // Each action waits until two actions started. With one at a time, the
+    // second action starts only after the first one ends, so the first one
+    // fails.
+    let (report, log, _) = run_for_real(&concurrency_job(
+        &dir,
+        "actions-parallel:max=1",
+        &["a", "b"],
+        2,
+    ));
+    assert!(!report.succeeded(), "log was:\n{log}");
+    assert!(
+        log.contains("[A] failed: `bash bash tests/fixtures/concurrency.sh"),
+        "log was:\n{log}"
+    );
+    assert!(
+        log.contains("only 1 of 2 actions started"),
+        "log was:\n{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn max_2_runs_two_actions_at_a_time() {
+    let dir = concurrency_dir("max2");
+    // Each action waits until two actions started, so two of them must run
+    // at the same time.
+    let (report, log, _) = run_for_real(&concurrency_job(
+        &dir,
+        "actions-parallel:max=2",
+        &["a", "b", "c", "d"],
+        2,
+    ));
+    assert!(report.succeeded(), "log was:\n{log}");
+    let peaks = peaks(&dir);
+    assert_eq!(peaks.len(), 4);
+    assert!(peaks.iter().all(|&peak| peak <= 2), "peaks were {peaks:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runner that records the `max` that the executor gives to
+/// [`ActionRunner::run_parallel`].
+#[derive(Default)]
+struct MaxRecorder {
+    maxes: Vec<Option<usize>>,
+}
+
+impl ActionRunner for MaxRecorder {
+    fn run(&mut self, _action: &Actor, input: &str) -> Result<String, String> {
+        Ok(input.to_string())
+    }
+
+    fn run_parallel(
+        &mut self,
+        actions: &[Actor],
+        input: &str,
+        max: Option<usize>,
+    ) -> Vec<Result<String, String>> {
+        self.maxes.push(max);
+        actions.iter().map(|_| Ok(input.to_string())).collect()
+    }
+}
+
+#[test]
+fn the_executor_gives_the_max_of_each_parallel_task_to_the_runner() {
+    let mut runner = MaxRecorder::default();
+    let (report, log) = run(
+        "# Job\n\
+         ## A\n- actions-parallel:\n  - mock\n  - mock\n\
+         ## B\n- actions-parallel:max=1\n  - mock\n  - mock\n\
+         ## C\n- actions-parallel:max=3\n  - mock\n\
+         ## D\n- actions: mock\n",
+        &mut runner,
+    );
+    assert!(report.succeeded(), "log was:\n{log}");
+    // D has `actions`, so the executor does not call `run_parallel` for it.
+    assert_eq!(runner.maxes, [None, Some(1), Some(3)]);
 }

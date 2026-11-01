@@ -85,6 +85,15 @@ pub fn format_job(job: &Job, color: bool) -> String {
             .iter()
             .map(|action| format_action(action, color))
             .collect();
+        match (task.parallel, task.max_parallel) {
+            (true, Some(max)) => {
+                let _ = write!(out, " (parallel, max {max})");
+            }
+            (true, None) => {
+                let _ = write!(out, " (parallel)");
+            }
+            (false, _) => {}
+        }
         if !actions.is_empty() {
             let _ = write!(out, " {}", actions.join("; "));
         }

@@ -74,6 +74,19 @@ description
 The optional `config` block defines model profiles for agent actions (see
 "Model, debug output and tests" below).
 
+### Parallel actions
+
+A task can have `- actions-parallel:` in place of `- actions:`. Its actions
+run at the same time, and each gets the input of the task. The task passes
+no output on, so the next task always gets an empty input. `Task::parallel`
+marks such a task. `- actions-parallel:max=<n>` sets
+`Task::max_parallel`, the most actions that run at the same time
+(`parallel_limit` in `src/parser.rs` reads it). `ActionRunner::run_parallel`
+runs the actions: its default runs them one after the other, and
+`ActorRunner` starts `max` threads, or one per action, that take the next
+action until none is left. `Executor::run_parallel_actions` logs the outputs in the order of
+the task, after all actions finish.
+
 ### Trigger conditions
 
 The tasks are generally executed in sequence unless the `begin_if` hook instructs it to begin in parallel with other tasks. The possible trigger conditions are:

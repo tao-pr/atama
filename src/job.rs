@@ -24,6 +24,13 @@ pub struct Task {
     pub begin_if: Trigger,
     /// Actions to run, in order.
     pub actions: Vec<Actor>,
+    /// From `actions-parallel:` instead of `actions:`. The actions run at the
+    /// same time, each with the input of the task, and the task passes no
+    /// output to the next task.
+    pub parallel: bool,
+    /// From `actions-parallel:max=<n>`: the most actions that run at the
+    /// same time. `None` runs all actions at the same time.
+    pub max_parallel: Option<usize>,
     /// Hook to run when the task fails.
     pub if_fail: Option<Hook>,
     /// Hook to run when the task succeeds.

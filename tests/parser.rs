@@ -1224,7 +1224,7 @@ fn parses_write_file_actions() {
 }
 
 #[test]
-fn sample_coder_job_writes_code_and_explains_it() {
+fn sample_coder_job_writes_code_in_parallel_and_explains_it() {
     let job = parse_job(include_str!("../jobs/sample_coder.md")).expect("job should parse");
     let ids: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
     assert_eq!(
@@ -1234,71 +1234,103 @@ fn sample_coder_job_writes_code_and_explains_it() {
             "Read task",
             "Write code",
             "Run code",
-            "Explain code"
+            "Explain spark2 code",
+            "Explain qwen2.5-coder code",
         ]
     );
-    let actions: Vec<&Actor> = job.tasks.iter().flat_map(|task| &task.actions).collect();
-    assert!(actions.contains(&&Actor::ReadFile {
-        path: Some("./jobs/tasks/coding_task.md".into())
-    }));
-    assert!(actions.contains(&&Actor::ReadFile {
-        path: Some("./output/coder/solution.py".into())
-    }));
-    assert!(actions.contains(&&Actor::WriteFile {
-        path: "./output/coder/explanation.txt".into()
-    }));
-    // The code of the model runs in the sandbox.
-    assert!(actions.contains(&&Actor::BashSandbox {
-        cmd: "python3".into(),
-        params: vec!["./output/coder/solution.py".into()],
-    }));
-
-    // The coder runs before the summarizer, and both use the local profile.
-    let agents: Vec<(AgentType, &Vec<String>)> = actions
-        .iter()
-        .filter_map(|actor| match actor {
-            Actor::AgentTool {
-                agent,
-                params,
-                profile: Some(profile),
-                ..
-            } => {
-                assert_eq!(profile.name, "local-spark2");
-                assert_eq!(profile.api_key_env, None);
-                Some((*agent, params))
-            }
-            _ => None,
-        })
-        .collect();
-    let [
-        (AgentType::Coder, coder),
-        (AgentType::Summarizer, summarizer),
-    ] = agents.as_slice()
-    else {
-        panic!("expected a coder and then a summarizer, got {agents:?}");
-    };
-    let task = |params: &[String]| {
-        params
-            .iter()
-            .find_map(|param| param.strip_prefix("task="))
-            .unwrap()
-            .to_string()
-    };
-    assert!(task(coder).contains("at most 10 lines"), "{coder:?}");
-    assert!(
-        task(coder).contains("./output/coder/solution.py"),
-        "{coder:?}"
+    let task = |id: &str| job.tasks.iter().find(|task| task.id == id).unwrap();
+    assert_eq!(
+        task("Read task").actions,
+        [Actor::ReadFile {
+            path: Some("./jobs/tasks/coding_task.md".into())
+        }]
     );
-    assert!(
-        task(summarizer).contains("at most 5 lines"),
-        "{summarizer:?}"
-    );
-    assert!(summarizer.contains(&"max_output=5 sentences".to_string()));
-
     // The task file is in the repository.
     assert!(include_str!("../jobs/tasks/coding_task.md").starts_with("# Coding task"));
-}
 
+    let models = ["spark2", "qwen2.5-coder"];
+
+    // Two coders, one per model, run at the same time, and each writes its
+    // own file. Read task comes just before, so both get the coding task.
+    let write = task("Write code");
+    assert!(write.parallel);
+    // One local model at a time, so that they do not share the CPU.
+    assert_eq!(write.max_parallel, Some(1));
+    assert_eq!(write.begin_if, Trigger::PrevTask(Event::Succeed));
+    assert_eq!(write.actions.len(), models.len());
+    for (action, model) in write.actions.iter().zip(models) {
+        let Actor::AgentTool {
+            agent: AgentType::Coder,
+            params,
+            profile: Some(profile),
+            ..
+        } = action
+        else {
+            panic!("expected a coder with a profile, got {action:?}");
+        };
+        assert_eq!(profile.name, format!("local-{model}"));
+        assert_eq!(profile.api_key_env, None);
+        let task = params
+            .iter()
+            .find_map(|param| param.strip_prefix("task="))
+            .unwrap();
+        assert!(task.contains("at most 10 lines"), "{task}");
+        assert!(
+            task.contains(&format!("./output/coder/solution-{model}.py")),
+            "{task}"
+        );
+    }
+
+    // The code of each model runs in the sandbox.
+    let run = task("Run code");
+    assert!(run.parallel);
+    assert_eq!(run.max_parallel, None);
+    let expected: Vec<Actor> = models
+        .iter()
+        .map(|model| Actor::BashSandbox {
+            cmd: "python3".into(),
+            params: vec![format!("./output/coder/solution-{model}.py")],
+        })
+        .collect();
+    assert_eq!(run.actions, expected);
+
+    // Each program gets its own explanation, after Run code succeeds.
+    for model in models {
+        let explain = task(&format!("Explain {model} code"));
+        assert!(!explain.parallel);
+        let [read, summarize, save] = explain.actions.as_slice() else {
+            panic!("expected three actions, got {:?}", explain.actions);
+        };
+        assert_eq!(
+            *read,
+            Actor::ReadFile {
+                path: Some(format!("./output/coder/solution-{model}.py"))
+            }
+        );
+        let Actor::AgentTool {
+            agent: AgentType::Summarizer,
+            params,
+            ..
+        } = summarize
+        else {
+            panic!("expected a summarizer, got {summarize:?}");
+        };
+        assert!(params.contains(&"max_output=5 sentences".to_string()));
+        assert_eq!(
+            *save,
+            Actor::WriteFile {
+                path: format!("./output/coder/explanation-{model}.txt")
+            }
+        );
+    }
+    assert_eq!(
+        task("Explain qwen2.5-coder code").begin_if,
+        Trigger::Task {
+            id: "Run code".into(),
+            on: Event::Succeed
+        }
+    );
+}
 #[test]
 fn parses_bash_sandbox_actions() {
     assert_eq!(
@@ -1316,4 +1348,92 @@ fn parses_bash_sandbox_actions() {
         "bash".parse::<Actor>(),
         Err("`bash` needs a command, as in `bash npm ci`".to_string())
     );
+}
+
+#[test]
+fn parses_actions_parallel() {
+    let job = parse_job(
+        "# Job\n## A\n- actions-parallel:\n  - bash a\n  - bash b\n## B\n- actions: bash c\n## C\n- actions-parallel: mock\n",
+    )
+    .expect("job should parse");
+    assert!(job.tasks[0].parallel);
+    assert_eq!(job.tasks[0].actions.len(), 2);
+    assert!(!job.tasks[1].parallel);
+    assert!(job.tasks[2].parallel);
+    assert_eq!(job.tasks[2].actions, [Actor::MockPlaceholder]);
+
+    let cases = [
+        (
+            "# Job\n## A\n- actions: mock\n- actions-parallel: mock\n",
+            4,
+            "a task has `actions` or `actions-parallel`, not both",
+        ),
+        (
+            "# Job\n## A\n- actions-parallel: mock\n- actions: mock\n",
+            4,
+            "a task has `actions` or `actions-parallel`, not both",
+        ),
+        (
+            "# Job\n## A\n- actions-parallel: mock\n- actions-parallel: mock\n",
+            4,
+            "duplicate `actions-parallel` field",
+        ),
+        (
+            "# Job\n## A\n- actions:\n- actions: mock\n",
+            4,
+            "duplicate `actions` field",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(text),
+            Err(ParseError {
+                line,
+                message: message.to_string()
+            }),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn parses_the_max_of_actions_parallel() {
+    let job = parse_job(
+        "# Job\n## A\n- actions-parallel:max=2\n  - bash a\n  - bash b\n\
+         ## B\n- actions-parallel: max=1  mock\n\
+         ## C\n- actions-parallel:\n  - mock\n",
+    )
+    .expect("job should parse");
+    assert_eq!(job.tasks[0].max_parallel, Some(2));
+    assert_eq!(job.tasks[0].actions.len(), 2);
+    assert_eq!(job.tasks[1].max_parallel, Some(1));
+    assert_eq!(job.tasks[1].actions, [Actor::MockPlaceholder]);
+    assert_eq!(job.tasks[2].max_parallel, None);
+
+    let cases = [
+        (
+            "- actions-parallel:max=0",
+            "`max=0` is not a positive number",
+        ),
+        (
+            "- actions-parallel:max=two",
+            "`max=two` is not a positive number",
+        ),
+        ("- actions-parallel:max=", "`max=` is not a positive number"),
+        (
+            "- actions:max=1",
+            "`max=` works only with `actions-parallel`, as in `- actions-parallel:max=2`",
+        ),
+    ];
+    for (field, message) in cases {
+        let text = format!("# Job\n## A\n{field}\n  - mock\n");
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line: 3,
+                message: message.to_string()
+            }),
+            "{text}"
+        );
+    }
 }

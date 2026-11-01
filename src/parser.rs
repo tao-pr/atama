@@ -8,9 +8,11 @@
 //!   an output schema for agent actions (see [`crate::schema`]).
 //! - `# <name>` names the job; text after it is the job description.
 //! - `## <id>` starts a task; its heading text is the task id.
-//! - Top-level `- begin_if:`, `- actions:`, `- if_fail:` and `- if_succeed:`
-//!   bullets in a task are fields. Indented bullets under `- actions:` are the
-//!   actions. Any other text is part of the task description.
+//! - Top-level `- begin_if:`, `- actions:`, `- actions-parallel:`,
+//!   `- if_fail:` and `- if_succeed:` bullets in a task are fields.
+//!   `- actions-parallel:max=<n>` limits how many actions run at the same
+//!   time. Indented
+//!   bullets under `- actions:` or `- actions-parallel:` are the actions. Any other text is part of the task description.
 //! - An action is whitespace-separated tokens: the action name, then its
 //!   parameters. The name selects the [`Actor`]:
 //!   - `bash <cmd> [params...]` is [`Actor::BashScript`].
@@ -78,6 +80,9 @@ struct ParsedTask {
     description: Vec<String>,
     line: usize,
     begin_if_line: Option<usize>,
+    /// Whether the task has an `actions-parallel` field, if it has an
+    /// `actions` or `actions-parallel` field.
+    parallel_field: Option<bool>,
 }
 
 /// Parses the contents of a job config markdown file.
@@ -169,12 +174,15 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         description: String::new(),
                         begin_if: Trigger::default(),
                         actions: Vec::new(),
+                        parallel: false,
+                        max_parallel: None,
                         if_fail: None,
                         if_succeed: None,
                     },
                     description: Vec::new(),
                     line: line_no,
                     begin_if_line: None,
+                    parallel_field: None,
                 });
                 in_actions = false;
                 continue;
@@ -236,10 +244,35 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         if let Some((key, value)) = bullet_text(line).and_then(field) {
             let value = value.trim();
             match key {
-                "actions" => {
-                    if !current.task.actions.is_empty() {
-                        return Err(ParseError::new(line_no, "duplicate `actions` field"));
+                "actions" | "actions-parallel" => {
+                    let parallel = key == "actions-parallel";
+                    match current.parallel_field {
+                        Some(earlier) if earlier == parallel => {
+                            return Err(ParseError::new(
+                                line_no,
+                                format!("duplicate `{key}` field"),
+                            ));
+                        }
+                        Some(_) => {
+                            return Err(ParseError::new(
+                                line_no,
+                                "a task has `actions` or `actions-parallel`, not both",
+                            ));
+                        }
+                        None => {}
                     }
+                    current.parallel_field = Some(parallel);
+                    current.task.parallel = parallel;
+                    let (max, value) = parallel_limit(value)
+                        .map_err(|message| ParseError::new(line_no, message))?;
+                    if max.is_some() && !parallel {
+                        return Err(ParseError::new(
+                            line_no,
+                            "`max=` works only with `actions-parallel`, as in \
+                             `- actions-parallel:max=2`",
+                        ));
+                    }
+                    current.task.max_parallel = max;
                     if !value.is_empty() {
                         current
                             .task
@@ -379,7 +412,29 @@ fn bullet_text(line: &str) -> Option<&str> {
 fn field(item: &str) -> Option<(&str, &str)> {
     let (key, value) = item.split_once(':').unwrap_or((item, ""));
     let key = key.trim();
-    matches!(key, "begin_if" | "actions" | "if_fail" | "if_succeed").then_some((key, value))
+    matches!(
+        key,
+        "begin_if" | "actions" | "actions-parallel" | "if_fail" | "if_succeed"
+    )
+    .then_some((key, value))
+}
+
+/// Splits the value of an `actions` or `actions-parallel` field into the
+/// `max=<n>` limit at its start, if it has one, and the rest, which is an
+/// inline action or empty. `max=2 mock` gives `(Some(2), "mock")`.
+///
+/// Fails if `max` is not a positive number.
+fn parallel_limit(value: &str) -> Result<(Option<usize>, &str), String> {
+    let Some(rest) = value.strip_prefix("max=") else {
+        return Ok((None, value));
+    };
+    let (number, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    let max = number
+        .parse()
+        .ok()
+        .filter(|max| *max > 0)
+        .ok_or_else(|| format!("`max={number}` is not a positive number"))?;
+    Ok((Some(max), rest.trim()))
 }
 
 fn parse_value<T: FromStr<Err = String>>(

@@ -96,3 +96,21 @@ fn local_timestamp_is_the_current_local_time() {
     assert!(time <= after, "{timestamp}");
     assert!(time > before - chrono::Duration::seconds(1), "{timestamp}");
 }
+
+#[test]
+fn marks_parallel_tasks() {
+    let job = parse_job("# Job\n## A\n- actions-parallel:\n  - bash a\n  - bash b\n").unwrap();
+    assert_eq!(
+        format_job(&job, false),
+        "Job: Job\n  - A: (parallel) bash a; bash b\n"
+    );
+}
+
+#[test]
+fn shows_the_max_of_parallel_tasks() {
+    let job = parse_job("# Job\n## A\n- actions-parallel:max=1\n  - bash a\n  - bash b\n").unwrap();
+    assert_eq!(
+        format_job(&job, false),
+        "Job: Job\n  - A: (parallel, max 1) bash a; bash b\n"
+    );
+}
