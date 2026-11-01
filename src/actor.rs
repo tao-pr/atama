@@ -85,6 +85,13 @@ pub enum Actor {
     /// the input. Carries the outputs of all runs, in order, one after the
     /// other, as output.
     ForEach(Box<Actor>),
+    /// Reads a text file. The path is `path`, or else the input of the
+    /// action. Carries the content of the file, unchanged, as output.
+    ReadFile {
+        /// The path from the action statement. `None` reads the path from
+        /// the input.
+        path: Option<String>,
+    },
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -170,6 +177,8 @@ impl Actor {
     ///   that is not blank, in order, with the line as the input (see
     ///   [`for_each`]). It returns the outputs one after the other, and
     ///   each output ends with a newline.
+    /// - [`Actor::ReadFile`] returns the content of the file at its path, or
+    ///   at the path in `input` (see [`read_file`]).
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -229,6 +238,7 @@ impl Actor {
             }
             Actor::WebSearch(options) => options.search(&|name| std::env::var(name).ok(), debug),
             Actor::ForEach(action) => for_each(action, input, debug),
+            Actor::ReadFile { path } => read_file(path.as_deref(), input),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }
@@ -262,6 +272,34 @@ fn for_each(
         }
     }
     Ok(output)
+}
+
+/// Reads the text file at `path`, or at the path in `input` if `path` is
+/// `None`, and returns its content unchanged, with all its line endings.
+/// The path in `input` is trimmed, so the newline of the previous output
+/// is not part of it.
+///
+/// Fails if `path` is `None` and `input` has no path or more than one line,
+/// or the file cannot be read or is not UTF-8 text.
+fn read_file(path: Option<&str>, input: &str) -> Result<String, String> {
+    let path = match path {
+        Some(path) => path,
+        None => {
+            let path = input.trim();
+            if path.is_empty() {
+                return Err("`read_file` needs a path in its params or an input".to_string());
+            }
+            if path.lines().count() > 1 {
+                return Err(format!(
+                    "`read_file` reads one path, but its input has {} lines. To read one \
+                     file for each line, use `foreach read_file`",
+                    path.lines().count()
+                ));
+            }
+            path
+        }
+    };
+    fs::read_to_string(path).map_err(|err| format!("cannot read file `{path}`: {err}"))
 }
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {

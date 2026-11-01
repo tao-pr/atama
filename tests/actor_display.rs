@@ -23,6 +23,10 @@ fn writes_actions_back_as_statements() {
         r#"agent:coder task="say \"hi\" \\ a\\b" "" "a b" a=b\c"#,
         "tavily_search",
         "tavily_search topic=news rust release notes",
+        "read_file",
+        "read_file ./notes.txt",
+        "read_file \"my notes.txt\"",
+        "foreach read_file",
     ];
     for statement in statements {
         let actor: Actor = statement.parse().expect(statement);

@@ -76,6 +76,13 @@ impl fmt::Display for Actor {
                 Ok(())
             }
             Actor::ForEach(action) => write!(f, "foreach {action}"),
+            Actor::ReadFile { path } => {
+                write!(f, "read_file")?;
+                match path {
+                    Some(path) => write!(f, " {}", quote_param(path)),
+                    None => Ok(()),
+                }
+            }
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }

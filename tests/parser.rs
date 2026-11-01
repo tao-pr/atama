@@ -724,7 +724,7 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
-         `tavily_search`, `websearch`, `foreach`, `mock` or `agent:<type>`"
+         `tavily_search`, `websearch`, `read_file`, `foreach`, `mock` or `agent:<type>`"
     );
 }
 
@@ -1101,7 +1101,7 @@ fn sample_structured_output_job_extracts_one_json_object_for_each_city() {
     // One search for each city: the query is the input of `tavily_search`.
     assert_eq!(
         task("Search").actions[0].to_string(),
-        "foreach tavily_search max_results=3 include_answer=basic"
+        "foreach tavily_search max_results=1 include_answer=basic"
     );
 
     // The summarizer runs once for each city, with the schema block.
@@ -1151,5 +1151,44 @@ fn sample_structured_output_job_extracts_one_json_object_for_each_city() {
     assert_eq!(
         task("Save cities").actions[0].to_string(),
         "bash ./jobs/scripts/write_json_by_key.sh ./output/structured city"
+    );
+}
+
+#[test]
+fn parses_read_file_actions() {
+    let cases = [
+        ("read_file", None),
+        ("read_file  ./notes.txt ", Some("./notes.txt")),
+        ("read_file \"my notes.txt\"", Some("my notes.txt")),
+    ];
+    for (statement, path) in cases {
+        let actor: Actor = statement.parse().expect(statement);
+        assert_eq!(
+            actor,
+            Actor::ReadFile {
+                path: path.map(Into::into)
+            },
+            "{statement}"
+        );
+    }
+    let actor: Actor = "foreach read_file".parse().unwrap();
+    assert_eq!(
+        actor,
+        Actor::ForEach(Box::new(Actor::ReadFile { path: None }))
+    );
+    for statement in ["read_file a.txt b.txt", "read_file my notes.txt"] {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Err(
+                "`read_file` takes one path, as in `read_file ./notes.txt`. \
+                 Put a path with spaces in quotes"
+                    .to_string()
+            ),
+            "{statement}"
+        );
+    }
+    assert_eq!(
+        "read_file \"a.txt".parse::<Actor>(),
+        Err("a quote in `\"a.txt` has no closing quote".to_string())
     );
 }

@@ -1085,3 +1085,82 @@ fn foreach_gives_the_debug_output_to_each_run() {
     );
     assert!(out.contains("\"content\": \"one\""), "{out}");
 }
+
+// read_file
+
+/// Writes `content` to `<name>` in the fresh directory `temp_dir(dir)`, and
+/// returns the path. Each call deletes the earlier files in `dir`.
+fn write_temp(dir: &str, name: &str, content: &[u8]) -> String {
+    let dir = temp_dir(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, content).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn read_file_returns_the_content_with_all_its_lines() {
+    let content = "first line\n\n  indented line\r\nlast line without newline";
+    let path = write_temp("read_file_lines", "notes.txt", content.as_bytes());
+    let actor = Actor::ReadFile {
+        path: Some(path.clone()),
+    };
+    // The path of the action wins over the input.
+    assert_eq!(actor.act("ignored input"), Ok(content.to_string()));
+
+    let content = "a\nb\n";
+    let path = write_temp("read_file_newline", "with newline.txt", content.as_bytes());
+    let actor = Actor::ReadFile { path: Some(path) };
+    assert_eq!(actor.act(""), Ok(content.to_string()));
+}
+
+#[test]
+fn read_file_reads_the_path_from_the_input() {
+    let path = write_temp("read_file_input", "a.txt", b"one\ntwo\n");
+    let actor = Actor::ReadFile { path: None };
+    // The newline at the end of the previous output is not part of the path.
+    assert_eq!(
+        actor.act(&format!("  {path}\n")),
+        Ok("one\ntwo\n".to_string())
+    );
+
+    // `foreach` reads one file for each line.
+    let other = write_temp("read_file_input_other", "b.txt", b"three\n");
+    let actor: Actor = "foreach read_file".parse().unwrap();
+    assert_eq!(
+        actor.act(&format!("{path}\n{other}\n")),
+        Ok("one\ntwo\nthree\n".to_string())
+    );
+}
+
+#[test]
+fn read_file_fails_without_a_single_readable_path() {
+    let actor = Actor::ReadFile { path: None };
+    for input in ["", " \n "] {
+        assert_eq!(
+            actor.act(input),
+            Err("`read_file` needs a path in its params or an input".to_string()),
+            "{input:?}"
+        );
+    }
+    assert_eq!(
+        actor.act("a.txt\nb.txt\n"),
+        Err(
+            "`read_file` reads one path, but its input has 2 lines. To read one file for \
+             each line, use `foreach read_file`"
+                .to_string()
+        )
+    );
+
+    let missing = temp_dir("read_file_missing").join("no-such-file.txt");
+    let missing = missing.to_string_lossy();
+    let err = actor.act(&missing).unwrap_err();
+    assert!(
+        err.starts_with(&format!("cannot read file `{missing}`: ")),
+        "{err}"
+    );
+
+    let path = write_temp("read_file_binary", "data.bin", &[0xff, 0xfe, 0x00]);
+    let err = Actor::ReadFile { path: Some(path) }.act("").unwrap_err();
+    assert!(err.starts_with("cannot read file `"), "{err}");
+}

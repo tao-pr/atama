@@ -63,6 +63,7 @@ the type of action, and the other words are its parameters:
 | `tavily_search [options...] [query...]` | Searches the web with Tavily. | The response JSON |
 | `websearch topic="<text>" [options...]` | Searches the web for one topic. | The response JSON, unchanged |
 | `agent:<type> model=<profile> [options...]` | Runs a `coder` or `summarizer` agent. | The final reply of the model |
+| `read_file [path]` | Reads a text file. Without a path, the input is the path. | The content of the file, unchanged |
 | `foreach <action>` | Runs the action once for each input line. | All outputs, one after the other |
 | `mock` | Does nothing. | The input, unchanged |
 | `mock fail` | Always fails. | None |
@@ -70,6 +71,13 @@ the type of action, and the other words are its parameters:
 For example: `bash npm ci`, `api_call GET https://example.com`,
 `websearch topic="latest Rust release"` and
 `agent:coder model=local-qwen task="Fix the failing test."`.
+
+`read_file ./notes.txt` reads `./notes.txt`. Put a path with spaces in
+quotes, as in `read_file "my notes.txt"`. Without a path, `read_file` reads
+the file whose path is its input, so it can read a file that the previous
+action names. The output keeps every line and line ending of the file. If
+the input has more than one line, the action fails. To read one file for
+each line, use `foreach read_file`. The file must be UTF-8 text.
 
 The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD. Its options
 are `payload=<text>` and `input_file=<path>`, which set the request body.
