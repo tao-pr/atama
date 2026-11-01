@@ -1075,3 +1075,81 @@ fn a_json_name_fence_that_closes_a_code_block_is_description_text() {
     assert_eq!(job.tasks[0].description, "```\n```json:a");
     assert_eq!(job.tasks[0].actions, [Actor::MockPlaceholder]);
 }
+
+#[test]
+fn sample_structured_output_job_extracts_one_json_object_for_each_city() {
+    let job = parse_job(include_str!(
+        "../jobs/sample_agent_with_structured_output.md"
+    ))
+    .expect("job should parse");
+    let ids: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "Prepare",
+            "Cities",
+            "Queries",
+            "Search",
+            "Shorten results",
+            "Extract temperatures",
+            "Save cities",
+            "Print cities",
+        ]
+    );
+    let task = |id: &str| job.tasks.iter().find(|task| task.id == id).unwrap();
+
+    // One search for each city: the query is the input of `tavily_search`.
+    assert_eq!(
+        task("Search").actions[0].to_string(),
+        "foreach tavily_search max_results=3 include_answer=basic"
+    );
+
+    // The summarizer runs once for each city, with the schema block.
+    let Actor::ForEach(inner) = &task("Extract temperatures").actions[0] else {
+        panic!("expected a foreach action");
+    };
+    let Actor::AgentTool {
+        agent: AgentType::Summarizer,
+        params,
+        profile: Some(profile),
+        output_schema: Some(schema),
+    } = inner.as_ref()
+    else {
+        panic!("expected a summarizer with a profile and a schema, got {inner:?}");
+    };
+    assert_eq!(profile.name, "local-spark2");
+    assert_eq!(profile.model, "hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M");
+    assert_eq!(profile.api_key_env, None);
+    assert!(params.contains(&"output_schema=city_temperature".to_string()));
+    assert_eq!(schema.name, "city_temperature");
+    assert_eq!(
+        schema.schema["required"],
+        json!(["city", "minTemp", "maxTemp"])
+    );
+    // The city names are the file names of the output.
+    assert_eq!(
+        schema.schema["properties"]["city"]["enum"],
+        json!(["berlin", "munich", "madrid", "moscow", "tokyo"])
+    );
+    // A reply that matches the schema passes, and one without a number fails.
+    assert!(
+        schema
+            .check_reply(r#"{"city": "tokyo", "minTemp": 12, "maxTemp": 18.5}"#)
+            .is_ok()
+    );
+    assert!(
+        schema
+            .check_reply(r#"{"city": "paris", "minTemp": 12, "maxTemp": 18}"#)
+            .is_err()
+    );
+    assert!(
+        schema
+            .check_reply(r#"{"city": "tokyo", "minTemp": "12"}"#)
+            .is_err()
+    );
+
+    assert_eq!(
+        task("Save cities").actions[0].to_string(),
+        "bash ./jobs/scripts/write_json_by_key.sh ./output/structured city"
+    );
+}

@@ -47,6 +47,8 @@ Task ids must be unique. See `tests/fixtures/example_job.md` for a full example,
 `jobs/sample_api_calls.md` for a job that uses every action type.
 `jobs/sample_agents.md` shows a `websearch` action and a `summarizer` agent.
 `jobs/sample_foreach.md` shows the `foreach` action prefix.
+`jobs/sample_agent_with_structured_output.md` shows an agent with
+`output_schema=`.
 `jobs/scripts/` has helper scripts that the sample jobs call, and
 `tests/sample_scripts.rs` tests them.
 
