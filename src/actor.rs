@@ -337,12 +337,24 @@ fn write_file(path: &str, input: &str) -> Result<String, String> {
     Ok(input.to_string())
 }
 
+/// The script that runs `cmd` with `params`. With params, `"$@"` passes them
+/// to `cmd` as separate arguments, unchanged. Without params, the script is
+/// `cmd` alone, because a `"$@"` after the last line of `cmd` changes it.
+/// For example, it changes the end line of a heredoc, `EOF`, to `EOF "$@"`,
+/// and then bash does not end the heredoc.
+fn bash_script(cmd: &str, params: &[String]) -> String {
+    if params.is_empty() {
+        cmd.to_string()
+    } else {
+        format!("{cmd} \"$@\"")
+    }
+}
+
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {
-    // `"$@"` passes `params` to `cmd` as separate arguments, unchanged.
     let mut command = Command::new("bash");
     command
         .arg("-c")
-        .arg(format!("{cmd} \"$@\""))
+        .arg(bash_script(cmd, params))
         .arg("bash")
         .args(params);
     run_command(command, "bash", cmd, input)
@@ -374,7 +386,8 @@ fn run_bash_sandbox(cmd: &str, params: &[String], input: &str) -> Result<String,
     let script = format!(
         "if [ \"$EUID\" -eq 0 ]; then echo '`bash-sandbox` does not run as root' >&2; exit 1; fi\n\
          export PATH={SANDBOX_PATH}\n\
-         {cmd} \"$@\""
+         {}",
+        bash_script(cmd, params)
     );
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command

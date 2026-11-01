@@ -594,6 +594,17 @@ fn bash_tool_returns_stdout_or_the_error() {
 }
 
 #[test]
+fn bash_tool_writes_a_file_with_a_heredoc() {
+    let path = format!("target/bash-tool-heredoc-{}.py", std::process::id());
+    let command = format!("cat > {path} <<'EOF'\nprint('hi')\nEOF");
+
+    assert_eq!(Bash.call(&json!({"command": command})), Ok(String::new()));
+    let content = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(content, "print('hi')\n");
+}
+
+#[test]
 fn cuts_long_tool_results() {
     assert_eq!(truncate("short".into()), "short");
     let exact = "é".repeat(MAX_RESULT_CHARS);

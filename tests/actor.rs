@@ -386,6 +386,13 @@ fn bash_runs_cmd_as_a_script() {
 }
 
 #[test]
+fn bash_without_params_ends_a_heredoc_on_the_last_line() {
+    let actor = bash("cat <<'EOF'\nline 1\nline 2\nEOF", &[]);
+
+    assert_eq!(actor.act(""), Ok("line 1\nline 2\n".into()));
+}
+
+#[test]
 fn bash_does_not_quote_special_characters_in_params() {
     let actor = bash("printf '%s\\n'", &["$HOME", "*", "a;b"]);
 
@@ -1254,6 +1261,15 @@ fn bash_sandbox_runs_a_command_with_the_input_and_the_params() {
     assert!(
         err.starts_with("`false` failed with exit status: 1"),
         "{err}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn bash_sandbox_without_params_ends_a_heredoc_on_the_last_line() {
+    assert_eq!(
+        sandbox("cat <<'EOF'\nline 1\nEOF", &[]).act(""),
+        Ok("line 1\n".to_string())
     );
 }
 

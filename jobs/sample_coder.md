@@ -1,6 +1,6 @@
 ```config
 local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
-local-qwen2.5-coder: model=hf.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
+local-qwen3: model=qwen3.5:4b, base_url=http://localhost:11434/v1
 ```
 
 # Code and explain
@@ -55,7 +55,7 @@ passes no output on.
 
 - actions-parallel:max=1
   - agent:coder model=local-spark2 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
-  - agent:coder model=local-qwen2.5-coder thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen2.5-coder.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
+  - agent:coder model=local-qwen3 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen3.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
 - if_fail: retry=0
 
 ## Run code
@@ -67,7 +67,7 @@ fails if an agent wrote no program, or a program fails.
 
 - actions-parallel:
   - bash-sandbox python3 ./output/coder/solution-spark2.py
-  - bash-sandbox python3 ./output/coder/solution-qwen2.5-coder.py
+  - bash-sandbox python3 ./output/coder/solution-qwen3.py
 
 ## Explain spark2 code
 
@@ -81,13 +81,13 @@ so they run in order, with `actions`.
   - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
   - write_file ./output/coder/explanation-spark2.txt
 
-## Explain qwen2.5-coder code
+## Explain qwen3 code
 
-Explain the program of the `local-qwen2.5-coder` agent in the same way.
+Explain the program of the `local-qwen3` agent in the same way.
 This task starts when Run code succeeds, also if Explain spark2 code fails.
 
 - begin_if: task(Run code) succeed
 - actions:
-  - read_file ./output/coder/solution-qwen2.5-coder.py
+  - read_file ./output/coder/solution-qwen3.py
   - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
-  - write_file ./output/coder/explanation-qwen2.5-coder.txt
+  - write_file ./output/coder/explanation-qwen3.txt
