@@ -799,7 +799,8 @@ fn sample_agents_job_searches_and_then_summarizes() {
     let [research] = searches.as_slice() else {
         panic!("expected one websearch action, got {searches:?}");
     };
-    assert!(research.fetch_content);
+    // The job gets only the search results, not the page of each result.
+    assert!(!research.fetch_content);
     assert!(
         research.topic.contains("agent loop patterns"),
         "{}",
@@ -829,8 +830,8 @@ fn sample_agents_job_searches_and_then_summarizes() {
     assert_eq!(
         profile.as_ref(),
         Some(&ModelProfile {
-            name: "local-qwen".into(),
-            model: "qwen3.5:0.8b".into(),
+            name: "local-spark2".into(),
+            model: "hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M".into(),
             base_url: "http://localhost:11434/v1".into(),
             api_key_env: None,
         })
@@ -839,7 +840,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
     let config =
         AgentConfig::from_params(AgentType::Summarizer, summarizer, profile.as_ref(), &no_env)
             .expect("valid options");
-    assert_eq!(config.model, "qwen3.5:0.8b");
+    assert_eq!(config.model, "hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M");
     assert_eq!(config.api_key, None);
     // Thinking makes the small local model slow on a CPU.
     assert_eq!(config.thinking, Some(false));
