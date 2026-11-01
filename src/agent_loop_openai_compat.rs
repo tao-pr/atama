@@ -43,6 +43,7 @@ use serde_json::Value;
 
 use crate::actor::AgentType;
 use crate::profile::ModelProfile;
+use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
 pub mod openai;
@@ -110,6 +111,10 @@ pub struct AgentToolLoop<'a> {
     max_steps: u32,
     /// The `reasoning_effort` that the client sends, for debug output only.
     reasoning_effort: Option<&'static str>,
+    /// The schema block of the job that `output_schema=<name>` names.
+    schema_block: Option<OutputSchema>,
+    /// The schema that the final reply must match, if set.
+    output_schema: Option<OutputSchema>,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
 }
@@ -123,6 +128,8 @@ impl<'a> AgentToolLoop<'a> {
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
             reasoning_effort: None,
+            schema_block: None,
+            output_schema: None,
             debug: None,
         }
     }
@@ -141,6 +148,22 @@ impl<'a> AgentToolLoop<'a> {
     /// Replaces the tools that the model can call.
     pub fn with_tools(mut self, tools: Vec<Box<dyn Tool>>) -> Self {
         self.tools = tools;
+        self
+    }
+
+    /// Sets the schema block of the job that the `output_schema=<name>` of
+    /// the action names. [`AgentToolLoop::run_loop`] uses it if the value of
+    /// `output_schema=` is that name (see [`schema::load`]).
+    pub fn schema_block(mut self, block: Option<OutputSchema>) -> Self {
+        self.schema_block = block;
+        self
+    }
+
+    /// Sets the schema that the final reply of [`AgentToolLoop::run_with`]
+    /// must match. [`AgentToolLoop::run_loop`] sets it from
+    /// `output_schema=`.
+    pub fn output_schema(mut self, output_schema: Option<OutputSchema>) -> Self {
+        self.output_schema = output_schema;
         self
     }
 
@@ -179,10 +202,12 @@ impl<'a> AgentToolLoop<'a> {
     /// Reads the configuration with [`AgentConfig::from_params`], talks to
     /// the model with an [`openai::OpenAiClient`], and returns the model's
     /// final reply. A `summarizer` agent adds its expertise and length limit
-    /// to the task (see [`agent_options::SummarizerOptions::task`]).
+    /// to the task (see [`agent_options::SummarizerOptions::task`]). With
+    /// `output_schema=`, the reply must match the schema (see
+    /// [`schema::load`]).
     ///
-    /// Fails if the configuration is invalid, or a `summarizer` agent has no
-    /// input.
+    /// Fails if the configuration is invalid, the output schema cannot be
+    /// loaded, or a `summarizer` agent has no input.
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
@@ -193,6 +218,11 @@ impl<'a> AgentToolLoop<'a> {
         let config = AgentConfig::from_params(self.agent, params, profile, env)?;
         self.max_steps = config.max_steps;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
+        self.output_schema = config
+            .output_schema
+            .as_deref()
+            .map(|value| schema::load(value, self.schema_block.as_ref()))
+            .transpose()?;
         let summary = config.summary();
         self.write_debug(format!(
             "=== agent:{} configuration ===\n{summary}",
@@ -204,7 +234,8 @@ impl<'a> AgentToolLoop<'a> {
         };
         let mut client =
             openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone())
-                .with_thinking(config.thinking);
+                .with_thinking(config.thinking)
+                .with_output_schema(self.output_schema.clone());
         self.run_with(&mut client, &task, input)
     }
 
@@ -217,8 +248,15 @@ impl<'a> AgentToolLoop<'a> {
     /// loop: the model gets the error and can try again. The text of the
     /// first reply without tool calls is the output.
     ///
+    /// With an output schema (see [`AgentToolLoop::output_schema`]), the
+    /// system prompt tells the model the schema, and the output is the JSON
+    /// of the first reply without tool calls that matches it (see
+    /// [`OutputSchema::check_reply`]). If such a reply does not match, the
+    /// model gets the errors and can try again.
+    ///
     /// Fails if the task and the input are both empty, the client fails, or
-    /// the model still calls tools after `max_steps` replies.
+    /// the model has no final reply, or no reply that matches the schema,
+    /// after `max_steps` replies.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -227,10 +265,13 @@ impl<'a> AgentToolLoop<'a> {
     ) -> Result<String, String> {
         let prompt = user_prompt(task, input)
             .ok_or_else(|| format!("`agent:{}` needs `task=` or an input", self.agent))?;
-        let mut messages = vec![
-            Message::System(system_prompt(self.agent).to_string()),
-            Message::User(prompt),
-        ];
+        let mut system = system_prompt(self.agent).to_string();
+        if let Some(schema) = &self.output_schema {
+            system = format!("{system}\n\n{}", schema.instruction());
+        }
+        let mut messages = vec![Message::System(system), Message::User(prompt)];
+        // The error of the last final reply that did not match the schema.
+        let mut schema_error: Option<String> = None;
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
@@ -241,8 +282,11 @@ impl<'a> AgentToolLoop<'a> {
                 let effort = self.reasoning_effort.map_or(String::new(), |effort| {
                     format!(", reasoning_effort: {effort}")
                 });
+                let format = self.output_schema.as_ref().map_or(String::new(), |schema| {
+                    format!(", output_schema: {}", schema.name)
+                });
                 self.write_debug(format!(
-                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}{effort}) ===\n{new}",
+                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}{effort}{format}) ===\n{new}",
                     self.agent,
                     messages.len(),
                     messages.len() - sent,
@@ -259,7 +303,24 @@ impl<'a> AgentToolLoop<'a> {
                 ));
             }
             if reply.tool_calls.is_empty() {
-                return Ok(reply.content.unwrap_or_default());
+                let text = reply.content.clone().unwrap_or_default();
+                let Some(schema) = &self.output_schema else {
+                    return Ok(text);
+                };
+                let error = match schema.check_reply(&text) {
+                    Ok(json) => return Ok(json),
+                    Err(error) => error,
+                };
+                self.write_debug(format!(
+                    "=== agent:{} step {step}: reply does not match output schema `{}` ===\n{error}",
+                    self.agent, schema.name
+                ));
+                messages.push(Message::Assistant(reply));
+                messages.push(Message::User(format!(
+                    "Your reply is not valid: {error}\nReply again with only the JSON value."
+                )));
+                schema_error = Some(error);
+                continue;
             }
             let calls = reply.tool_calls.clone();
             messages.push(Message::Assistant(reply));
@@ -286,6 +347,13 @@ impl<'a> AgentToolLoop<'a> {
                     content,
                 });
             }
+        }
+        if let (Some(error), Some(schema)) = (schema_error, &self.output_schema) {
+            return Err(format!(
+                "`agent:{}` did not reply with JSON that matches output schema `{}` in {} steps, \
+                 the last error: {error}",
+                self.agent, schema.name, self.max_steps
+            ));
         }
         Err(format!(
             "`agent:{}` did not finish in {} steps",

@@ -19,6 +19,7 @@ use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request
 use atama::agent_loop_openai_compat::tools::{Bash, MAX_RESULT_CHARS, default_tools, truncate};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 use atama::profile::ModelProfile;
+use atama::schema::OutputSchema;
 
 /// Starts a local HTTP server that answers one request per response, in order.
 ///
@@ -402,7 +403,7 @@ fn request_body_has_model_messages_and_tools() {
         },
         Message::Assistant(text("done")),
     ];
-    let body = request_body("m", &messages, &default_tools(AgentType::Coder), None);
+    let body = request_body("m", &messages, &default_tools(AgentType::Coder), None, None);
     assert_eq!(
         body,
         json!({
@@ -429,17 +430,17 @@ fn request_body_has_model_messages_and_tools() {
         })
     );
 
-    let body = request_body("m", &messages[..1], &[], None);
+    let body = request_body("m", &messages[..1], &[], None, None);
     assert!(body.get("tools").is_none(), "{body}");
 }
 
 #[test]
 fn request_body_turns_off_thinking_only_for_thinking_false() {
     let messages = [Message::User("task".into())];
-    let body = request_body("m", &messages, &[], Some(false));
+    let body = request_body("m", &messages, &[], Some(false), None);
     assert_eq!(body["reasoning_effort"], "none");
     for thinking in [None, Some(true)] {
-        let body = request_body("m", &messages, &[], thinking);
+        let body = request_body("m", &messages, &[], thinking, None);
         assert!(body.get("reasoning_effort").is_none(), "{body}");
     }
 }
@@ -488,7 +489,7 @@ fn client_posts_to_chat_completions_with_the_api_key() {
     );
     assert_eq!(
         request_json(&request),
-        request_body("m", &messages, &[], None)
+        request_body("m", &messages, &[], None, None)
     );
 
     let mut client = OpenAiClient::new(&url, "m", None);
@@ -754,4 +755,181 @@ fn summarizer_fails_before_asking_the_model_without_an_input() {
         .run_loop_with_env(&params(&["model=m"]), Some(&profile(&url)), "", &no_env)
         .unwrap_err();
     assert_eq!(err, "`agent:summarizer` needs an input to summarize");
+}
+
+// Output schema
+
+fn title_schema() -> OutputSchema {
+    OutputSchema {
+        name: "article".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        }),
+    }
+}
+
+#[test]
+fn output_schema_goes_into_the_system_prompt_and_checks_the_reply() {
+    let mut client = ScriptedClient::new(vec![Ok(text("```json\n{\"title\": \"T\"}\n```"))]);
+    let output = AgentToolLoop::new(AgentType::Summarizer)
+        .output_schema(Some(title_schema()))
+        .run_with(&mut client, "task", "input")
+        .unwrap();
+    assert_eq!(output, "{\"title\": \"T\"}");
+    let Message::System(system) = &client.conversations[0][0] else {
+        panic!("the first message is the system prompt");
+    };
+    assert!(
+        system.ends_with(&format!("\n\n{}", title_schema().instruction())),
+        "{system}"
+    );
+}
+
+#[test]
+fn a_reply_that_does_not_match_the_schema_goes_back_to_the_model() {
+    let mut client = ScriptedClient::new(vec![
+        Ok(text("The title is T.")),
+        Ok(calls(&[("c1", "rec", "{}")])),
+        Ok(text("{\"title\": \"T\"}")),
+    ]);
+    let (tool, _) = Recorder::boxed("rec", Ok("ok"));
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .output_schema(Some(title_schema()))
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "{\"title\": \"T\"}");
+
+    let second = &client.conversations[1];
+    assert_eq!(second.len(), 4);
+    assert_eq!(second[2], Message::Assistant(text("The title is T.")));
+    let Message::User(feedback) = &second[3] else {
+        panic!("the error goes to the model as a user message");
+    };
+    assert!(
+        feedback.starts_with("Your reply is not valid: the reply is not valid JSON: "),
+        "{feedback}"
+    );
+    assert!(
+        feedback.ends_with("\nReply again with only the JSON value."),
+        "{feedback}"
+    );
+
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "=== agent:coder step 1: reply does not match output schema `article` ===\n\
+             the reply is not valid JSON: "
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("tools: rec, output_schema: article) ==="),
+        "{out}"
+    );
+}
+
+#[test]
+fn fails_with_the_last_schema_error_after_max_steps() {
+    let mut client = ScriptedClient::new(vec![Ok(text("{}")), Ok(text("{\"title\": 1}"))]);
+    let err = AgentToolLoop::new(AgentType::Summarizer)
+        .output_schema(Some(title_schema()))
+        .max_steps(2)
+        .run_with(&mut client, "task", "input")
+        .unwrap_err();
+    assert!(
+        err.starts_with(
+            "`agent:summarizer` did not reply with JSON that matches output schema `article` \
+             in 2 steps, the last error: the reply does not match the schema:\nat `/title`: "
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn request_body_has_the_response_format_of_the_schema() {
+    let messages = [Message::User("task".into())];
+    let body = request_body("m", &messages, &[], None, Some(&title_schema()));
+    assert_eq!(body["response_format"], title_schema().response_format());
+    let body = request_body("m", &messages, &[], None, None);
+    assert!(body.get("response_format").is_none(), "{body}");
+}
+
+#[test]
+fn run_loop_uses_the_schema_block_that_output_schema_names() {
+    let (url, requests) = serve(vec![(200, text_response("{\"title\": \"T\"}"))]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Summarizer)
+        .schema_block(Some(title_schema()))
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&["model=m", "output_schema=article"]),
+            Some(&profile(&url)),
+            "some input",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "{\"title\": \"T\"}");
+    let request = request_json(&requests.recv().unwrap());
+    assert_eq!(request["response_format"], title_schema().response_format());
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("\noutput_schema: article\n"), "{out}");
+}
+
+#[test]
+fn run_loop_reads_a_schema_file() {
+    let dir = std::env::temp_dir().join(format!("atama-loop-schema-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("story.json");
+    std::fs::write(&path, title_schema().schema.to_string()).unwrap();
+    let (url, requests) = serve(vec![(200, text_response("{\"title\": \"T\"}"))]);
+    AgentToolLoop::new(AgentType::Coder)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                &format!("output_schema={}", path.display()),
+            ]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    let request = request_json(&requests.recv().unwrap());
+    assert_eq!(request["response_format"]["json_schema"]["name"], "story");
+    assert_eq!(
+        request["response_format"]["json_schema"]["schema"],
+        title_schema().schema
+    );
+}
+
+#[test]
+fn run_loop_fails_on_a_schema_that_it_cannot_load() {
+    let run = |value: &str, block: Option<OutputSchema>| {
+        AgentToolLoop::new(AgentType::Coder)
+            .schema_block(block)
+            .run_loop_with_env(
+                &params(&["model=m", "task=t", &format!("output_schema={value}")]),
+                Some(&profile(&closed_url())),
+                "",
+                &no_env,
+            )
+            .unwrap_err()
+    };
+    assert_eq!(
+        run("article", None),
+        "output schema `article` is not defined in the job"
+    );
+    assert_eq!(
+        run("story", Some(title_schema())),
+        "output schema `story` is not defined in the job"
+    );
+    assert!(
+        run("./no/such.json", None).starts_with("cannot read output schema file"),
+        "file"
+    );
 }

@@ -166,6 +166,8 @@ These options set up every agent:
   Ollama knows this value, but other servers can reject it or ignore it.
   Without `thinking=`, or with `thinking=true`, the request has no
   `reasoning_effort`, and the server uses its default.
+- `output_schema=<name|path>` makes the output of the agent a JSON value
+  that matches a JSON schema. See "Output schemas" below.
 
 ### Model profiles
 
@@ -194,6 +196,68 @@ fails before it asks the model. Several actions can use the same profile.
 Atama reads the profiles when it reads the job file. If a line is not a
 valid profile, or an action names a profile that the block does not
 define, the job does not start. The job can have only one `config` block.
+
+### Output schemas
+
+An output schema is a JSON schema for the final reply of an agent. With
+`output_schema=`, the output of the agent action is one JSON value that
+matches the schema. The next action can read it, for example with
+`bash jq .title`.
+
+The value of `output_schema=` is the name of a schema block, or the path
+of a schema file:
+
+- A value that has only letters, digits, `_` and `-` is a name, as in
+  `output_schema=article`. The job file must have a schema block with
+  that name.
+- Any other value is a path, as in `output_schema=schemas/article.json`.
+  For a file name without a dot, write `./`, as in
+  `output_schema=./article`.
+
+You define a schema block before the `# <name>` heading, as the `config`
+block. The fence of the block is `json:<name>`. A name has 1 to 64
+letters, digits, `_` or `-`. A job can have many schema blocks.
+
+````markdown
+```json:article
+{
+  "type": "object",
+  "properties": {
+    "title": {"type": "string"},
+    "points": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["title", "points"]
+}
+```
+
+# Summarize the news
+
+## Summary
+
+- actions:
+  - agent:summarizer model=local-qwen output_schema=article
+````
+
+Atama reads the schema blocks when it reads the job file. The job does not
+start in these cases:
+
+- A block is not valid JSON, is not a JSON object, or is not a valid JSON
+  schema.
+- Two blocks have the same name, or a block comes after the `# <name>`
+  heading.
+- An action names a schema that no block defines.
+
+Atama reads a schema file when the action starts, so that an earlier task
+can write the file. If the file cannot be read or is not a valid schema,
+the action fails. A schema cannot use a `$ref` to a URL.
+
+The agent sends the schema to the server in `response_format`, and it also
+puts the schema in the system prompt. Some servers ignore
+`response_format`, so Atama also makes sure that the reply matches the
+schema. Atama removes a code fence around the JSON. If the reply does not
+match, the model gets the errors and can try again. Each try counts as one
+of the `max_steps` replies. If no reply matches in `max_steps` replies,
+the action fails with the last error.
 
 ### The `summarizer` agent
 
@@ -242,10 +306,12 @@ writes these blocks to stderr for each agent action:
 
 1. The configuration: the profile name, the model, the base URL,
    `max_steps`, and whether an API key is set. Atama never writes the key
-   itself. If the action sets `thinking=`, it also has `thinking`. For a
+   itself. If the action sets `thinking=` or `output_schema=`, it also has
+   that option. For a
    `summarizer` agent, it also has `expertise` and `max_output`.
 2. For each step, the request: the number of messages, the tools, the
-   `reasoning_effort` if the action has `thinking=false`, and the messages
+   `reasoning_effort` if the action has `thinking=false`, the name of the
+   output schema if the action has one, and the messages
    that are new since the last request, as pretty JSON.
 3. The model's reply, as pretty JSON.
 4. One block per tool call, with the tool name, the call id, the arguments

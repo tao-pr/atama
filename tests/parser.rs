@@ -1,9 +1,12 @@
 //! Tests for the job config markdown parser.
 
+use serde_json::json;
+
 use atama::Passer;
 use atama::actor::{Actor, AgentType, ApiVerb, Auth};
 use atama::agent_loop_openai_compat::agent_options::AgentConfig;
 use atama::profile::ModelProfile;
+use atama::schema::OutputSchema;
 use atama::tavily::DEFAULT_BASE_URL;
 use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
 use atama::{Event, Hook, ParseError, Trigger, parse_job};
@@ -159,6 +162,7 @@ fn parses_agent_tool_actions() {
                 agent,
                 params: params.into_iter().map(Into::into).collect(),
                 profile: None,
+                output_schema: None,
             },
             "{statement}"
         );
@@ -811,6 +815,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
                     agent,
                     params,
                     profile,
+                    ..
                 } => Some((*agent, params, profile)),
                 _ => None,
             },
@@ -888,4 +893,184 @@ fn treats_deeper_headings_as_description() {
 
     assert_eq!(job.tasks.len(), 1);
     assert_eq!(job.tasks[0].description, "### Notes\nsome text");
+}
+
+// Output schemas
+
+/// A job with `blocks` before its heading and one action.
+fn schema_job(blocks: &str, action: &str) -> String {
+    format!(
+        "```config\np: model=m, base_url=http://x.test\n```\n{blocks}# Job\n## A\n- actions:\n  - {action}\n"
+    )
+}
+
+const ARTICLE_BLOCK: &str =
+    "```json:article\n{\n  \"type\": \"object\",\n  \"required\": [\"title\"]\n}\n```\n";
+
+/// The output schema of the first action of the first task.
+fn first_output_schema(job: &atama::Job) -> Option<OutputSchema> {
+    match &job.tasks[0].actions[0] {
+        Actor::AgentTool { output_schema, .. } => output_schema.clone(),
+        Actor::ForEach(inner) => match inner.as_ref() {
+            Actor::AgentTool { output_schema, .. } => output_schema.clone(),
+            other => panic!("expected an agent, got {other:?}"),
+        },
+        other => panic!("expected an agent, got {other:?}"),
+    }
+}
+
+#[test]
+fn reads_schema_blocks_and_gives_the_named_schema_to_the_agent() {
+    let blocks = format!("{ARTICLE_BLOCK}\n```json:other\n{{}}\n```\n");
+    let job = parse_job(&schema_job(
+        &blocks,
+        "agent:summarizer model=p output_schema=article",
+    ))
+    .expect("job should parse");
+    assert_eq!(
+        first_output_schema(&job),
+        Some(OutputSchema {
+            name: "article".into(),
+            schema: json!({"type": "object", "required": ["title"]}),
+        })
+    );
+    // The printed action keeps the schema name.
+    assert_eq!(
+        job.tasks[0].actions[0].to_string(),
+        "agent:summarizer model=p output_schema=article"
+    );
+
+    // An agent inside `foreach` gets its schema too.
+    let job = parse_job(&schema_job(
+        &blocks,
+        "foreach agent:coder model=p output_schema=other",
+    ))
+    .unwrap();
+    assert_eq!(first_output_schema(&job).unwrap().name, "other");
+}
+
+#[test]
+fn a_schema_path_is_not_resolved_by_the_parser() {
+    for value in ["schemas/article.json", "article.json", "./article"] {
+        let job = parse_job(&schema_job(
+            "",
+            &format!("agent:coder model=p output_schema={value}"),
+        ))
+        .expect("a path needs no schema block");
+        assert_eq!(first_output_schema(&job), None, "{value}");
+    }
+    let job = parse_job(&schema_job(ARTICLE_BLOCK, "agent:coder model=p")).unwrap();
+    assert_eq!(first_output_schema(&job), None);
+}
+
+#[test]
+fn rejects_unknown_schema_names() {
+    let cases = [
+        (
+            schema_job("", "agent:coder model=p output_schema=article"),
+            7,
+            "unknown output schema `article`: the job has no ```json:<name> schema block. \
+             For a file, use a path, as in `output_schema=./article.json`",
+        ),
+        (
+            schema_job(ARTICLE_BLOCK, "agent:coder model=p output_schema=story"),
+            13,
+            "unknown output schema `story`, expected `article` or the path of a file",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line,
+                message: message.to_string()
+            }),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_schema_blocks() {
+    let cases = [
+        (
+            schema_job("```json:\n{}\n```\n", "mock"),
+            4,
+            "the ```json:<name> block has no name, as in ```json:article",
+        ),
+        (
+            schema_job("```json:my schema\n{}\n```\n", "mock"),
+            4,
+            "`my schema` is not a schema name, use 1 to 64 letters, digits, `_` or `-`",
+        ),
+        (
+            schema_job("```json:a.json\n{}\n```\n", "mock"),
+            4,
+            "`a.json` is not a schema name, use 1 to 64 letters, digits, `_` or `-`",
+        ),
+        (
+            schema_job("```json:a\n{}\n```\n```json:a\n{}\n```\n", "mock"),
+            7,
+            "schema `a` is defined twice",
+        ),
+        (
+            schema_job("```json:a\n{\n  \"type\": \"object\",\n}\n```\n", "mock"),
+            7,
+            "schema `a` is not valid JSON: trailing comma (column 1)",
+        ),
+        (
+            schema_job("```json:a\n\n```\n", "mock"),
+            5,
+            "schema `a` is not valid JSON: EOF while parsing a value (column 0)",
+        ),
+        (
+            schema_job("```json:a\n[1, 2]\n```\n", "mock"),
+            5,
+            "schema `a` is not a JSON object, as in `{\"type\": \"object\"}`",
+        ),
+        (
+            schema_job("```json:a\n{}\n", "mock"),
+            4,
+            "the ```json:a block has no closing ```",
+        ),
+        (
+            "# Job\n```json:a\n{}\n```\n## A\n- actions: mock\n".to_string(),
+            2,
+            "the ```json:<name> schema block must come before the `# <job name>` heading",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line,
+                message: message.to_string()
+            }),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn rejects_schema_blocks_that_are_not_valid_json_schemas() {
+    let text = schema_job(
+        "```json:a\n{\"type\": \"object\", \"properties\": {\"n\": {\"type\": \"numbr\"}}}\n```\n",
+        "mock",
+    );
+    let err = parse_job(&text).unwrap_err();
+    assert_eq!(err.line, 5);
+    assert!(
+        err.message
+            .starts_with("schema `a` is not a valid JSON schema at `/properties/n/type`: "),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn a_json_name_fence_that_closes_a_code_block_is_description_text() {
+    let text = "# Job\n## A\n```\n```json:a\n- actions: mock\n";
+    let job = parse_job(text).expect("job should parse");
+    assert_eq!(job.tasks[0].description, "```\n```json:a");
+    assert_eq!(job.tasks[0].actions, [Actor::MockPlaceholder]);
 }

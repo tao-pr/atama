@@ -921,6 +921,7 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
         agent: AgentType::Coder,
         params: vec!["model=p".into(), "task=find it".into()],
         profile: Some(profile(&url)),
+        output_schema: None,
     };
     assert_eq!(actor.act("the input"), Ok("done".to_string()));
     let request = requests.recv().unwrap();
@@ -938,6 +939,7 @@ fn act_with_debug_writes_agent_debug_output_only() {
         agent: AgentType::Coder,
         params: vec!["model=p".into(), "task=t".into()],
         profile: Some(profile(&url)),
+        output_schema: None,
     };
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
@@ -960,6 +962,7 @@ fn agent_tool_fails_when_the_model_server_is_unreachable() {
         agent: AgentType::Coder,
         params: vec!["model=p".into(), "task=t".into()],
         profile: Some(profile(&url)),
+        output_schema: None,
     };
     let err = actor.act("").unwrap_err();
     assert!(
@@ -1069,6 +1072,7 @@ fn foreach_gives_the_debug_output_to_each_run() {
         agent: AgentType::Coder,
         params: vec!["model=p".into()],
         profile: Some(profile(&url)),
+        output_schema: None,
     });
     let mut out = Vec::new();
     assert!(actor.act_with("one\ntwo", Some(&mut out)).is_err());

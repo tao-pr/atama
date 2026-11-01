@@ -74,6 +74,29 @@ fn reads_thinking_as_true_or_false_and_leaves_it_unset_by_default() {
 }
 
 #[test]
+fn reads_output_schema_for_every_agent_type() {
+    for agent in [AgentType::Coder, AgentType::Summarizer] {
+        let output_schema = |words: &[&str]| {
+            AgentConfig::from_params(agent, &params(words), Some(&profile()), &no_env)
+                .map(|config| config.output_schema)
+        };
+        assert_eq!(output_schema(&["model=m"]), Ok(None));
+        assert_eq!(
+            output_schema(&["model=m", "output_schema=article"]),
+            Ok(Some("article".to_string()))
+        );
+        assert_eq!(
+            output_schema(&["model=m", "output_schema=a/b.json"]),
+            Ok(Some("a/b.json".to_string()))
+        );
+        assert_eq!(
+            output_schema(&["model=m", "output_schema=a", "output_schema=b"]),
+            Err("option `output_schema` is set twice".to_string())
+        );
+    }
+}
+
+#[test]
 fn reads_the_api_key_from_the_variable_that_the_profile_names() {
     let profile = ModelProfile {
         api_key_env: Some("MY_KEY".into()),
@@ -122,7 +145,7 @@ fn rejects_invalid_configuration() {
         ),
         (
             vec!["model=m", "base_url=http://x.test"],
-            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, `thinking=`, \
+            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
@@ -181,6 +204,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         summarizer: None,
         task: "task".into(),
         thinking: None,
+        output_schema: None,
     };
     assert_eq!(
         config.summary(),
@@ -192,6 +216,13 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
             .summary()
             .ends_with("\napi key: set\nthinking: false")
     );
+    config.output_schema = Some("article".into());
+    assert!(
+        config
+            .summary()
+            .ends_with("\napi key: set\nthinking: false\noutput_schema: article")
+    );
+    config.output_schema = None;
     config.thinking = None;
     config.api_key = None;
     assert!(config.summary().ends_with("\napi key: not set"));
@@ -309,7 +340,7 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, `thinking=`, \
+            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`"
                 .into(),
         ),

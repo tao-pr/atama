@@ -148,7 +148,8 @@ The code of the loop is in four files:
 ### Options of an agent action
 
 Each param of an agent action is an option. Every agent needs
-`model=<profile>` and takes `task=`, `max_steps=` and `thinking=`, and a
+`model=<profile>` and takes `task=`, `max_steps=`, `thinking=` and
+`output_schema=`, and a
 `summarizer` agent also takes
 `expertise=` and `max_output=`. A `coder` agent fails on these two options
 (`only_for`). A value can be in double quotes, so that it can have spaces,
@@ -285,6 +286,35 @@ fake environment.
 
 In tests, use a mock `ChatClient` and mock tools, or a `ModelProfile` whose
 `base_url` is a local mock server. Tests must not call a real model.
+
+### Output schemas
+
+`output_schema=<name|path>` makes the output of an agent a JSON value that
+matches a JSON schema. The code is in `src/schema.rs`, and the
+`jsonschema` crate checks the schemas.
+
+- A value with only ASCII letters, digits, `_` and `-` is a name
+  (`schema::is_name`). Any other value is a path.
+- A job file can have ```` ```json:<name> ```` blocks before the
+  `# <name>` heading. `parse_job` reads each block with
+  `schema::parse_block`, which makes sure that it is JSON, a JSON object
+  and a valid schema (`schema::check_schema`).
+- `parse_action` uses `schema::resolve` to put the block that a name
+  selects into `Actor::AgentTool::output_schema`. An unknown name is a
+  parse error. The parser does not read a path.
+- `AgentConfig::output_schema` is the raw value. `run_loop_with_env` uses
+  `schema::load`, which takes the block from `AgentToolLoop::schema_block`
+  for a name, and reads the file for a path.
+- `openai::request_body` adds `response_format` with the schema, without
+  `strict`. `run_with` adds `OutputSchema::instruction` to the system
+  prompt, because some servers ignore `response_format`.
+- `run_with` makes sure that the final reply matches the schema with
+  `OutputSchema::check_reply`. If it does not match, the loop sends the
+  errors to the model as a user message and goes on. Each try counts in
+  `max_steps`.
+
+Tests of the module are in `tests/schema.rs`. Tests set a schema on a loop
+with `AgentToolLoop::output_schema`.
 
 ## Tavily client
 

@@ -8,6 +8,7 @@ pub mod parser;
 pub mod passer;
 pub mod printer;
 pub mod profile;
+pub mod schema;
 pub mod tavily;
 pub mod websearch;
 

@@ -12,6 +12,7 @@ use ureq::{Agent, Body, RequestBuilder};
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::passer::Passer;
 use crate::profile::ModelProfile;
+use crate::schema::OutputSchema;
 use crate::tavily::SearchConfig;
 use crate::websearch::WebSearchOptions;
 
@@ -63,6 +64,12 @@ pub enum Actor {
         /// from the ```` ```config ```` block of the job (see
         /// [`crate::profile`]). An action parsed on its own has `None`.
         profile: Option<ModelProfile>,
+        /// The schema block that `output_schema=<name>` names. The job
+        /// parser sets it from the ```` ```json:<name> ```` blocks of the job
+        /// (see [`crate::schema`]). It is `None` if the action has no
+        /// `output_schema=`, its value is a path, or the action is parsed on
+        /// its own.
+        output_schema: Option<OutputSchema>,
     },
     /// Searches the web with the Tavily API.
     /// Carries the search response as JSON as output
@@ -205,8 +212,9 @@ impl Actor {
                 agent,
                 params,
                 profile,
+                output_schema,
             } => {
-                let mut agent_loop = AgentToolLoop::new(*agent);
+                let mut agent_loop = AgentToolLoop::new(*agent).schema_block(output_schema.clone());
                 match debug {
                     Some(debug) => {
                         agent_loop

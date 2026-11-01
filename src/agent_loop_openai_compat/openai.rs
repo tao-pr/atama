@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use ureq::Agent;
 
 use super::{ChatClient, Message, Reply, Tool, ToolCall};
+use crate::schema::OutputSchema;
 
 /// Sends each step of the conversation to `<base_url>/chat/completions`.
 pub struct OpenAiClient {
@@ -13,6 +14,7 @@ pub struct OpenAiClient {
     model: String,
     api_key: Option<String>,
     thinking: Option<bool>,
+    output_schema: Option<OutputSchema>,
     agent: Agent,
 }
 
@@ -26,6 +28,7 @@ impl OpenAiClient {
             model: model.to_string(),
             api_key,
             thinking: None,
+            output_schema: None,
             agent: Agent::new_with_config(
                 Agent::config_builder().http_status_as_error(false).build(),
             ),
@@ -37,11 +40,23 @@ impl OpenAiClient {
         self.thinking = thinking;
         self
     }
+
+    /// Sets the schema of the final reply (see [`request_body`]).
+    pub fn with_output_schema(mut self, output_schema: Option<OutputSchema>) -> Self {
+        self.output_schema = output_schema;
+        self
+    }
 }
 
 impl ChatClient for OpenAiClient {
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String> {
-        let body = request_body(&self.model, messages, tools, self.thinking);
+        let body = request_body(
+            &self.model,
+            messages,
+            tools,
+            self.thinking,
+            self.output_schema.as_ref(),
+        );
         let mut request = self.agent.post(&self.url);
         if let Some(key) = &self.api_key {
             request = request.header("Authorization", format!("Bearer {key}"));
@@ -71,11 +86,16 @@ impl ChatClient for OpenAiClient {
 /// which turns off the thinking of the model on Ollama and on other servers
 /// that know the value. Else the body has no `reasoning_effort`, so the
 /// server uses its default.
+///
+/// If `output_schema` is set, the body has its `response_format` (see
+/// [`OutputSchema::response_format`]), which asks the server for a reply
+/// that matches the schema.
 pub fn request_body(
     model: &str,
     messages: &[Message],
     tools: &[Box<dyn Tool>],
     thinking: Option<bool>,
+    output_schema: Option<&OutputSchema>,
 ) -> Value {
     let mut body = json!({
         "model": model,
@@ -98,6 +118,9 @@ pub fn request_body(
     }
     if let Some(effort) = reasoning_effort(thinking) {
         body["reasoning_effort"] = json!(effort);
+    }
+    if let Some(schema) = output_schema {
+        body["response_format"] = schema.response_format();
     }
     body
 }

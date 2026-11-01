@@ -15,11 +15,12 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 6] = [
+const OPTION_KEYS: [&str; 7] = [
     "model",
     "max_steps",
     "task",
     "thinking",
+    "output_schema",
     "expertise",
     "max_output",
 ];
@@ -29,7 +30,8 @@ const OPTION_KEYS: [&str; 6] = [
 ///
 /// Each param is one option. Every agent type needs `model=<profile>`, the
 /// name of a [`ModelProfile`] of the job, and takes `task=<text>`,
-/// `max_steps=<n>` and `thinking=<true|false>`. A `summarizer` agent also takes `expertise=<text>` and
+/// `max_steps=<n>`, `thinking=<true|false>` and `output_schema=<name|path>`
+/// (see [`crate::schema`]). A `summarizer` agent also takes `expertise=<text>` and
 /// `max_output=<size>` (see [`SummarizerOptions`]). In the job file, a value
 /// can be in double quotes, so that it can have spaces, as in
 /// `task="Fix the tests"`. The parser removes the quotes. The profile sets
@@ -51,6 +53,10 @@ pub struct AgentConfig {
     /// off the thinking of the model. `None` and `Some(true)` send nothing,
     /// so the server uses its default.
     pub thinking: Option<bool>,
+    /// From `output_schema=<name|path>`: the name of a schema block of the
+    /// job, or the path of a JSON schema file (see [`crate::schema::load`]).
+    /// `None` lets the model reply with any text.
+    pub output_schema: Option<String>,
 }
 
 /// The options of a `summarizer` agent: the field of the reader, and how
@@ -185,6 +191,7 @@ struct Values {
     max_steps: Option<String>,
     task: Option<String>,
     thinking: Option<String>,
+    output_schema: Option<String>,
     expertise: Option<String>,
     max_output: Option<String>,
 }
@@ -207,6 +214,7 @@ impl Values {
                 "max_steps" => &mut values.max_steps,
                 "task" => &mut values.task,
                 "thinking" => &mut values.thinking,
+                "output_schema" => &mut values.output_schema,
                 "expertise" => &mut values.expertise,
                 "max_output" => &mut values.max_output,
                 _ => {
@@ -248,6 +256,7 @@ impl AgentConfig {
             max_steps,
             task,
             thinking,
+            output_schema,
             expertise,
             max_output,
         } = Values::read(params)?;
@@ -299,6 +308,7 @@ impl AgentConfig {
             summarizer,
             task: task.unwrap_or_default(),
             thinking,
+            output_schema,
         })
     }
 }
@@ -306,7 +316,7 @@ impl AgentConfig {
 impl AgentConfig {
     /// The configuration for debug output, one `name: value` line each. It
     /// shows only whether the API key is set, never the key itself, and
-    /// `thinking` only if the action sets it. For a
+    /// `thinking` and `output_schema` only if the action sets them. For a
     /// `summarizer` agent, it also shows `expertise` and `max_output`.
     pub fn summary(&self) -> String {
         let key = if self.api_key.is_some() {
@@ -320,6 +330,9 @@ impl AgentConfig {
         );
         if let Some(thinking) = self.thinking {
             summary.push_str(&format!("\nthinking: {thinking}"));
+        }
+        if let Some(output_schema) = &self.output_schema {
+            summary.push_str(&format!("\noutput_schema: {output_schema}"));
         }
         if let Some(options) = &self.summarizer {
             let max_output = options

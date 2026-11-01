@@ -4,6 +4,8 @@
 //!
 //! - A ```` ```config ```` block before the `# <name>` heading defines model
 //!   profiles, one per line (see [`crate::profile`]).
+//! - A ```` ```json:<name> ```` block before the `# <name>` heading defines
+//!   an output schema for agent actions (see [`crate::schema`]).
 //! - `# <name>` names the job; text after it is the job description.
 //! - `## <id>` starts a task; its heading text is the task id.
 //! - Top-level `- begin_if:`, `- actions:`, `- if_fail:` and `- if_succeed:`
@@ -25,7 +27,8 @@
 //!     is [`Actor::MockPlaceholder`].
 //!   - `agent:<type> model=<profile> [params...]` is [`Actor::AgentTool`].
 //!     The type is `coder` or `summarizer`. The profile must be in the
-//!     ```` ```config ```` block.
+//!     ```` ```config ```` block. If `output_schema=` has a name, not a
+//!     path, the job must have a schema block with that name.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
@@ -36,6 +39,7 @@ use crate::actor::{Actor, AgentType, ApiVerb, Auth};
 use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
+use crate::schema::{self, Schemas};
 use crate::websearch::{self, WebSearchOptions};
 
 /// An error found while parsing a job config file.
@@ -79,24 +83,49 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut in_actions = false;
     let mut in_code_block = false;
     let mut profiles = Profiles::new();
-    // The line number of the ```config fence and the lines after it, while
-    // the block is open.
-    let mut config_block: Option<(usize, Vec<&str>)> = None;
+    let mut schemas = Schemas::new();
+    // The open ```config or ```json:<name> block: the line number of its
+    // fence, its schema name for a schema block, and the lines after the
+    // fence.
+    let mut open_block: Option<(usize, Option<&str>, Vec<&str>)> = None;
     let mut has_config = false;
 
     for (index, raw_line) in input.lines().enumerate() {
         let line_no = index + 1;
         let line = raw_line.trim_end();
 
-        if let Some((start, lines)) = config_block.as_mut() {
-            if line.trim_start().starts_with("```") {
-                let start = *start;
-                profiles = profile::parse_profiles(lines.iter().copied())
-                    .map_err(|(index, message)| ParseError::new(start + 1 + index, message))?;
-                config_block = None;
+        if let Some((start, schema_name, lines)) = open_block.as_mut() {
+            if !line.trim_start().starts_with("```") {
+                lines.push(line);
                 continue;
             }
-            lines.push(line);
+            let start = *start;
+            let at = |(index, message)| ParseError::new(start + 1 + index, message);
+            match schema_name {
+                None => profiles = profile::parse_profiles(lines.iter().copied()).map_err(at)?,
+                Some(name) => {
+                    let parsed = schema::parse_block(name, &lines.join("\n")).map_err(at)?;
+                    schemas.insert(name.to_string(), parsed);
+                }
+            }
+            open_block = None;
+            continue;
+        }
+        if let Some(schema_name) = schema::block_name(line).filter(|_| !in_code_block) {
+            if name.is_some() {
+                return Err(ParseError::new(
+                    line_no,
+                    "the ```json:<name> schema block must come before the `# <job name>` heading",
+                ));
+            }
+            schema::check_name(schema_name).map_err(|message| ParseError::new(line_no, message))?;
+            if schemas.contains_key(schema_name) {
+                return Err(ParseError::new(
+                    line_no,
+                    format!("schema `{schema_name}` is defined twice"),
+                ));
+            }
+            open_block = Some((line_no, Some(schema_name), Vec::new()));
             continue;
         }
         if line.trim() == "```config" && !in_code_block {
@@ -110,7 +139,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 return Err(ParseError::new(line_no, "more than one ```config block"));
             }
             has_config = true;
-            config_block = Some((line_no, Vec::new()));
+            open_block = Some((line_no, None, Vec::new()));
             continue;
         }
 
@@ -185,10 +214,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         if in_actions {
             let is_indented = line.starts_with(' ') || line.starts_with('\t');
             if let Some(action) = bullet_text(line.trim_start()).filter(|_| is_indented) {
-                current
-                    .task
-                    .actions
-                    .push(parse_action(action.trim(), line_no, &profiles)?);
+                current.task.actions.push(parse_action(
+                    action.trim(),
+                    line_no,
+                    &profiles,
+                    &schemas,
+                )?);
                 continue;
             }
             if line.trim().is_empty() {
@@ -208,7 +239,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         current
                             .task
                             .actions
-                            .push(parse_action(value, line_no, &profiles)?);
+                            .push(parse_action(value, line_no, &profiles, &schemas)?);
                     }
                     in_actions = true;
                 }
@@ -238,10 +269,11 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         current.description.push(line.to_string());
     }
 
-    if let Some((start, _)) = config_block {
+    if let Some((start, schema_name, _)) = open_block {
+        let block = schema_name.map_or("```config".to_string(), |name| format!("```json:{name}"));
         return Err(ParseError::new(
             start,
-            "the ```config block has no closing ```",
+            format!("the {block} block has no closing ```"),
         ));
     }
     let Some(name) = name else {
@@ -267,8 +299,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 }
 
 /// Parses an action. An agent action also gets the model profile that its
-/// `model=` names.
-fn parse_action(value: &str, line: usize, profiles: &Profiles) -> Result<Actor, ParseError> {
+/// `model=` names, and the schema block that its `output_schema=` names.
+fn parse_action(
+    value: &str,
+    line: usize,
+    profiles: &Profiles,
+    schemas: &Schemas,
+) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
     // The agent of a `foreach` action needs its profile too.
     let agent_actor = match &mut actor {
@@ -279,11 +316,12 @@ fn parse_action(value: &str, line: usize, profiles: &Profiles) -> Result<Actor, 
         agent,
         params,
         profile,
+        output_schema,
     } = agent_actor
     {
-        let found = profile::resolve(*agent, params, profiles)
-            .map_err(|message| ParseError::new(line, message))?;
-        *profile = Some(found);
+        let error = |message| ParseError::new(line, message);
+        *profile = Some(profile::resolve(*agent, params, profiles).map_err(error)?);
+        *output_schema = schema::resolve(params, schemas).map_err(error)?;
     }
     Ok(actor)
 }
@@ -455,6 +493,7 @@ impl FromStr for Actor {
                     agent: agent.parse()?,
                     params: split_quoted(rest)?,
                     profile: None,
+                    output_schema: None,
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
