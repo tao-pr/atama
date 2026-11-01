@@ -12,6 +12,7 @@ pub struct OpenAiClient {
     url: String,
     model: String,
     api_key: Option<String>,
+    thinking: Option<bool>,
     agent: Agent,
 }
 
@@ -24,16 +25,23 @@ impl OpenAiClient {
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             model: model.to_string(),
             api_key,
+            thinking: None,
             agent: Agent::new_with_config(
                 Agent::config_builder().http_status_as_error(false).build(),
             ),
         }
     }
+
+    /// Sets the `thinking=` option of the action (see [`request_body`]).
+    pub fn with_thinking(mut self, thinking: Option<bool>) -> Self {
+        self.thinking = thinking;
+        self
+    }
 }
 
 impl ChatClient for OpenAiClient {
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String> {
-        let body = request_body(&self.model, messages, tools);
+        let body = request_body(&self.model, messages, tools, self.thinking);
         let mut request = self.agent.post(&self.url);
         if let Some(key) = &self.api_key {
             request = request.header("Authorization", format!("Bearer {key}"));
@@ -58,7 +66,17 @@ impl ChatClient for OpenAiClient {
 }
 
 /// The JSON body of a chat completions request.
-pub fn request_body(model: &str, messages: &[Message], tools: &[Box<dyn Tool>]) -> Value {
+///
+/// If `thinking` is `Some(false)`, the body has `"reasoning_effort": "none"`,
+/// which turns off the thinking of the model on Ollama and on other servers
+/// that know the value. Else the body has no `reasoning_effort`, so the
+/// server uses its default.
+pub fn request_body(
+    model: &str,
+    messages: &[Message],
+    tools: &[Box<dyn Tool>],
+    thinking: Option<bool>,
+) -> Value {
     let mut body = json!({
         "model": model,
         "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
@@ -78,7 +96,16 @@ pub fn request_body(model: &str, messages: &[Message], tools: &[Box<dyn Tool>]) 
             })
             .collect();
     }
+    if let Some(effort) = reasoning_effort(thinking) {
+        body["reasoning_effort"] = json!(effort);
+    }
     body
+}
+
+/// The `reasoning_effort` of a request for the `thinking=` option: `none`
+/// for `Some(false)`, else `None`, so that the body has no such field.
+pub fn reasoning_effort(thinking: Option<bool>) -> Option<&'static str> {
+    (thinking == Some(false)).then_some("none")
 }
 
 /// A message in the JSON format of the chat completions API.

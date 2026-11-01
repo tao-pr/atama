@@ -402,7 +402,7 @@ fn request_body_has_model_messages_and_tools() {
         },
         Message::Assistant(text("done")),
     ];
-    let body = request_body("m", &messages, &default_tools(AgentType::Coder));
+    let body = request_body("m", &messages, &default_tools(AgentType::Coder), None);
     assert_eq!(
         body,
         json!({
@@ -429,8 +429,19 @@ fn request_body_has_model_messages_and_tools() {
         })
     );
 
-    let body = request_body("m", &messages[..1], &[]);
+    let body = request_body("m", &messages[..1], &[], None);
     assert!(body.get("tools").is_none(), "{body}");
+}
+
+#[test]
+fn request_body_turns_off_thinking_only_for_thinking_false() {
+    let messages = [Message::User("task".into())];
+    let body = request_body("m", &messages, &[], Some(false));
+    assert_eq!(body["reasoning_effort"], "none");
+    for thinking in [None, Some(true)] {
+        let body = request_body("m", &messages, &[], thinking);
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+    }
 }
 
 #[test]
@@ -475,7 +486,10 @@ fn client_posts_to_chat_completions_with_the_api_key() {
             .contains("content-type: application/json"),
         "{request}"
     );
-    assert_eq!(request_json(&request), request_body("m", &messages, &[]));
+    assert_eq!(
+        request_json(&request),
+        request_body("m", &messages, &[], None)
+    );
 
     let mut client = OpenAiClient::new(&url, "m", None);
     client.chat(&messages, &[]).unwrap();
@@ -531,6 +545,21 @@ fn run_loop_uses_max_steps_from_the_params() {
         )
         .unwrap_err();
     assert_eq!(err, "`agent:coder` did not finish in 1 steps");
+}
+
+#[test]
+fn run_loop_sends_thinking_false_to_the_server() {
+    let (url, requests) = serve(vec![(200, text_response("hi")), (200, text_response("hi"))]);
+    let run = |words: &[&str]| {
+        AgentToolLoop::new(AgentType::Coder)
+            .run_loop_with_env(&params(words), Some(&profile(&url)), "", &no_env)
+            .unwrap();
+        request_json(&requests.recv().unwrap())
+    };
+    let request = run(&["model=m", "task=t", "thinking=false"]);
+    assert_eq!(request["reasoning_effort"], "none");
+    let request = run(&["model=m", "task=t"]);
+    assert!(request.get("reasoning_effort").is_none(), "{request}");
 }
 
 #[test]
@@ -656,6 +685,31 @@ fn debug_writes_the_configuration_without_the_api_key() {
          max_steps: 4\napi key: not set"
     );
     assert!(out.starts_with(&expected), "{out}");
+    // Without `thinking=false`, the request has no `reasoning_effort`.
+    assert!(!out.contains("reasoning_effort"), "{out}");
+}
+
+#[test]
+fn debug_writes_the_reasoning_effort_of_each_request() {
+    let (url, _requests) = serve(vec![(200, text_response("done"))]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Summarizer)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&["model=m", "thinking=false"]),
+            Some(&profile(&url)),
+            "some input",
+            &no_env,
+        )
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "=== agent:summarizer step 1: request (2 messages, 2 new, tools: , \
+             reasoning_effort: none) ==="
+        ),
+        "{out}"
+    );
 }
 
 // Summarizer

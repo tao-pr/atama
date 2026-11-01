@@ -148,8 +148,8 @@ The code of the loop is in four files:
 ### Options of an agent action
 
 Each param of an agent action is an option. Every agent needs
-`model=<profile>` and takes `task=` and `max_steps=`, and a `summarizer`
-agent also takes
+`model=<profile>` and takes `task=`, `max_steps=` and `thinking=`, and a
+`summarizer` agent also takes
 `expertise=` and `max_output=`. A `coder` agent fails on these two options
 (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
@@ -258,6 +258,12 @@ expertise as skills later.
 
 ### Model, debug output and tests
 
+`thinking=false` makes `AgentConfig::thinking` `Some(false)`. Then
+`openai::request_body` adds `"reasoning_effort": "none"`, which turns off
+the thinking of the model on Ollama. Without `thinking=`, or with
+`thinking=true`, the body has no `reasoning_effort`, and the server uses
+its default.
+
 The model comes from a model profile (`src/profile.rs`). A job file can
 start with a ```` ```config ```` block, before the `# <name>` heading. Each
 line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]`, and
@@ -271,7 +277,8 @@ has `profile: None`, and it fails when it runs.
 and the base URL from the profile, and the API key from the environment
 variable that `api_key=` names. If that variable is not set, it fails. The
 job file never holds a key. With `--debug`, the loop writes the profile
-name, each request, reply and tool call to stderr.
+name, each request, reply and tool call to stderr. The header of each
+request also has `reasoning_effort` if the request sends it.
 
 `run_loop` reads the real environment. Tests call `run_loop_with_env` with a
 fake environment.

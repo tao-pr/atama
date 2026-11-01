@@ -836,6 +836,8 @@ fn sample_agents_job_searches_and_then_summarizes() {
             .expect("valid options");
     assert_eq!(config.model, "qwen3.5:0.8b");
     assert_eq!(config.api_key, None);
+    // Thinking makes the small local model slow on a CPU.
+    assert_eq!(config.thinking, Some(false));
     assert!(
         !summarizer
             .iter()

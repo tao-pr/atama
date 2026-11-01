@@ -15,14 +15,21 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 5] = ["model", "max_steps", "task", "expertise", "max_output"];
+const OPTION_KEYS: [&str; 6] = [
+    "model",
+    "max_steps",
+    "task",
+    "thinking",
+    "expertise",
+    "max_output",
+];
 
 /// The configuration of one run, read from the action's params, its model
 /// profile and the environment.
 ///
 /// Each param is one option. Every agent type needs `model=<profile>`, the
-/// name of a [`ModelProfile`] of the job, and takes `task=<text>` and
-/// `max_steps=<n>`. A `summarizer` agent also takes `expertise=<text>` and
+/// name of a [`ModelProfile`] of the job, and takes `task=<text>`,
+/// `max_steps=<n>` and `thinking=<true|false>`. A `summarizer` agent also takes `expertise=<text>` and
 /// `max_output=<size>` (see [`SummarizerOptions`]). In the job file, a value
 /// can be in double quotes, so that it can have spaces, as in
 /// `task="Fix the tests"`. The parser removes the quotes. The profile sets
@@ -40,6 +47,10 @@ pub struct AgentConfig {
     pub summarizer: Option<SummarizerOptions>,
     /// The task, the instruction for the model.
     pub task: String,
+    /// From `thinking=<true|false>`. `Some(false)` asks the server to turn
+    /// off the thinking of the model. `None` and `Some(true)` send nothing,
+    /// so the server uses its default.
+    pub thinking: Option<bool>,
 }
 
 /// The options of a `summarizer` agent: the field of the reader, and how
@@ -173,6 +184,7 @@ struct Values {
     model: Option<String>,
     max_steps: Option<String>,
     task: Option<String>,
+    thinking: Option<String>,
     expertise: Option<String>,
     max_output: Option<String>,
 }
@@ -194,6 +206,7 @@ impl Values {
                 "model" => &mut values.model,
                 "max_steps" => &mut values.max_steps,
                 "task" => &mut values.task,
+                "thinking" => &mut values.thinking,
                 "expertise" => &mut values.expertise,
                 "max_output" => &mut values.max_output,
                 _ => {
@@ -234,6 +247,7 @@ impl AgentConfig {
             model,
             max_steps,
             task,
+            thinking,
             expertise,
             max_output,
         } = Values::read(params)?;
@@ -257,6 +271,13 @@ impl AgentConfig {
                 .filter(|steps| *steps > 0)
                 .ok_or_else(|| format!("`max_steps={value}` is not a positive number"))?,
         };
+        let thinking = thinking
+            .map(|value| match value.as_str() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                _ => Err(format!("`thinking={value}` is not `true` or `false`")),
+            })
+            .transpose()?;
         let name = model.ok_or_else(|| crate::profile::missing_model(agent))?;
         let profile = profile
             .filter(|profile| profile.name == name)
@@ -277,13 +298,15 @@ impl AgentConfig {
             max_steps,
             summarizer,
             task: task.unwrap_or_default(),
+            thinking,
         })
     }
 }
 
 impl AgentConfig {
     /// The configuration for debug output, one `name: value` line each. It
-    /// shows only whether the API key is set, never the key itself. For a
+    /// shows only whether the API key is set, never the key itself, and
+    /// `thinking` only if the action sets it. For a
     /// `summarizer` agent, it also shows `expertise` and `max_output`.
     pub fn summary(&self) -> String {
         let key = if self.api_key.is_some() {
@@ -295,6 +318,9 @@ impl AgentConfig {
             "profile: {}\nmodel: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
             self.profile, self.model, self.base_url, self.max_steps
         );
+        if let Some(thinking) = self.thinking {
+            summary.push_str(&format!("\nthinking: {thinking}"));
+        }
         if let Some(options) = &self.summarizer {
             let max_output = options
                 .max_output

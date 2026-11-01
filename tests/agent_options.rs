@@ -54,6 +54,26 @@ fn reads_options_and_task_from_params_and_the_model_from_the_profile() {
 }
 
 #[test]
+fn reads_thinking_as_true_or_false_and_leaves_it_unset_by_default() {
+    let thinking = |words: &[&str]| {
+        AgentConfig::from_params(
+            AgentType::Summarizer,
+            &params(words),
+            Some(&profile()),
+            &no_env,
+        )
+        .map(|config| config.thinking)
+    };
+    assert_eq!(thinking(&["model=m"]), Ok(None));
+    assert_eq!(thinking(&["model=m", "thinking=false"]), Ok(Some(false)));
+    assert_eq!(thinking(&["model=m", "thinking=true"]), Ok(Some(true)));
+    assert_eq!(
+        thinking(&["model=m", "thinking=no"]),
+        Err("`thinking=no` is not `true` or `false`".to_string())
+    );
+}
+
+#[test]
 fn reads_the_api_key_from_the_variable_that_the_profile_names() {
     let profile = ModelProfile {
         api_key_env: Some("MY_KEY".into()),
@@ -102,7 +122,7 @@ fn rejects_invalid_configuration() {
         ),
         (
             vec!["model=m", "base_url=http://x.test"],
-            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, \
+            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, `thinking=`, \
              `expertise=`, `max_output=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
@@ -160,11 +180,19 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         max_steps: 3,
         summarizer: None,
         task: "task".into(),
+        thinking: None,
     };
     assert_eq!(
         config.summary(),
         "profile: p\nmodel: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
     );
+    config.thinking = Some(false);
+    assert!(
+        config
+            .summary()
+            .ends_with("\napi key: set\nthinking: false")
+    );
+    config.thinking = None;
     config.api_key = None;
     assert!(config.summary().ends_with("\napi key: not set"));
 
@@ -281,7 +309,7 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, \
+            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, `thinking=`, \
              `expertise=`, `max_output=`"
                 .into(),
         ),

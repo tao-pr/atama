@@ -22,7 +22,8 @@ variable that holds the key. An agent action selects a profile with
   no key.
 - `openai-gpt5` is `gpt-5` on OpenAI. Atama reads its key from
   `OPENAI_API_KEY`. The sample does not use it. To use it, change
-  `model=local-qwen` to `model=openai-gpt5` and set `OPENAI_API_KEY`.
+  `model=local-qwen` to `model=openai-gpt5`, remove `thinking=false`, and
+  set `OPENAI_API_KEY`. OpenAI can reject `thinking=false`.
 
 Prerequisites:
 
@@ -169,6 +170,8 @@ fails.
 
 Summarize each search result on its own, with a `summarizer` agent that
 uses the `local-qwen` profile: `qwen3.5:0.8b` on the local Ollama server.
+`thinking=false` turns off the thinking of the model, so that the model
+answers without writing its reasoning first. That is much faster on a CPU.
 
 The input of the task is the list of files from Save raw research. `xargs`
 gives the paths to `jq -c .`, which writes the JSON of each file on one
@@ -178,7 +181,7 @@ The output of the task is the summaries, one after the other.
 
 - actions:
   - bash xargs jq -c .
-  - foreach agent:summarizer model=local-qwen expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
+  - foreach agent:summarizer model=local-qwen thinking=false expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
 
 ## Save summary
 

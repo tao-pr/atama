@@ -108,6 +108,8 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// The `reasoning_effort` that the client sends, for debug output only.
+    reasoning_effort: Option<&'static str>,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
 }
@@ -120,12 +122,14 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            reasoning_effort: None,
             debug: None,
         }
     }
 
     /// Writes debug output to `out`: the configuration, and for each step the
-    /// new messages of the request, the model's reply, and each tool call
+    /// new messages of the request with its `reasoning_effort` if the request
+    /// has one, the model's reply, and each tool call
     /// with its arguments and result.
     /// Messages are pretty JSON in the chat completions format. The API key
     /// is never written.
@@ -188,6 +192,7 @@ impl<'a> AgentToolLoop<'a> {
     ) -> Result<String, String> {
         let config = AgentConfig::from_params(self.agent, params, profile, env)?;
         self.max_steps = config.max_steps;
+        self.reasoning_effort = openai::reasoning_effort(config.thinking);
         let summary = config.summary();
         self.write_debug(format!(
             "=== agent:{} configuration ===\n{summary}",
@@ -198,7 +203,8 @@ impl<'a> AgentToolLoop<'a> {
             None => config.task.clone(),
         };
         let mut client =
-            openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone());
+            openai::OpenAiClient::new(&config.base_url, &config.model, config.api_key.clone())
+                .with_thinking(config.thinking);
         self.run_with(&mut client, &task, input)
     }
 
@@ -232,8 +238,11 @@ impl<'a> AgentToolLoop<'a> {
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
+                let effort = self.reasoning_effort.map_or(String::new(), |effort| {
+                    format!(", reasoning_effort: {effort}")
+                });
                 self.write_debug(format!(
-                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}) ===\n{new}",
+                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}{effort}) ===\n{new}",
                     self.agent,
                     messages.len(),
                     messages.len() - sent,

@@ -160,6 +160,12 @@ These options set up every agent:
   must set it.
 - `max_steps=<n>` sets the most model replies in one run. The default is 10.
   If the model still calls tools after that, the action fails.
+- `thinking=false` asks the server to turn off the thinking of the model.
+  A thinking model writes its reasoning before the answer, and that is slow
+  on a CPU. Atama then sends `"reasoning_effort": "none"` in each request.
+  Ollama knows this value, but other servers can reject it or ignore it.
+  Without `thinking=`, or with `thinking=true`, the request has no
+  `reasoning_effort`, and the server uses its default.
 
 ### Model profiles
 
@@ -235,10 +241,12 @@ To see what an agent does, add `--debug` before the job file. Atama then
 writes these blocks to stderr for each agent action:
 
 1. The configuration: the profile name, the model, the base URL,
-   `max_steps`, and whether an API key is set. Atama never writes the key itself. For a `summarizer`
-   agent, it also has `expertise` and `max_output`.
-2. For each step, the request: the number of messages, the tools, and the
-   messages that are new since the last request, as pretty JSON.
+   `max_steps`, and whether an API key is set. Atama never writes the key
+   itself. If the action sets `thinking=`, it also has `thinking`. For a
+   `summarizer` agent, it also has `expertise` and `max_output`.
+2. For each step, the request: the number of messages, the tools, the
+   `reasoning_effort` if the action has `thinking=false`, and the messages
+   that are new since the last request, as pretty JSON.
 3. The model's reply, as pretty JSON.
 4. One block per tool call, with the tool name, the call id, the arguments
    as pretty JSON, and the result: `ok` and its length, or the error.
