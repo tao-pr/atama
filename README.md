@@ -52,6 +52,8 @@ Examples:
 - `jobs/sample_foreach.md`: the `foreach` prefix.
 - `jobs/sample_agent_with_structured_output.md`: an agent with
   `output_schema=`.
+- `jobs/sample_coder.md`: a `coder` agent that writes a Python program, and
+  a `summarizer` agent that explains it.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.

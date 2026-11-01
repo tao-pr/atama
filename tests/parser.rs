@@ -1222,3 +1222,74 @@ fn parses_write_file_actions() {
         );
     }
 }
+
+#[test]
+fn sample_coder_job_writes_code_and_explains_it() {
+    let job = parse_job(include_str!("../jobs/sample_coder.md")).expect("job should parse");
+    let ids: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "Prepare",
+            "Read task",
+            "Write code",
+            "Run code",
+            "Explain code"
+        ]
+    );
+    let actions: Vec<&Actor> = job.tasks.iter().flat_map(|task| &task.actions).collect();
+    assert!(actions.contains(&&Actor::ReadFile {
+        path: Some("./jobs/tasks/coding_task.md".into())
+    }));
+    assert!(actions.contains(&&Actor::ReadFile {
+        path: Some("./output/coder/solution.py".into())
+    }));
+    assert!(actions.contains(&&Actor::WriteFile {
+        path: "./output/coder/explanation.txt".into()
+    }));
+
+    // The coder runs before the summarizer, and both use the local profile.
+    let agents: Vec<(AgentType, &Vec<String>)> = actions
+        .iter()
+        .filter_map(|actor| match actor {
+            Actor::AgentTool {
+                agent,
+                params,
+                profile: Some(profile),
+                ..
+            } => {
+                assert_eq!(profile.name, "local-spark2");
+                assert_eq!(profile.api_key_env, None);
+                Some((*agent, params))
+            }
+            _ => None,
+        })
+        .collect();
+    let [
+        (AgentType::Coder, coder),
+        (AgentType::Summarizer, summarizer),
+    ] = agents.as_slice()
+    else {
+        panic!("expected a coder and then a summarizer, got {agents:?}");
+    };
+    let task = |params: &[String]| {
+        params
+            .iter()
+            .find_map(|param| param.strip_prefix("task="))
+            .unwrap()
+            .to_string()
+    };
+    assert!(task(coder).contains("at most 10 lines"), "{coder:?}");
+    assert!(
+        task(coder).contains("./output/coder/solution.py"),
+        "{coder:?}"
+    );
+    assert!(
+        task(summarizer).contains("at most 5 lines"),
+        "{summarizer:?}"
+    );
+    assert!(summarizer.contains(&"max_output=5 sentences".to_string()));
+
+    // The task file is in the repository.
+    assert!(include_str!("../jobs/tasks/coding_task.md").starts_with("# Coding task"));
+}
