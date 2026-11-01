@@ -1,12 +1,12 @@
 # Atama
 
-**Atama is an automation pipeline as markdown.** You describe a pipeline in a simple
-markdown file, and Atama runs its tasks, with or without an agent of your choice.
+Atama is an automation pipeline as markdown. You describe a pipeline in a
+markdown file, and Atama runs its tasks, with or without an agent.
 
 ## Pipeline format
 
-A pipeline is a markdown file. The top-level heading names the pipeline, and each
-second-level heading defines a task:
+The top-level heading names the pipeline. Each second-level heading is a
+task:
 
 ```markdown
 # name of pipeline
@@ -29,9 +29,8 @@ description
 ...
 ```
 
-A pipeline can start with a `config` code block, before the top-level
-heading. The block defines model profiles for agent actions (see "Model
-profiles" below):
+A `config` block before the top-level heading defines model profiles for
+agent actions (see "Model profiles"):
 
 ````markdown
 ```config
@@ -42,18 +41,25 @@ openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API
 # name of pipeline
 ````
 
-A task's id is its heading text, so `## Build` is referred to as `task(Build)`.
-Task ids must be unique. See `tests/fixtures/example_job.md` for a full example, and
-`jobs/sample_api_calls.md` for a job that uses every action type.
-`jobs/sample_agents.md` shows a `websearch` action and a `summarizer` agent.
-`jobs/sample_foreach.md` shows the `foreach` action prefix.
-`jobs/sample_agent_with_structured_output.md` shows an agent with
-`output_schema=`.
-`jobs/scripts/` has helper scripts that the sample jobs call, and
+The task id is its heading text, so `## Build` is `task(Build)`. Task ids
+must be unique.
+
+Examples:
+
+- `tests/fixtures/example_job.md`: a full job.
+- `jobs/sample_api_calls.md`: every action type.
+- `jobs/sample_agents.md`: a `websearch` action and a `summarizer` agent.
+- `jobs/sample_foreach.md`: the `foreach` prefix.
+- `jobs/sample_agent_with_structured_output.md`: an agent with
+  `output_schema=`.
+
+The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
 
-Each action is one line of words separated by spaces. The first word selects
-the type of action, and the other words are its parameters:
+## Actions
+
+An action is one line of words. The first word is the action type, and the
+other words are its parameters:
 
 | Action | What it does | Output |
 | --- | --- | --- |
@@ -72,52 +78,32 @@ For example: `bash npm ci`, `api_call GET https://example.com`,
 `websearch topic="latest Rust release"` and
 `agent:coder model=local-qwen task="Fix the failing test."`.
 
-`read_file ./notes.txt` reads `./notes.txt`. Put a path with spaces in
-quotes, as in `read_file "my notes.txt"`. Without a path, `read_file` reads
-the file whose path is its input, so it can read a file that the previous
-action names. The output keeps every line and line ending of the file. If
-the input has more than one line, the action fails. To read one file for
-each line, use `foreach read_file`. The file must be UTF-8 text.
-
-The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD. Its options
-are `payload=<text>` and `input_file=<path>`, which set the request body.
-The options of `download` are `mime=<type>` and `output_dir=<dir>`. To send
-`Authorization: Bearer <token>`, add `auth=bearer:<token>` to an `api_call`
-or `download` action. The log shows the token as `***`. The sections below
-explain the other actions.
-
 Each action gets the output of the action before it as its input. The first
 action of a task gets the output of the last task that succeeded.
 
-Tasks run in sequence by default. A `begin_if` trigger condition can make a task
-depend on another task's result, or run in parallel with it:
+### `api_call` and `download`
 
-- prev task succeed (default)
-- prev task fail
-- prev task succeed or fail
-- task(id) succeed
-- task(id) fail
-- task(id) succeed or fail
-- task(id) begin
+The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD.
+`payload=<text>` or `input_file=<path>` sets the request body. `download`
+takes `mime=<type>` and `output_dir=<dir>`.
 
-The `if_fail` and `if_succeed` hooks run when a task finishes:
+To send `Authorization: Bearer <token>`, add `auth=bearer:<token>`. The log
+shows the token as `***`.
 
-- `retry=N`: retry the failing task, up to N times
-- `die`: stop and skip all remaining tasks
-- `restart`: restart the whole job from the first task
-- `call_api(...)`: make an API call
-- `write_file(...)`: write the output to a file
-- `write_error_file(...)`: write stderr to a file
+### `read_file`
 
-Atama evaluates the job into a graph, using each task's `begin_if` condition to
-work out its dependencies.
+`read_file ./notes.txt` reads `./notes.txt`, and `read_file "my notes.txt"`
+reads a path with spaces. Without a path, the input is the path. The output
+keeps every line of the file.
 
-### Loop iteration": `foreach` prefix
+The input must be one line. To read one file for each line, use
+`foreach read_file`. The file must be UTF-8 text.
 
-Put `foreach` before an action to run the action once for each line of its
-input. Each run gets one line, without its newline, as its input. The
-action after `foreach` is a normal action, for example
-`foreach bash ./my_script.sh` or `foreach agent:summarizer model=local-qwen`.
+### `foreach`
+
+`foreach <action>` runs the action once for each line of its input, with
+that line as the input. Atama skips blank lines. The output is the outputs
+of all runs, in order.
 
 ```markdown
 ## List items
@@ -131,91 +117,95 @@ action after `foreach` is a normal action, for example
   - foreach bash awk {print"[item:",$0"]","has",length($0),"characters"}
 ```
 
-The runs follow the order of the lines. Atama skips blank lines. The output
-of `foreach` is the outputs of all runs, one after the other.
+If one run fails, `foreach` stops, and the error names the item, as in
+"`foreach` failed at item 2 (`banana`): ...". A `foreach` cannot run another
+`foreach`.
 
-If one run fails, `foreach` stops and fails, and the error names the item,
-as in "`foreach` failed at item 2 (`banana`): ...". A `foreach` action
-cannot run another `foreach` action. With `--debug`, each run writes its
-own debug output.
+## Triggers and hooks
+
+Tasks run in sequence by default. A `begin_if` condition makes a task wait
+for another task, or run in parallel with it:
+
+- prev task succeed (default)
+- prev task fail
+- prev task succeed or fail
+- task(id) succeed
+- task(id) fail
+- task(id) succeed or fail
+- task(id) begin
+
+The `if_fail` and `if_succeed` hooks run when a task finishes:
+
+- `retry=N`: retry the failing task, up to N times.
+- `die`: stop and skip all remaining tasks.
+- `restart`: restart the job from the first task.
+- `call_api(...)`: make an API call.
+- `write_file(...)`: write the output to a file.
+- `write_error_file(...)`: write stderr to a file.
+
+Atama makes a graph of the tasks from their `begin_if` conditions.
 
 ## Agents
 
-An `agent:coder` or `agent:summarizer` action runs an agent loop. The agent
-loop sends the task to a chat model, runs the tools that the model asks for,
-and sends the results back. When the model replies without a tool call, that
-reply is the output of the action.
+An `agent:coder` or `agent:summarizer` action sends its task to a chat
+model and runs the tools that the model asks for. The first reply without a
+tool call is the output.
 
-The agent works with any model on a server with an OpenAI compatible
-`/chat/completions` endpoint, for example OpenAI, Ollama, vLLM or LM Studio.
-The model must support tool calls.
+The model must support tool calls. It must be on a server with an OpenAI
+compatible `/chat/completions` endpoint, such as OpenAI, Ollama, vLLM or LM
+Studio.
 
-Each word after `agent:<type>` must be an option, as in `key=value`.
-`task="<text>"` sets the task, the instruction for the model. The output of
-the previous action or task is added below the task as its input. If an
-action has no task and no input, it fails. A word that is not an option,
-or an unknown option, makes the action fail.
+Each word after `agent:<type>` is a `key=value` option. An unknown option
+or a word without `=` makes the action fail. Put a value with spaces in
+double quotes, as in `task="Fix the failing test."`, and write `\"` for a
+quote and `\\` for a backslash.
 
-Put a value in double quotes if it has spaces, as in
-`task="Fix the failing test."`. Atama removes the quotes, and keeps the
-text between them unchanged. To put a double quote in a quoted value,
-write `\"`. To put a backslash in a quoted value, write `\\`.
+Options of every agent:
 
-These options set up every agent:
+- `model=<profile>`: the model profile. You must set it.
+- `task="<text>"`: the instruction. The input goes below it. The action
+  fails if it has no task and no input.
+- `max_steps=<n>`: the most model replies in one run. The default is 10.
+- `thinking=false`: sends `"reasoning_effort": "none"`, which turns off the
+  thinking of the model on Ollama. Other servers can reject it.
+- `output_schema=<name|path>`: makes the output a JSON value that matches a
+  schema (see "Output schemas").
 
-- `model=<profile>` selects a model profile from the `config` block. You
-  must set it.
-- `max_steps=<n>` sets the most model replies in one run. The default is 10.
-  If the model still calls tools after that, the action fails.
-- `thinking=false` asks the server to turn off the thinking of the model.
-  A thinking model writes its reasoning before the answer, and that is slow
-  on a CPU. Atama then sends `"reasoning_effort": "none"` in each request.
-  Ollama knows this value, but other servers can reject it or ignore it.
-  Without `thinking=`, or with `thinking=true`, the request has no
-  `reasoning_effort`, and the server uses its default.
-- `output_schema=<name|path>` makes the output of the agent a JSON value
-  that matches a JSON schema. See "Output schemas" below.
+If you use `agent:coder`, the model can run any command with your
+permissions. Use it only in a directory and with a model that you trust.
 
 ### Model profiles
 
-A model profile is a name for one model on one server. You define the
-profiles in a `config` code block at the start of the job file, before the
-`# <name>` heading. Each line defines one profile:
+A model profile is a name for one model on one server. Define each profile
+on one line of the `config` block:
 
 ```text
 <name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]
 ```
 
-- `<name>` is the name that agent actions use, as in `model=local-qwen`. It
-  is one word.
-- `model=<id>` is the model identifier that the server knows, for example
-  `qwen3.5:0.8b` or `gpt-5`. You must set it.
-- `base_url=<url>` is the base URL of the server, for example
-  `http://localhost:11434/v1`. You must set it.
-- `api_key=<ENV_VAR>` is the name of the environment variable that holds
-  the API key, for example `OPENAI_API_KEY`. Atama sends the key as a bearer
-  token. Leave it out if the server needs no key, for example Ollama.
+- `<name>`: one word that agent actions use, as in `model=local-qwen`.
+- `model=<id>`: the model identifier on the server, as in `qwen3.5:0.8b`.
+  You must set it.
+- `base_url=<url>`: the server URL, as in `http://localhost:11434/v1`. You
+  must set it.
+- `api_key=<ENV_VAR>`: the environment variable with the API key. Leave it
+  out for a server without a key, such as Ollama.
 
-The job file holds only the name of the variable, never the key. If a
-profile names a variable that is not set, an action that uses the profile
-fails before it asks the model. Several actions can use the same profile.
-
-Atama reads the profiles when it reads the job file. If a line is not a
-valid profile, or an action names a profile that the block does not
-define, the job does not start. The job can have only one `config` block.
+The job file never holds the key. If the variable is not set, the action
+fails before it asks the model. If a profile is invalid or unknown, the job
+does not start.
 
 ### Output schemas (optional)
 
-Define a JSON schema of structured output of agent with `output_schema=`. The next action can read it, for example with
-`bash jq .title`.
+`output_schema=` makes the output of an agent JSON that matches a JSON
+schema. The next action can read it, for example with `bash jq .title`. The
+value is one of these:
 
-The value of `output_schema=` can be either of the following choices:
+- The path of a schema file, as in `output_schema=./schemas/article.json`.
+- The name of a schema block in the job file, as in `output_schema=article`.
 
-- JSON Schema file path, e.g. `output_schema=./schemas/article.json`
-- JSON Schema name defined in the job file, e.g. `output_schema=article`
-
-You define a schema block before the `# <name>` heading, as the `config`
-block. The fence of the block is `json:<name>`.
+A schema block comes before the `# <name>` heading. Its fence is
+`json:<name>`:
 
 ````markdown
 ```json:article
@@ -237,127 +227,75 @@ block. The fence of the block is `json:<name>`.
   - agent:summarizer model=local-qwen output_schema=article
 ````
 
-Atama reads the schema blocks when it reads the job file. The job does not
-start in these cases:
+The job does not start if a block is not a valid JSON schema, if a name is
+used twice, or if an action names an unknown schema. Atama reads a schema
+file when the action starts, so an earlier task can write it. A schema
+cannot use a `$ref` to a URL.
 
-- A block is not valid JSON, is not a JSON object, or is not a valid JSON
-  schema.
-- Two blocks have the same name, or a block comes after the `# <name>`
-  heading.
-- An action names a schema that no block defines.
-
-Atama reads a schema file when the action starts, so that an earlier task
-can write the file. If the file cannot be read or is not a valid schema,
-the action fails. A schema cannot use a `$ref` to a URL.
-
-The agent sends the schema to the server in `response_format`, and it also
-puts the schema in the system prompt. Some servers ignore
-`response_format`, so Atama also makes sure that the reply matches the
-schema. Atama removes a code fence around the JSON. If the reply does not
-match, the model gets the errors and can try again. Each try counts as one
-of the `max_steps` replies. If no reply matches in `max_steps` replies,
-the action fails with the last error.
+Atama sends the schema in `response_format` and in the system prompt. It
+also checks each reply, because some servers ignore `response_format`. If a
+reply does not match, the model gets the errors and tries again, up to
+`max_steps` replies.
 
 ### The `summarizer` agent
 
-A `summarizer` agent summarizes its input, which is the output of the
-previous action or task. The summary keeps the key information of the
-input. If the input names numbers, quantities, dates, names or concepts
-that are important to its key matter, the summary keeps them. The summary
-is the output of the action. A `summarizer` agent has no tools, so it
-sends one request to the model. It has these options, in addition to the
-model options above:
+A `summarizer` agent summarizes its input and keeps the key facts, such as
+numbers, dates and names. It has no tools, and it fails if the input is
+empty. The default task is "Summarize the input."
 
-- `expertise="<text>"` sets the field of the reader, for example
-  `expertise="molecular biology"`. The summary uses the terms and the point
-  of view of this field. The default is `general`.
-- `max_output="<size>"` sets how long the summary can be. The size is a part
-  of the input in percent, as in `60%`, or a number of sentences, words or
-  paragraphs, as in `"3 sentences"`. If you do not set it, the model makes
-  the summary as short as it can without losing key information.
+It has two more options:
 
-`task=` is the instruction. If the action has no `task=`, the instruction is
-"Summarize the input." For a size in percent, Atama counts the words of the
-input and tells the model how many words it can use, because a model cannot
-measure a percent of a text well.
+- `expertise="<text>"`: the field of the reader, as in
+  `expertise="molecular biology"`. The default is `general`.
+- `max_output="<size>"`: the most that the summary can be, as in `60%` or
+  `"3 sentences"`. The unit can also be words or paragraphs. Without it,
+  the summary is as short as it can be.
 
 ```markdown
 - actions:
-  - bash cat ./notes.md
+  - read_file ./notes.md
   - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
 ```
 
-The action fails before it asks the model if the input is empty.
-`expertise=` and `max_output=` work only with `agent:summarizer`.
-
 ### Agent tools
 
-Each type of agent has its own tools:
+A `coder` agent has `bash`, which runs a command in the directory where you
+start Atama. A `summarizer` agent has no tools. Atama cuts a tool result
+after 20,000 characters.
 
-- `coder` has `bash`, which runs a command in the directory where you start
-  Atama.
-- `summarizer` has no tools.
+### Debug output
 
-Atama cuts a tool result after 20,000 characters.
-
-To see what an agent does, add `--debug` before the job file. Atama then
-writes these blocks to stderr for each agent action:
-
-1. The configuration: the profile name, the model, the base URL,
-   `max_steps`, and whether an API key is set. Atama never writes the key
-   itself. If the action sets `thinking=` or `output_schema=`, it also has
-   that option. For a
-   `summarizer` agent, it also has `expertise` and `max_output`.
-2. For each step, the request: the number of messages, the tools, the
-   `reasoning_effort` if the action has `thinking=false`, the name of the
-   output schema if the action has one, and the messages
-   that are new since the last request, as pretty JSON.
-3. The model's reply, as pretty JSON.
-4. One block per tool call, with the tool name, the call id, the arguments
-   as pretty JSON, and the result: `ok` and its length, or the error.
+Add `--debug` to see what an agent does. Atama writes the configuration,
+each request, each reply and each tool call to stderr, as pretty JSON. It
+never writes the API key.
 
 Each block starts with a line such as
-`=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`.
-The task log stays on stdout, so `2> debug.log` saves the debug output in a
-separate file. `--debug` has no effect in a dry run, because a dry run runs
-no agents.
-
-If you use `agent:coder`, the model can run any command with your
-permissions. Use it only in a directory and with a model that you trust.
+`=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`. To save
+the debug output in a file, add `2> debug.log`.
 
 ## Tavily search
 
-Atama has a small client for the
+The `websearch` and `tavily_search` actions search the web with the
 [Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search).
-It sends `POST https://api.tavily.com/search` directly, without an SDK. You
-can use Tavily in two ways: with the `websearch` action, or with the
-`tavily_search` action. Both return the Tavily response as JSON.
-
-Each search uses Tavily API credits. To use Tavily, set your API key before
-you run Atama:
+Both return the Tavily response as JSON, and each search uses Tavily API
+credits. Set your key first:
 
 ```sh
 export TAVILY_API_KEY=<your key>
 ```
 
-Atama reads the key only from `TAVILY_API_KEY`. It sends the key as a
-bearer token, and it never writes the key in the job file or the log.
+Atama reads the key only from `TAVILY_API_KEY`, and it never writes the key
+in the log.
 
 ### The `websearch` action
 
-A `websearch` action sends one Tavily search for a topic. It asks no model.
-Its output is the JSON response body from Tavily, exactly as Tavily sends
-it. A later action can read the JSON, or a `summarizer` agent can analyse
-it. The action ignores its input. It has these options:
+A `websearch` action searches one topic and ignores its input. Its options:
 
-- `topic="<text>"` sets what to search for. You must set it.
-- `max_results=<n>` sets the most search results, from 1 to 20. The default
-  is 5.
-- `fetch_content=true` also gets the content of each result page, as
-  markdown. Atama then sends `include_raw_content=markdown` to Tavily, and
-  each result in the response has a `raw_content` field. The default is
-  `false`.
-- `base_url=<url>` sets the server. The default is `https://api.tavily.com`.
+- `topic="<text>"`: what to search for. You must set it.
+- `max_results=<n>`: from 1 to 20. The default is 5.
+- `fetch_content=true`: also gets each result page as markdown, in
+  `raw_content`. The default is `false`.
+- `base_url=<url>`: the server. The default is `https://api.tavily.com`.
 
 ```markdown
 - actions:
@@ -365,49 +303,33 @@ it. The action ignores its input. It has these options:
   - bash tee ./search.json
 ```
 
-Atama reads the options when it reads the job file. If the topic is not
-set, an option is unknown, or a value is invalid, the job does not start.
-The action fails if `TAVILY_API_KEY` is not set or the search fails.
-
-With `--debug`, the action writes its options and the Tavily response, as
-pretty JSON, to stderr. If the response is not JSON, Atama writes it as it
-is. The output of the action is always the response without changes.
-
-`websearch` was `agent:websearch` before. A job file that still has
-`agent:websearch` does not start, and the error tells you to use
-`websearch`.
+A missing topic or a bad option stops the job before it starts. With
+`--debug`, the action writes its options and the response to stderr. The
+old name `agent:websearch` is an error.
 
 ### The `tavily_search` action
 
-The action sends one search and needs no model. The words that are not
-options are the query. If there are none, the output of the previous action
-is the query. The output is the Tavily response as JSON:
+The words that are not options are the query. Without query words, the
+input is the query.
 
 ```markdown
-## Search
-
 - actions:
   - tavily_search max_results=3 topic=news latest stable Rust release
   - bash jq -r .results[].url
 ```
 
-These options change the search. If you do not set an option, Tavily uses
-its default:
+Options that you do not set use the Tavily default:
 
-- `max_results=<n>` sets the most results.
-- `search_depth=<depth>` sets the depth, for example `basic` or `advanced`.
-- `topic=<topic>` sets the kind of search, for example `general`, `news` or `finance`.
-- `include_answer=<value>` asks for a short answer: `true`, `false`, `basic` or `advanced`.
-- `include_raw_content=<value>` asks for the content of each result page: `true`, `false`, `markdown` or `text`.
-- `base_url=<url>` sets the server. The default is `https://api.tavily.com`.
-
-The action fails if `TAVILY_API_KEY` is not set, the query is empty, or
-Tavily responds with an error status.
+- `max_results=<n>`: the most results.
+- `search_depth=<depth>`: `basic` or `advanced`.
+- `topic=<topic>`: `general`, `news` or `finance`.
+- `include_answer=<value>`: `true`, `false`, `basic` or `advanced`.
+- `include_raw_content=<value>`: `true`, `false`, `markdown` or `text`.
+- `base_url=<url>`: the server. The default is `https://api.tavily.com`.
 
 ## Building
 
-Atama is a Rust project. You need a Rust toolchain with Cargo
-(install it from <https://rustup.rs>).
+You need Rust with Cargo, from <https://rustup.rs>.
 
 ```sh
 # Debug build, output in target/debug/atama
@@ -419,7 +341,7 @@ cargo build --release
 
 ## Running
 
-Atama takes one required argument, the path to a job config markdown file:
+Atama takes the path of a job file:
 
 ```sh
 # Build and run in one step (arguments after -- go to atama)
@@ -441,10 +363,8 @@ cargo run -- --debug jobs/sample_agents.md
 cargo run -- --help
 ```
 
-Atama runs the actions in the directory where you start it, so relative
-paths such as `./output` are relative to that directory. The log shows each
-action with a `$` prefix and each line of its output with a `|` prefix. Each
-line of a task starts with the local date and time:
+Atama runs the actions in the directory where you start it. The log shows
+each action with `$` and each output line with `|`:
 
 ```text
 2026-10-24 09:15:02 [Prepare] start
@@ -454,10 +374,10 @@ line of a task starts with the local date and time:
 
 ### Dry run
 
-A dry run shows what a job will do, but it runs no actions. Use it to check
-a new job file before you run it for real.
-
-To do a dry run, add `--dry-run` before the job file:
+`--dry-run` parses the job, reports errors with their line numbers, and
+logs each action without running it. Every action succeeds and passes its
+input on, so `if_fail` hooks and failure triggers do not run. A dry run
+needs no server and does not change files.
 
 ```sh
 cargo run -- --dry-run jobs/sample_api_calls.md
@@ -466,22 +386,11 @@ cargo run -- --dry-run jobs/sample_api_calls.md
 ./target/release/atama --dry-run jobs/sample_api_calls.md
 ```
 
-In a dry run, Atama does these steps:
-
-1. It parses the job file and reports any error with its line number.
-2. It prints the job summary.
-3. It logs each action with a `$` prefix, but it does not run the action.
-
-In a dry run, every action succeeds and passes its input on unchanged. Thus
-the log shows the tasks that run when every action succeeds. A dry run does
-not test the failure paths: `mock fail` succeeds, and `if_fail` hooks and
-tasks that start only on a failure, such as `begin_if: task(A) fail`, do not
-run. A dry run needs no server, and it
-does not create, change or delete files.
-
 ## Mock Server
 
-When testing Atama with mock API calls, you can install and start a mock server with the help from [siga](https://github.com/tao-pr/siga). It allows you to create a mock API server from OpenAPI v3 spec with mock authentication and authorization.
+To test API calls, you can run a mock server with
+[siga](https://github.com/tao-pr/siga). It makes a mock API from an OpenAPI
+v3 spec, with mock authentication and authorization.
 
 ```sh
 cd siga & cargo build --release
@@ -501,9 +410,5 @@ cargo test <name_filter>
 cargo test --test cli
 ```
 
-Unit tests live next to the code in `src/`, inside a `#[cfg(test)] mod tests`
-block. Integration tests go in `tests/`, one file per test crate.
-
-The tests never call a real model or the real Tavily API. They use a local
-mock server, so `cargo test` needs no network and uses no Tavily credits,
-even if `TAVILY_API_KEY` is set.
+Integration tests are in `tests/`, one file per test crate. The tests never
+call a real model or the real Tavily API, so `cargo test` needs no network.
