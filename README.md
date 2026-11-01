@@ -104,7 +104,7 @@ The `if_fail` and `if_succeed` hooks run when a task finishes:
 Atama evaluates the job into a graph, using each task's `begin_if` condition to
 work out its dependencies.
 
-### The `foreach` prefix
+### Loop iteration": `foreach` prefix
 
 Put `foreach` before an action to run the action once for each line of its
 input. Each run gets one line, without its newline, as its input. The
@@ -124,10 +124,7 @@ action after `foreach` is a normal action, for example
 ```
 
 The runs follow the order of the lines. Atama skips blank lines. The output
-of `foreach` is the outputs of all runs, one after the other. If an output
-does not end with a newline, Atama adds one, so that the output of each
-item starts on a new line. An input without lines runs the action zero
-times, and the output is empty.
+of `foreach` is the outputs of all runs, one after the other.
 
 If one run fails, `foreach` stops and fails, and the error names the item,
 as in "`foreach` failed at item 2 (`banana`): ...". A `foreach` action
@@ -199,26 +196,18 @@ Atama reads the profiles when it reads the job file. If a line is not a
 valid profile, or an action names a profile that the block does not
 define, the job does not start. The job can have only one `config` block.
 
-### Output schemas
+### Output schemas (optional)
 
-An output schema is a JSON schema for the final reply of an agent. With
-`output_schema=`, the output of the agent action is one JSON value that
-matches the schema. The next action can read it, for example with
+Define a JSON schema of structured output of agent with `output_schema=`. The next action can read it, for example with
 `bash jq .title`.
 
-The value of `output_schema=` is the name of a schema block, or the path
-of a schema file:
+The value of `output_schema=` can be either of the following choices:
 
-- A value that has only letters, digits, `_` and `-` is a name, as in
-  `output_schema=article`. The job file must have a schema block with
-  that name.
-- Any other value is a path, as in `output_schema=schemas/article.json`.
-  For a file name without a dot, write `./`, as in
-  `output_schema=./article`.
+- JSON Schema file path, e.g. `output_schema=./schemas/article.json`
+- JSON Schema name defined in the job file, e.g. `output_schema=article`
 
 You define a schema block before the `# <name>` heading, as the `config`
-block. The fence of the block is `json:<name>`. A name has 1 to 64
-letters, digits, `_` or `-`. A job can have many schema blocks.
+block. The fence of the block is `json:<name>`.
 
 ````markdown
 ```json:article
