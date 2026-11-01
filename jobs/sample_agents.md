@@ -1,6 +1,9 @@
 ```config
 local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
+local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
+local-lfm3: model=hf.co/AtomicChat/LFM3-1.7B-Uncensored-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
 openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
+claude-haiku: model=claude-haiku-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY
 ```
 
 # Research and summarize
@@ -12,7 +15,7 @@ any model, and they must fit most common AI workflows. This file is a sample
 of a `websearch` action and a `summarizer` agent. Every file goes into
 `./output/agents/`.
 
-The ```` ```config ```` block at the start of the file defines two model
+The ```` ```config ```` block at the start of the file defines three model
 profiles. Each line has a profile name, the model identifier, the base URL
 of the server, and, if the server needs a key, the name of the environment
 variable that holds the key. An agent action selects a profile with
@@ -95,7 +98,7 @@ Prerequisites:
 - The `Extract results` task uses `jq` to read the JSON. To install it, see
   https://jqlang.org/download/.
 
-- The `Summarize research` task uses the `local-qwen` profile, so it needs
+- The `Summarize research` task uses the `local-spark2` profile, so it needs
   no API key. If you change it to `openai-gpt5`, set the key before you run
   the job:
 
@@ -169,7 +172,7 @@ fails.
 ## Summarize research
 
 Summarize each search result on its own, with a `summarizer` agent that
-uses the `local-qwen` profile: `qwen3.5:0.8b` on the local Ollama server.
+uses the `local-spark2` profile: `local-spark2` on the local Ollama server.
 `thinking=false` turns off the thinking of the model, so that the model
 answers without writing its reasoning first. That is much faster on a CPU.
 
@@ -181,7 +184,7 @@ The output of the task is the summaries, one after the other.
 
 - actions:
   - bash xargs jq -c .
-  - foreach agent:summarizer model=local-qwen thinking=false expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
+  - foreach agent:summarizer model=local-spark2 thinking=false expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
 
 ## Save summary
 

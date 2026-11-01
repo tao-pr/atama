@@ -1,6 +1,6 @@
 # Atama
 
-Atama is an automation pipeline as code. You describe a pipeline in a simple
+**Atama is an automation pipeline as markdown.** You describe a pipeline in a simple
 markdown file, and Atama runs its tasks, with or without an agent of your choice.
 
 ## Pipeline format
