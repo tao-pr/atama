@@ -58,6 +58,30 @@ Prerequisites:
      To make sure that the model is loaded, run `ollama ps`. To unload it,
      run `ollama stop qwen3.5:0.8b`.
 
+  4. Optional: test the server with a short prompt. This request uses the
+     same `/v1/chat/completions` endpoint as Atama, and `max_tokens` limits
+     the reply to 20 tokens:
+
+     ```bash
+     curl http://localhost:11434/v1/chat/completions \
+       -H "Content-Type: application/json" \
+       -d '{"model": "qwen3.5:0.8b", "messages": [{"role": "user", "content": "Say hi"}], "max_tokens": 20}'
+     ```
+
+     The response is similar to this:
+
+     ```json
+     {"id":"chatcmpl-311","object":"chat.completion","created":1793526282,"model":"qwen3.5:0.8b","system_fingerprint":"fp_ollama","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning":"Thinking Process:\n\n1.  **Analyze the Input:**\n    *   Input: \""},"finish_reason":"length"}],"usage":{"prompt_tokens":12,"prompt_tokens_details":{"cached_tokens":8},"completion_tokens":20,"total_tokens":32}}
+     ```
+
+     To get a faster answer without reasoning, use the Ollama endpoint with
+     `"think": false`:
+
+     ```bash
+     curl http://localhost:11434/api/chat \
+       -d '{"model": "qwen3.5:0.8b", "messages": [{"role": "user", "content": "Say hi"}], "think": false, "stream": false, "options": {"num_predict": 20}}'
+     ```
+
 - The `Research` task searches the web with Tavily, so it needs a Tavily
   API key:
 
@@ -85,8 +109,8 @@ cargo run -- jobs/sample_agents.md
 ```
 
 To see the Tavily response and what the summarizer sends to the model and
-what the model replies, add `--debug`. The debug output goes to stderr. This command saves it in `debug.log`, and the task log stays in the
-terminal:
+what the model replies, add `--debug`. The debug output goes to stderr. This command saves it in
+`debug.log`, and the task log stays in the terminal:
 
 ```bash
 cargo run -- --debug jobs/sample_agents.md 2> debug.log
