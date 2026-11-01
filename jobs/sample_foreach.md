@@ -41,8 +41,8 @@ because Atama splits an action line at its spaces.
 
 ## Save results
 
-Write the joined outputs to a text file. `tee` also passes them on as the
-output of the task, so the log shows them.
+Write the joined outputs to a text file. `write_file` also passes them on
+as the output of the task, so the log shows them.
 
 - actions:
-  - bash tee ./output/foreach/concat.txt
+  - write_file ./output/foreach/concat.txt

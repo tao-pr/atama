@@ -70,6 +70,7 @@ other words are its parameters:
 | `websearch topic="<text>" [options...]` | Searches the web for one topic. | The response JSON, unchanged |
 | `agent:<type> model=<profile> [options...]` | Runs a `coder` or `summarizer` agent. | The final reply of the model |
 | `read_file [path]` | Reads a text file. Without a path, the input is the path. | The content of the file, unchanged |
+| `write_file <path>` | Writes the input to a file. | The input, unchanged |
 | `foreach <action>` | Runs the action once for each input line. | All outputs, one after the other |
 | `mock` | Does nothing. | The input, unchanged |
 | `mock fail` | Always fails. | None |
@@ -98,6 +99,13 @@ keeps every line of the file.
 
 The input must be one line. To read one file for each line, use
 `foreach read_file`. The file must be UTF-8 text.
+
+### `write_file`
+
+`write_file ./output/result.txt` writes its input to the file, unchanged,
+and passes the input on as its output. It makes missing directories and
+replaces an existing file. The `write_file(...)` hook is a different thing:
+it runs after a task.
 
 ### `foreach`
 
@@ -300,7 +308,7 @@ A `websearch` action searches one topic and ignores its input. Its options:
 ```markdown
 - actions:
   - websearch max_results=5 fetch_content=true topic="latest stable Rust release"
-  - bash tee ./search.json
+  - write_file ./search.json
 ```
 
 A missing topic or a bad option stops the job before it starts. With

@@ -83,6 +83,7 @@ impl fmt::Display for Actor {
                     None => Ok(()),
                 }
             }
+            Actor::WriteFile { path } => write!(f, "write_file {}", quote_param(path)),
             Actor::MockPlaceholder => write!(f, "mock"),
             Actor::MockFail => write!(f, "mock fail"),
         }

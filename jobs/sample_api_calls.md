@@ -23,12 +23,12 @@ Make the output directory.
 
 ## Fetch items
 
-Get the items as JSON. `tee` writes the JSON to a file and also passes it on
-as the output of the task.
+Get the items as JSON. `write_file` writes the JSON to a file and also
+passes it on as the output of the task.
 
 - actions:
   - api_call GET http://localhost:8080/api/items
-  - bash tee ./output/items.json
+  - write_file ./output/items.json
 - if_fail: retry=2
 
 ## Update items
@@ -72,11 +72,11 @@ cannot send yet. `mock fail` then makes this task fail too.
 Runs only if Fetch items fails. Writes `fetch-api-error <timestamp>` to
 `./output/error-api-call.txt`. The bash actor passes each word to the command
 unchanged, so `>` and `$(date)` do not work in one action. `date` prints the
-timestamp, `awk` adds `fetch-api-error` in front of it, and `tee` writes the line to
-the file.
+timestamp, `awk` adds `fetch-api-error` in front of it, and `write_file` writes
+the line to the file.
 
 - begin_if: task(Fetch items) fail
 - actions:
   - bash date -u +%Y-%m-%dT%H:%M:%SZ
   - bash awk {print"fetch-api-error",$0}
-  - bash tee ./output/error-api-call.txt
+  - write_file ./output/error-api-call.txt

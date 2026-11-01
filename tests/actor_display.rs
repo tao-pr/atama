@@ -27,6 +27,8 @@ fn writes_actions_back_as_statements() {
         "read_file ./notes.txt",
         "read_file \"my notes.txt\"",
         "foreach read_file",
+        "write_file ./out.txt",
+        "write_file \"my out.txt\"",
     ];
     for statement in statements {
         let actor: Actor = statement.parse().expect(statement);

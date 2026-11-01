@@ -23,6 +23,8 @@
 //!     [base_url=<url>]` is [`Actor::WebSearch`].
 //!   - `read_file [path]` is [`Actor::ReadFile`]. A path with spaces is in
 //!     quotes. Without a path, the action reads the path from its input.
+//!   - `write_file <path>` is [`Actor::WriteFile`]. A path with spaces is in
+//!     quotes.
 //!   - `foreach <action>` is [`Actor::ForEach`]. The action after `foreach`
 //!     is any other action, as in `foreach bash wc -c`.
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
@@ -496,6 +498,17 @@ impl FromStr for Actor {
                         .to_string(),
                 ),
             },
+            "write_file" => match split_quoted(rest)?.as_slice() {
+                [path] => Ok(Actor::WriteFile { path: path.clone() }),
+                [] => Err(
+                    "`write_file` needs a path, as in `write_file ./output/result.txt`".to_string(),
+                ),
+                _ => Err(
+                    "`write_file` takes one path, as in `write_file ./output/result.txt`. \
+                     Put a path with spaces in quotes"
+                        .to_string(),
+                ),
+            },
             "mock" => Ok(match params.first() {
                 Some(&"fail") => Actor::MockFail,
                 _ => Actor::MockPlaceholder,
@@ -510,8 +523,8 @@ impl FromStr for Actor {
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `api_call`, `download`, \
-                     `tavily_search`, `websearch`, `read_file`, `foreach`, `mock` or \
-                     `agent:<type>`"
+                     `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, \
+                     `mock` or `agent:<type>`"
                 )),
             },
         }

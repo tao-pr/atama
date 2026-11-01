@@ -1164,3 +1164,68 @@ fn read_file_fails_without_a_single_readable_path() {
     let err = Actor::ReadFile { path: Some(path) }.act("").unwrap_err();
     assert!(err.starts_with("cannot read file `"), "{err}");
 }
+
+// write_file
+
+#[test]
+fn write_file_writes_the_input_and_passes_it_on() {
+    let dir = temp_dir("write_file");
+    // The directories of the path do not exist yet.
+    let path = dir.join("a").join("b").join("out.txt");
+    let actor = Actor::WriteFile {
+        path: path.to_string_lossy().into_owned(),
+    };
+    let input = "first\n\n  indented\r\nlast without newline";
+    assert_eq!(actor.act(input), Ok(input.to_string()));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), input);
+
+    // A second write replaces the file.
+    assert_eq!(actor.act(""), Ok(String::new()));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+}
+
+#[test]
+fn write_file_writes_a_file_in_the_current_directory() {
+    // A relative path. The test runs in the package root, so it writes to
+    // target/.
+    let name = format!("target/atama-write-file-{}.txt", std::process::id());
+    let actor = Actor::WriteFile { path: name.clone() };
+    assert_eq!(actor.act("x"), Ok("x".to_string()));
+    assert_eq!(std::fs::read_to_string(&name).unwrap(), "x");
+    std::fs::remove_file(&name).unwrap();
+}
+
+#[test]
+fn write_file_fails_if_it_cannot_write() {
+    let dir = temp_dir("write_file_fails");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("file.txt");
+    std::fs::write(&file, "x").unwrap();
+
+    // The parent of the path is a file, not a directory.
+    let path = file.join("out.txt");
+    let err = Actor::WriteFile {
+        path: path.to_string_lossy().into_owned(),
+    }
+    .act("y")
+    .unwrap_err();
+    assert!(
+        err.starts_with(&format!(
+            "cannot make directory `{}` for file `{}`: ",
+            file.display(),
+            path.display()
+        )),
+        "{err}"
+    );
+
+    // The path is a directory. `/` also has no parent.
+    for path in [dir.to_string_lossy().into_owned(), "/".to_string()] {
+        let err = Actor::WriteFile { path: path.clone() }
+            .act("y")
+            .unwrap_err();
+        assert!(
+            err.starts_with(&format!("cannot write file `{path}`: ")),
+            "{err}"
+        );
+    }
+}

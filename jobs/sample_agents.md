@@ -188,11 +188,11 @@ The output of the task is the summaries, one after the other.
 
 ## Save summary
 
-Write the summary to a file. `tee` also passes it on as the output of the
-task.
+Write the summary to a file. `write_file` also passes it on as the output
+of the task.
 
 - actions:
-  - bash tee ./output/agents/research-summary.md
+  - write_file ./output/agents/research-summary.md
 
 ## Print summary
 

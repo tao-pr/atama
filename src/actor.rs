@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
@@ -92,6 +92,12 @@ pub enum Actor {
         /// the input.
         path: Option<String>,
     },
+    /// Writes its input to the file at `path`. Carries its input, unchanged,
+    /// as output.
+    WriteFile {
+        /// The path of the file.
+        path: String,
+    },
     /// Does nothing. Carries its input as output unchanged.
     MockPlaceholder,
     /// Always fails, to emulate a failing action.
@@ -179,6 +185,8 @@ impl Actor {
     ///   each output ends with a newline.
     /// - [`Actor::ReadFile`] returns the content of the file at its path, or
     ///   at the path in `input` (see [`read_file`]).
+    /// - [`Actor::WriteFile`] writes `input` to the file at its path, and
+    ///   returns `input` (see [`write_file`]).
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
     /// - [`Actor::MockFail`] always fails.
     ///
@@ -239,6 +247,7 @@ impl Actor {
             Actor::WebSearch(options) => options.search(&|name| std::env::var(name).ok(), debug),
             Actor::ForEach(action) => for_each(action, input, debug),
             Actor::ReadFile { path } => read_file(path.as_deref(), input),
+            Actor::WriteFile { path } => write_file(path, input),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
         }
@@ -300,6 +309,28 @@ fn read_file(path: Option<&str>, input: &str) -> Result<String, String> {
         }
     };
     fs::read_to_string(path).map_err(|err| format!("cannot read file `{path}`: {err}"))
+}
+
+/// Writes `input` to the file at `path`, unchanged, and returns `input`, as
+/// `tee` does. Makes the missing parent directories of `path`. An existing
+/// file is replaced.
+///
+/// Fails if a parent directory cannot be made or the file cannot be
+/// written.
+fn write_file(path: &str, input: &str) -> Result<String, String> {
+    if let Some(parent) = Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "cannot make directory `{}` for file `{path}`: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(path, input).map_err(|err| format!("cannot write file `{path}`: {err}"))?;
+    Ok(input.to_string())
 }
 
 fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {

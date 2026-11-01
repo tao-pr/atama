@@ -405,7 +405,7 @@ fn sample_foreach_job_lists_items_and_runs_one_action_for_each() {
             "bash mkdir -p ./output/foreach",
             "bash printf %s\\n apple banana cherry",
             "foreach bash awk {print\"[item:\",$0\"]\",\"has\",length($0),\"characters\"}",
-            "bash tee ./output/foreach/concat.txt",
+            "write_file ./output/foreach/concat.txt",
         ]
     );
 }
@@ -724,7 +724,8 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `api_call`, `download`, \
-         `tavily_search`, `websearch`, `read_file`, `foreach`, `mock` or `agent:<type>`"
+         `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, `mock` or \
+         `agent:<type>`"
     );
 }
 
@@ -881,7 +882,7 @@ fn sample_agents_job_saves_the_research_and_its_summary() {
         "bash jq .results",
         "bash ./jobs/scripts/split_json_array.sh ./output/agents/research-raw",
         "bash xargs jq -c .",
-        "bash tee ./output/agents/research-summary.md",
+        "write_file ./output/agents/research-summary.md",
         "read_file ./output/agents/research-summary.md",
     ] {
         assert!(actions.iter().any(|written| written == action), "{action}");
@@ -1191,4 +1192,33 @@ fn parses_read_file_actions() {
         "read_file \"a.txt".parse::<Actor>(),
         Err("a quote in `\"a.txt` has no closing quote".to_string())
     );
+}
+
+#[test]
+fn parses_write_file_actions() {
+    for (statement, path) in [
+        ("write_file ./out.txt", "./out.txt"),
+        ("write_file  \"my out.txt\" ", "my out.txt"),
+    ] {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Ok(Actor::WriteFile { path: path.into() }),
+            "{statement}"
+        );
+    }
+    assert_eq!(
+        "write_file".parse::<Actor>(),
+        Err("`write_file` needs a path, as in `write_file ./output/result.txt`".to_string())
+    );
+    for statement in ["write_file a.txt b.txt", "write_file my out.txt"] {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Err(
+                "`write_file` takes one path, as in `write_file ./output/result.txt`. \
+                 Put a path with spaces in quotes"
+                    .to_string()
+            ),
+            "{statement}"
+        );
+    }
 }
