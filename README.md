@@ -1,7 +1,7 @@
 # Atama
 
-Atama is an automation pipeline as markdown. You describe a pipeline in a
-markdown file, and Atama runs its tasks, with or without an agent.
+Atama runs automation pipelines that you write in markdown. You describe the
+tasks in a markdown file, and Atama runs them. You can mix agent-based task with non-agent tasks.
 
 ## Pipeline format
 
@@ -88,8 +88,7 @@ action of a task gets the output of the last task that succeeded.
 ### `actions-parallel`
 
 Use `- actions-parallel:` in place of `- actions:` to run the actions of a
-task at the same time. Each action gets the input of the task, and the task
-passes no output on, so the next task gets an empty input.
+task at the same time. Each action gets the same input from the previous task. The output from all parallel actions are not passed to the next task.
 
 ```markdown
 ## Notify

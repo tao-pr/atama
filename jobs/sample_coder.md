@@ -55,7 +55,7 @@ passes no output on.
 
 - actions-parallel:max=1
   - agent:coder model=local-spark2 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
-  - agent:coder model=local-qwen3 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen3.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
+  - agent:coder model=local-qwen3 thinking=true max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen3.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
 - if_fail: retry=0
 
 ## Run code
