@@ -60,35 +60,23 @@ The sample jobs call helper scripts in `jobs/scripts/`.
 
 ## Actions
 
-An action is one line of words. The first word is the action type, and the
-other words are its parameters:
+An action is one line in the `- actions:` list of a task. The first word is
+the action type, and the other words are its parameters. For example:
 
-| Action | What it does | Output |
-| --- | --- | --- |
-| `bash <command> [args...]` | Runs a command in bash. | stdout |
-| `bash-sandbox <command> [args...]` | Runs a command in bash in the macOS sandbox. | stdout |
-| `api_call <verb> <url> [options...]` | Sends an HTTP request. | The response body |
-| `download <url> [options...]` | Downloads a file. | The file path |
-| `tavily_search [options...] [query...]` | Searches the web with Tavily. | The response JSON |
-| `websearch topic="<text>" [options...]` | Searches the web for one topic. | The response JSON, unchanged |
-| `agent:<type> model=<profile> [options...]` | Runs a `coder` or `summarizer` agent. | The final reply of the model |
-| `read_file [path]` | Reads a text file. Without a path, the input is the path. | The content of the file, unchanged |
-| `write_file <path>` | Writes the input to a file. | The input, unchanged |
-| `foreach <action>` | Runs the action once for each input line. | All outputs, one after the other |
-| `mock` | Does nothing. | The input, unchanged |
-| `mock fail` | Always fails. | None |
+- `bash npm ci`, `api_call GET https://example.com`,
+- `websearch topic="latest Rust release"` and
+- `agent:coder model=local-qwen task="Fix the failing test."`.
 
-For example: `bash npm ci`, `api_call GET https://example.com`,
-`websearch topic="latest Rust release"` and
-`agent:coder model=local-qwen task="Fix the failing test."`.
+Each action takes input from previous task/action, passes out its output to the next.
 
-Each action gets the output of the action before it as its input. The first
-action of a task gets the output of the last task that succeeded.
+See [ACTIONS.md](ACTIONS.md) for full reference of all actions and parameters.
 
 ### `actions-parallel`
 
 Use `- actions-parallel:` in place of `- actions:` to run the actions of a
-task at the same time. Each action gets the same input from the previous task. The output from all parallel actions are not passed to the next task.
+task at the same time. Each action gets the same input from the previous
+task. Atama does not pass the outputs of the parallel actions to the next
+task, so the next task gets an empty input.
 
 ```markdown
 ## Notify
@@ -105,68 +93,6 @@ same time.
 The log shows each action and its output in the order of the task, after
 all actions finish. If an action fails, the task fails with the errors of
 all failed actions. A retry runs all actions again.
-
-### `api_call` and `download`
-
-The `api_call` verb is GET, POST, PUT, DELETE, PATCH or HEAD.
-`payload=<text>` or `input_file=<path>` sets the request body. `download`
-takes `mime=<type>` and `output_dir=<dir>`.
-
-To send `Authorization: Bearer <token>`, add `auth=bearer:<token>`. The log
-shows the token as `***`.
-
-### `bash-sandbox`
-
-`bash-sandbox` runs a command as `bash` does, but inside the macOS sandbox
-(`sandbox-exec`). The command has no network, and it can read and write
-files only in the working directory. It cannot run `sudo`, `su` or `login`,
-and it stops if Atama runs as root.
-
-The command can also read the system directories that it needs to run
-programs, such as `/usr` and `/opt/homebrew`. The home directory is closed,
-so `PATH` has only system directories, and programs such as `pyenv` shims
-do not run. The profile is in `src/actor/bash_sandbox.sb`.
-
-`bash-sandbox` works only on macOS. A tool that needs a temporary directory
-outside the working directory can fail or print warnings.
-
-### `read_file`
-
-`read_file ./notes.txt` reads `./notes.txt`, and `read_file "my notes.txt"`
-reads a path with spaces. Without a path, the input is the path. The output
-keeps every line of the file.
-
-The input must be one line. To read one file for each line, use
-`foreach read_file`. The file must be UTF-8 text.
-
-### `write_file`
-
-`write_file ./output/result.txt` writes its input to the file, unchanged,
-and passes the input on as its output. It makes missing directories and
-replaces an existing file. The `write_file(...)` hook is a different thing:
-it runs after a task.
-
-### `foreach`
-
-`foreach <action>` runs the action once for each line of its input, with
-that line as the input. Atama skips blank lines. The output is the outputs
-of all runs, in order.
-
-```markdown
-## List items
-
-- actions:
-  - bash printf %s\n apple banana cherry
-
-## Describe each item
-
-- actions:
-  - foreach bash awk {print"[item:",$0"]","has",length($0),"characters"}
-```
-
-If one run fails, `foreach` stops, and the error names the item, as in
-"`foreach` failed at item 2 (`banana`): ...". A `foreach` cannot run another
-`foreach`.
 
 ## Triggers and hooks
 
@@ -195,28 +121,8 @@ Atama makes a graph of the tasks from their `begin_if` conditions.
 ## Agents
 
 An `agent:coder` or `agent:summarizer` action sends its task to a chat
-model and runs the tools that the model asks for. The first reply without a
-tool call is the output.
-
-The model must support tool calls. It must be on a server with an OpenAI
-compatible `/chat/completions` endpoint, such as OpenAI, Ollama, vLLM or LM
-Studio.
-
-Each word after `agent:<type>` is a `key=value` option. An unknown option
-or a word without `=` makes the action fail. Put a value with spaces in
-double quotes, as in `task="Fix the failing test."`, and write `\"` for a
-quote and `\\` for a backslash.
-
-Options of every agent:
-
-- `model=<profile>`: the model profile. You must set it.
-- `task="<text>"`: the instruction. The input goes below it. The action
-  fails if it has no task and no input.
-- `max_steps=<n>`: the most model replies in one run. The default is 10.
-- `thinking=false`: sends `"reasoning_effort": "none"`, which turns off the
-  thinking of the model on Ollama. Other servers can reject it.
-- `output_schema=<name|path>`: makes the output a JSON value that matches a
-  schema (see "Output schemas").
+model. [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each
+agent. This section describes the parts of the job file that agents use.
 
 If you use `agent:coder`, the model can run any command with your
 permissions. Use it only in a directory and with a model that you trust.
@@ -284,32 +190,6 @@ also checks each reply, because some servers ignore `response_format`. If a
 reply does not match, the model gets the errors and tries again, up to
 `max_steps` replies.
 
-### The `summarizer` agent
-
-A `summarizer` agent summarizes its input and keeps the key facts, such as
-numbers, dates and names. It has no tools, and it fails if the input is
-empty. The default task is "Summarize the input."
-
-It has two more options:
-
-- `expertise="<text>"`: the field of the reader, as in
-  `expertise="molecular biology"`. The default is `general`.
-- `max_output="<size>"`: the most that the summary can be, as in `60%` or
-  `"3 sentences"`. The unit can also be words or paragraphs. Without it,
-  the summary is as short as it can be.
-
-```markdown
-- actions:
-  - read_file ./notes.md
-  - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
-```
-
-### Agent tools
-
-A `coder` agent has `bash`, which runs a command in the directory where you
-start Atama. A `summarizer` agent has no tools. Atama cuts a tool result
-after 20,000 characters.
-
 ### Debug output
 
 Add `--debug` to see what an agent does. Atama writes the configuration,
@@ -319,60 +199,6 @@ never writes the API key.
 Each block starts with a line such as
 `=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`. To save
 the debug output in a file, add `2> debug.log`.
-
-## Tavily search
-
-The `websearch` and `tavily_search` actions search the web with the
-[Tavily search API](https://docs.tavily.com/documentation/api-reference/endpoint/search).
-Both return the Tavily response as JSON, and each search uses Tavily API
-credits. Set your key first:
-
-```sh
-export TAVILY_API_KEY=<your key>
-```
-
-Atama reads the key only from `TAVILY_API_KEY`, and it never writes the key
-in the log.
-
-### The `websearch` action
-
-A `websearch` action searches one topic and ignores its input. Its options:
-
-- `topic="<text>"`: what to search for. You must set it.
-- `max_results=<n>`: from 1 to 20. The default is 5.
-- `fetch_content=true`: also gets each result page as markdown, in
-  `raw_content`. The default is `false`.
-- `base_url=<url>`: the server. The default is `https://api.tavily.com`.
-
-```markdown
-- actions:
-  - websearch max_results=5 fetch_content=true topic="latest stable Rust release"
-  - write_file ./search.json
-```
-
-A missing topic or a bad option stops the job before it starts. With
-`--debug`, the action writes its options and the response to stderr. The
-old name `agent:websearch` is an error.
-
-### The `tavily_search` action
-
-The words that are not options are the query. Without query words, the
-input is the query.
-
-```markdown
-- actions:
-  - tavily_search max_results=3 topic=news latest stable Rust release
-  - bash jq -r .results[].url
-```
-
-Options that you do not set use the Tavily default:
-
-- `max_results=<n>`: the most results.
-- `search_depth=<depth>`: `basic` or `advanced`.
-- `topic=<topic>`: `general`, `news` or `finance`.
-- `include_answer=<value>`: `true`, `false`, `basic` or `advanced`.
-- `include_raw_content=<value>`: `true`, `false`, `markdown` or `text`.
-- `base_url=<url>`: the server. The default is `https://api.tavily.com`.
 
 ## Building
 
