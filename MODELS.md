@@ -4,7 +4,7 @@ Following is the list of models for local serving.
 
 ## OpenAI-compat /chat/completions
 
-Requires no toolcalls.
+GGUF quantized for CPU/GPU.
 
 - `qwen3.5:0.8b`\
   Qwen 3.5 0.8B, a general-purpose model for text summarization and understanding.
