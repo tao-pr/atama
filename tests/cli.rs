@@ -183,12 +183,12 @@ fn debug_writes_agent_requests_to_stderr() {
     assert!(!output.status.success());
     assert!(
         stderr.contains(&format!(
-            "=== agent:coder configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n"
+            "=== agent:coder (m) configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n"
         )),
         "stderr was: {stderr}"
     );
     assert!(
-        stderr.contains("=== agent:coder step 1: request (2 messages, 2 new, tools: bash) ==="),
+        stderr.contains("=== agent:coder (m) step 1: request (2 messages, 2 new, tools: bash) ==="),
         "stderr was: {stderr}"
     );
     assert!(

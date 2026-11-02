@@ -85,7 +85,8 @@ marks such a task. `- actions-parallel:max=<n>` sets
 runs the actions: its default runs them one after the other, and
 `ActorRunner` starts `max` threads, or one per action, that take the next
 action until none is left. `Executor::run_parallel_actions` logs the outputs in the order of
-the task, after all actions finish.
+the task, after all actions finish. The error of a failed action is on a
+`! ` line right under the command of that action.
 
 ### Trigger conditions
 
@@ -294,7 +295,9 @@ has `profile: None`, and it fails when it runs.
 and the base URL from the profile, and the API key from the environment
 variable that `api_key=` names. If that variable is not set, it fails. The
 job file never holds a key. With `--debug`, the loop writes the profile
-name, each request, reply and tool call to stderr. The header of each
+name, each request, reply and tool call to stderr. Each debug header names
+the agent and its profile, as in `=== agent:coder (local-qwen3) step 1 ...`
+(`AgentToolLoop::label`). The errors of the loop also name the profile. The header of each
 request also has `reasoning_effort` if the request sends it.
 
 `run_loop` reads the real environment. Tests call `run_loop_with_env` with a

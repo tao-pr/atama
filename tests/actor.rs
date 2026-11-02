@@ -951,8 +951,8 @@ fn act_with_debug_writes_agent_debug_output_only() {
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
     let out = String::from_utf8(out).unwrap();
-    assert!(out.contains("=== agent:coder configuration ==="), "{out}");
-    assert!(out.contains("=== agent:coder step 1: request"), "{out}");
+    assert!(out.contains("=== agent:coder (p) configuration ==="), "{out}");
+    assert!(out.contains("=== agent:coder (p) step 1: request"), "{out}");
 
     let mut out = Vec::new();
     assert_eq!(
@@ -1086,7 +1086,7 @@ fn foreach_gives_the_debug_output_to_each_run() {
     let out = String::from_utf8(out).unwrap();
     // The first run fails, so only it writes debug output.
     assert_eq!(
-        out.matches("=== agent:coder configuration ===").count(),
+        out.matches("=== agent:coder (p) configuration ===").count(),
         1,
         "{out}"
     );

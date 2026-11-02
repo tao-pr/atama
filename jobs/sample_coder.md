@@ -1,6 +1,6 @@
 ```config
 local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
-local-qwen3: model=qwen3.5:4b, base_url=http://localhost:11434/v1
+local-qwen2: model=qwen2.5-coder:3b, base_url=http://localhost:11434/v1
 ```
 
 # Code and explain
@@ -16,7 +16,7 @@ Prerequisites:
 - Ollama on `localhost:11434`, with the models of the two profiles. To set
   up Ollama, see `jobs/sample_agents.md`. To download the models, run
   `ollama pull hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M` and
-  `ollama pull hf.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF:Q4_K_M`.
+  `ollama pull qwen2.5-coder:3b`.
 - `python3`, to run the program that the agent writes.
 
 The `coder` agent can run any command with your permissions. Run the job only
@@ -55,7 +55,7 @@ passes no output on.
 
 - actions-parallel:max=1
   - agent:coder model=local-spark2 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
-  - agent:coder model=local-qwen3 thinking=true max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen3.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
+  - agent:coder model=local-qwen2 thinking=true max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
 - if_fail: retry=0
 
 ## Run code
@@ -67,27 +67,23 @@ fails if an agent wrote no program, or a program fails.
 
 - actions-parallel:
   - bash-sandbox python3 ./output/coder/solution-spark2.py
-  - bash-sandbox python3 ./output/coder/solution-qwen3.py
+  - bash-sandbox python3 ./output/coder/solution-qwen2.py
 
 ## Explain spark2 code
 
-Read the program of the `local-spark2` agent, and let a `summarizer` agent
-explain its logic in at most 5 lines. `write_file` saves the explanation
-and passes it on, so the log shows it. The actions depend on each other,
-so they run in order, with `actions`.
+Explain the program of the `local-spark2` agent with spark2.
 
 - actions:
   - read_file ./output/coder/solution-spark2.py
   - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
   - write_file ./output/coder/explanation-spark2.txt
 
-## Explain qwen3 code
+## Explain qwen2 code
 
-Explain the program of the `local-qwen3` agent in the same way.
-This task starts when Run code succeeds, also if Explain spark2 code fails.
+Explain the program of the `local-qwen2` agent with spark2.
 
 - begin_if: task(Run code) succeed
 - actions:
-  - read_file ./output/coder/solution-qwen3.py
+  - read_file ./output/coder/solution-qwen2.py
   - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
-  - write_file ./output/coder/explanation-qwen3.txt
+  - write_file ./output/coder/explanation-qwen2.txt

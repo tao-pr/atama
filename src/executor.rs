@@ -419,7 +419,9 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
 
     /// Runs the task's actions at the same time, each with `input`, and waits
     /// for all of them. Then logs each action and its output, in the order
-    /// of the task. Fails if any action fails, with the errors of all failed
+    /// of the task. A failed action gets its error right under its own
+    /// command, on a line with a `! ` prefix, so that each error stays with
+    /// its action. Fails if any action fails, with the errors of all failed
     /// actions. Returns an empty output, because the task passes no output
     /// on.
     fn run_parallel_actions(
@@ -448,7 +450,11 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                         self.log(format_args!("[{}] | {line}", task.id))?;
                     }
                 }
-                Err(message) => errors.push(format!("`{command}`: {message}")),
+                Err(message) => {
+                    let line = format!("[{}] ! {message}", task.id);
+                    self.log(paint(self.color, FAIL, &line))?;
+                    errors.push(format!("`{command}`: {message}"));
+                }
             }
         }
         if errors.is_empty() {

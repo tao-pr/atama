@@ -545,7 +545,24 @@ fn run_loop_uses_max_steps_from_the_params() {
             "",
         )
         .unwrap_err();
-    assert_eq!(err, "`agent:coder` did not finish in 1 steps");
+    assert_eq!(err, "`agent:coder (m)` did not finish in 1 steps");
+}
+
+#[test]
+fn label_names_the_profile_after_the_loop_reads_it() {
+    let mut agent = AgentToolLoop::new(AgentType::Coder);
+    assert_eq!(agent.label(), "agent:coder");
+
+    let (url, _requests) = serve(vec![(200, text_response("done"))]);
+    agent
+        .run_loop_with_env(
+            &params(&["model=m", "task=t"]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(agent.label(), "agent:coder (m)");
 }
 
 #[test]
@@ -693,7 +710,7 @@ fn debug_writes_the_configuration_without_the_api_key() {
     let out = String::from_utf8(out).unwrap();
 
     let expected = format!(
-        "=== agent:coder configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n\
+        "=== agent:coder (m) configuration ===\nprofile: m\nmodel: model-1\nbase_url: {url}\n\
          max_steps: 4\napi key: not set"
     );
     assert!(out.starts_with(&expected), "{out}");
@@ -717,7 +734,7 @@ fn debug_writes_the_reasoning_effort_of_each_request() {
     let out = String::from_utf8(out).unwrap();
     assert!(
         out.contains(
-            "=== agent:summarizer step 1: request (2 messages, 2 new, tools: , \
+            "=== agent:summarizer (m) step 1: request (2 messages, 2 new, tools: , \
              reasoning_effort: none) ==="
         ),
         "{out}"

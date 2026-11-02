@@ -1235,7 +1235,7 @@ fn sample_coder_job_writes_code_in_parallel_and_explains_it() {
             "Write code",
             "Run code",
             "Explain spark2 code",
-            "Explain qwen3 code",
+            "Explain qwen2 code",
         ]
     );
     let task = |id: &str| job.tasks.iter().find(|task| task.id == id).unwrap();
@@ -1248,7 +1248,7 @@ fn sample_coder_job_writes_code_in_parallel_and_explains_it() {
     // The task file is in the repository.
     assert!(include_str!("../jobs/tasks/coding_task.md").starts_with("# Coding task"));
 
-    let models = ["spark2", "qwen3"];
+    let models = ["spark2", "qwen2"];
 
     // Two coders, one per model, run at the same time, and each writes its
     // own file. Read task comes just before, so both get the coding task.
@@ -1324,7 +1324,7 @@ fn sample_coder_job_writes_code_in_parallel_and_explains_it() {
         );
     }
     assert_eq!(
-        task("Explain qwen3 code").begin_if,
+        task("Explain qwen2 code").begin_if,
         Trigger::Task {
             id: "Run code".into(),
             on: Event::Succeed

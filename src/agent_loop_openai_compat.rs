@@ -117,6 +117,10 @@ pub struct AgentToolLoop<'a> {
     output_schema: Option<OutputSchema>,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
+    /// The name of the model profile of the action, if known. The debug
+    /// headers and the errors of the loop name it (see
+    /// [`AgentToolLoop::label`]).
+    profile: Option<String>,
 }
 
 impl<'a> AgentToolLoop<'a> {
@@ -131,6 +135,7 @@ impl<'a> AgentToolLoop<'a> {
             schema_block: None,
             output_schema: None,
             debug: None,
+            profile: None,
         }
     }
 
@@ -178,6 +183,17 @@ impl<'a> AgentToolLoop<'a> {
         self.agent
     }
 
+    /// Names the agent in debug headers and errors: `agent:<type>`, and the
+    /// name of the model profile in parentheses if it is known, as in
+    /// `agent:coder (local-qwen3)`. Then, if several agent actions write to
+    /// the same output, each block names its own action.
+    pub fn label(&self) -> String {
+        match &self.profile {
+            Some(profile) => format!("agent:{} ({profile})", self.agent),
+            None => format!("agent:{}", self.agent),
+        }
+    }
+
     /// Names of the tools that the model can call.
     pub fn tool_names(&self) -> Vec<&str> {
         self.tools.iter().map(|tool| tool.name()).collect()
@@ -216,6 +232,7 @@ impl<'a> AgentToolLoop<'a> {
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
         let config = AgentConfig::from_params(self.agent, params, profile, env)?;
+        self.profile = Some(config.profile.clone());
         self.max_steps = config.max_steps;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
         self.output_schema = config
@@ -225,8 +242,8 @@ impl<'a> AgentToolLoop<'a> {
             .transpose()?;
         let summary = config.summary();
         self.write_debug(format!(
-            "=== agent:{} configuration ===\n{summary}",
-            self.agent
+            "=== {} configuration ===\n{summary}",
+            self.label()
         ));
         let task = match &config.summarizer {
             Some(options) => options.task(&config.task, input)?,
@@ -264,7 +281,7 @@ impl<'a> AgentToolLoop<'a> {
         input: &str,
     ) -> Result<String, String> {
         let prompt = user_prompt(task, input)
-            .ok_or_else(|| format!("`agent:{}` needs `task=` or an input", self.agent))?;
+            .ok_or_else(|| format!("`{}` needs `task=` or an input", self.label()))?;
         let mut system = system_prompt(self.agent).to_string();
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
@@ -286,8 +303,8 @@ impl<'a> AgentToolLoop<'a> {
                     format!(", output_schema: {}", schema.name)
                 });
                 self.write_debug(format!(
-                    "=== agent:{} step {step}: request ({} messages, {} new, tools: {tools}{effort}{format}) ===\n{new}",
-                    self.agent,
+                    "=== {} step {step}: request ({} messages, {} new, tools: {tools}{effort}{format}) ===\n{new}",
+                    self.label(),
                     messages.len(),
                     messages.len() - sent,
                 ));
@@ -297,8 +314,8 @@ impl<'a> AgentToolLoop<'a> {
             if self.debug.is_some() {
                 let json = pretty(std::slice::from_ref(&Message::Assistant(reply.clone())));
                 self.write_debug(format!(
-                    "=== agent:{} step {step}: response ({} tool calls) ===\n{json}",
-                    self.agent,
+                    "=== {} step {step}: response ({} tool calls) ===\n{json}",
+                    self.label(),
                     reply.tool_calls.len()
                 ));
             }
@@ -312,8 +329,8 @@ impl<'a> AgentToolLoop<'a> {
                     Err(error) => error,
                 };
                 self.write_debug(format!(
-                    "=== agent:{} step {step}: reply does not match output schema `{}` ===\n{error}",
-                    self.agent, schema.name
+                    "=== {} step {step}: reply does not match output schema `{}` ===\n{error}",
+                    self.label(), schema.name
                 ));
                 messages.push(Message::Assistant(reply));
                 messages.push(Message::User(format!(
@@ -333,8 +350,8 @@ impl<'a> AgentToolLoop<'a> {
                         Err(err) => format!("error: {err}"),
                     };
                     self.write_debug(format!(
-                        "=== agent:{} step {step}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
-                        self.agent,
+                        "=== {} step {step}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
+                        self.label(),
                         index + 1,
                         call.name,
                         call.id,
@@ -350,14 +367,14 @@ impl<'a> AgentToolLoop<'a> {
         }
         if let (Some(error), Some(schema)) = (schema_error, &self.output_schema) {
             return Err(format!(
-                "`agent:{}` did not reply with JSON that matches output schema `{}` in {} steps, \
+                "`{}` did not reply with JSON that matches output schema `{}` in {} steps, \
                  the last error: {error}",
-                self.agent, schema.name, self.max_steps
+                self.label(), schema.name, self.max_steps
             ));
         }
         Err(format!(
-            "`agent:{}` did not finish in {} steps",
-            self.agent, self.max_steps
+            "`{}` did not finish in {} steps",
+            self.label(), self.max_steps
         ))
     }
 

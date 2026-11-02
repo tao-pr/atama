@@ -626,6 +626,14 @@ fn a_parallel_task_fails_with_the_errors_of_all_failed_actions() {
         log.contains("[B] failed: `bash left`: scripted failure\n"),
         "log was:\n{log}"
     );
+    // Each error is right under the command of its own action.
+    assert!(
+        log.contains(
+            "[B] $ bash left\n[B] ! scripted failure\n\
+             [B] $ bash right\n[B] ! scripted failure\n[B] $ bash ok\n"
+        ),
+        "log was:\n{log}"
+    );
     // A failed parallel task also passes no output on.
     assert_eq!(runner.inputs.last().unwrap(), "");
 }
@@ -715,7 +723,7 @@ fn max_keeps_the_order_and_the_input_of_each_action() {
     assert!(!report.succeeded());
     assert!(
         log.contains(
-            "[B] $ bash sed s/in/one/\n[B] | one\n[B] $ bash sed s/in/two/\n[B] | two\n[B] $ mock fail\n"
+            "[B] $ bash sed s/in/one/\n[B] | one\n[B] $ bash sed s/in/two/\n[B] | two\n[B] $ mock fail\n[B] ! mock failure\n"
         ),
         "log was:\n{log}"
     );
