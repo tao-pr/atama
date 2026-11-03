@@ -724,7 +724,7 @@ fn shows_parse_error_with_its_line() {
     assert_eq!(
         err.to_string(),
         "line 3: unknown action `npm`, expected `bash`, `bash-sandbox`, `api_call`, `download`, \
-         `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, `mock` or \
+         `tavily_search`, `websearch`, `read_file`, `list_files`, `write_file`, `foreach`, `mock` or \
          `agent:<type>`"
     );
 }
@@ -1153,6 +1153,48 @@ fn sample_structured_output_job_extracts_one_json_object_for_each_city() {
         task("Save cities").actions[0].to_string(),
         "bash ./jobs/scripts/write_json_by_key.sh ./output/structured city"
     );
+}
+
+#[test]
+fn parses_list_files_actions() {
+    let cases = [
+        ("list_files", None, "*"),
+        ("list_files  dir=./docs ", Some("./docs"), "*"),
+        ("list_files pattern=*.md dir=./docs", Some("./docs"), "*.md"),
+        (
+            "list_files dir=\"my docs\" pattern=\"* notes.md\"",
+            Some("my docs"),
+            "* notes.md",
+        ),
+    ];
+    for (statement, dir, pattern) in cases {
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Ok(Actor::ListFiles {
+                dir: dir.map(str::to_string),
+                pattern: pattern.into(),
+            }),
+            "{statement}"
+        );
+    }
+    let errors = [
+        ("list_files ./docs", "unexpected `./docs`, expected `dir=` or `pattern=`"),
+        ("list_files depth=2", "unknown option `depth`, expected `dir=` or `pattern=`"),
+        ("list_files dir=a dir=b", "duplicate option `dir`"),
+        ("list_files pattern=", "option `pattern` has no value"),
+        (
+            "list_files pattern=src/*.rs",
+            "the `list_files` pattern `src/*.rs` has a `/`, but `list_files` does not \
+             go into subdirectories",
+        ),
+        (
+            "list_files pattern=[ab",
+            "the `list_files` pattern `[ab` has a `[` without a closing `]`",
+        ),
+    ];
+    for (statement, error) in errors {
+        assert_eq!(statement.parse::<Actor>(), Err(error.to_string()), "{statement}");
+    }
 }
 
 #[test]

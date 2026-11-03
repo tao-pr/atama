@@ -28,6 +28,11 @@ fn writes_actions_back_as_statements() {
         "read_file \"my notes.txt\"",
         "foreach read_file",
         "write_file ./out.txt",
+        "list_files",
+        "list_files dir=./docs",
+        "list_files pattern=*.md",
+        "list_files dir=\"my docs\" pattern=\"* notes.md\"",
+        "foreach list_files pattern=[a-c]*",
         "bash-sandbox python3 ./solution.py",
         "write_file \"my out.txt\"",
     ];

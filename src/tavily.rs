@@ -7,7 +7,8 @@
 //! [`API_KEY_ENV`], so it is never in the job file or the log.
 
 use serde_json::{Map, Value, json};
-use ureq::Agent;
+
+use crate::http;
 
 /// Base URL of the Tavily API if the action sets none.
 pub const DEFAULT_BASE_URL: &str = "https://api.tavily.com";
@@ -142,23 +143,12 @@ impl SearchConfig {
     /// Fails if the request fails, or the server responds with a non-2xx status.
     pub fn search(&self) -> Result<String, String> {
         let url = format!("{}/search", self.base_url.trim_end_matches('/'));
-        let agent =
-            Agent::new_with_config(Agent::config_builder().http_status_as_error(false).build());
-        let mut response = agent
+        let response = http::agent()
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .content_type("application/json")
-            .send(self.request_body().to_string())
-            .map_err(|err| format!("request to `{url}` failed: {err}"))?;
-        let status = response.status();
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|err| format!("cannot read response from `{url}`: {err}"))?;
-        if !status.is_success() {
-            return Err(format!("`{url}` responded with {status}: {}", body.trim()));
-        }
-        Ok(body)
+            .send(self.request_body().to_string());
+        http::read_response(&url, response)
     }
 }
 

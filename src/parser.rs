@@ -26,6 +26,9 @@
 //!     [base_url=<url>]` is [`Actor::WebSearch`].
 //!   - `read_file [path]` is [`Actor::ReadFile`]. A path with spaces is in
 //!     quotes. Without a path, the action reads the path from its input.
+//!   - `list_files [dir=<path>] [pattern=<glob>]` is [`Actor::ListFiles`].
+//!     Without `dir=`, the action reads the directory from its input. The
+//!     default pattern is `*`.
 //!   - `write_file <path>` is [`Actor::WriteFile`]. A path with spaces is in
 //!     quotes.
 //!   - `foreach <action>` is [`Actor::ForEach`]. The action after `foreach`
@@ -42,7 +45,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
-use crate::actor::{Actor, AgentType, ApiVerb, Auth};
+use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
 use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
@@ -557,6 +560,19 @@ impl FromStr for Actor {
                         .to_string(),
                 ),
             },
+            "list_files" => {
+                let params = split_quoted(rest)?;
+                let params: Vec<&str> = params.iter().map(String::as_str).collect();
+                let mut options = parse_options(&params, &["dir", "pattern"])?;
+                let pattern = options
+                    .remove("pattern")
+                    .unwrap_or_else(|| list_files::DEFAULT_PATTERN.to_string());
+                list_files::check_pattern(&pattern)?;
+                Ok(Actor::ListFiles {
+                    dir: options.remove("dir"),
+                    pattern,
+                })
+            }
             "write_file" => match split_quoted(rest)?.as_slice() {
                 [path] => Ok(Actor::WriteFile { path: path.clone() }),
                 [] => Err(
@@ -582,8 +598,8 @@ impl FromStr for Actor {
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `bash-sandbox`, `api_call`, `download`, \
-                     `tavily_search`, `websearch`, `read_file`, `write_file`, `foreach`, \
-                     `mock` or `agent:<type>`"
+                     `tavily_search`, `websearch`, `read_file`, `list_files`, `write_file`, \
+                     `foreach`, `mock` or `agent:<type>`"
                 )),
             },
         }

@@ -10,6 +10,7 @@ use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
 use crate::agent_loop_openai_compat::AgentToolLoop;
+use crate::http::{agent, read_response};
 use crate::passer::Passer;
 use crate::profile::ModelProfile;
 use crate::schema::OutputSchema;
@@ -17,6 +18,7 @@ use crate::tavily::SearchConfig;
 use crate::websearch::WebSearchOptions;
 
 mod display;
+pub mod list_files;
 
 /// One action of a task, and how to carry it out.
 ///
@@ -91,6 +93,17 @@ pub enum Actor {
         /// The path from the action statement. `None` reads the path from
         /// the input.
         path: Option<String>,
+    },
+    /// Lists the files of one directory whose names match a glob pattern,
+    /// without going into subdirectories. Carries one path per line, sorted
+    /// by name, as output (see [`list_files::list_files`]).
+    ListFiles {
+        /// The directory from `dir=`. `None` reads the directory from the
+        /// input.
+        dir: Option<String>,
+        /// The glob pattern of the file names, from `pattern=`. The default
+        /// is [`list_files::DEFAULT_PATTERN`].
+        pattern: String,
     },
     /// Writes its input to the file at `path`. Carries its input, unchanged,
     /// as output.
@@ -188,6 +201,8 @@ impl Actor {
     ///   each output ends with a newline.
     /// - [`Actor::ReadFile`] returns the content of the file at its path, or
     ///   at the path in `input` (see [`read_file`]).
+    /// - [`Actor::ListFiles`] returns the paths of the files in its directory,
+    ///   or in the directory in `input`, whose names match its pattern.
     /// - [`Actor::WriteFile`] writes `input` to the file at its path, and
     ///   returns `input` (see [`write_file`]).
     /// - [`Actor::MockPlaceholder`] returns `input` unchanged.
@@ -251,6 +266,9 @@ impl Actor {
             Actor::WebSearch(options) => options.search(&|name| std::env::var(name).ok(), debug),
             Actor::ForEach(action) => for_each(action, input, debug),
             Actor::ReadFile { path } => read_file(path.as_deref(), input),
+            Actor::ListFiles { dir, pattern } => {
+                list_files::list_files(dir.as_deref(), pattern, input)
+            }
             Actor::WriteFile { path } => write_file(path, input),
             Actor::MockPlaceholder => Ok(input.to_string()),
             Actor::MockFail => Err("mock failure".to_string()),
@@ -502,10 +520,6 @@ fn file_name_from_url(url: &str) -> String {
 
 /// An HTTP client that returns 4xx and 5xx responses instead of an error, so
 /// the error message can include the response body.
-fn agent() -> Agent {
-    Agent::new_with_config(Agent::config_builder().http_status_as_error(false).build())
-}
-
 fn call_api(verb: &ApiVerb, url: &str, body: &str, auth: Option<&Auth>) -> Result<String, String> {
     let agent = agent();
     let response = match verb {
@@ -589,21 +603,4 @@ fn fetch_oauth2_token(
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("token response from `{token_url}` has no `access_token`"))
-}
-
-/// Returns the response body, or an error for a failed request or a non-2xx status.
-fn read_response(
-    url: &str,
-    response: Result<Response<Body>, ureq::Error>,
-) -> Result<String, String> {
-    let mut response = response.map_err(|err| format!("request to `{url}` failed: {err}"))?;
-    let status = response.status();
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| format!("cannot read response from `{url}`: {err}"))?;
-    if !status.is_success() {
-        return Err(format!("`{url}` responded with {status}: {}", body.trim()));
-    }
-    Ok(body)
 }

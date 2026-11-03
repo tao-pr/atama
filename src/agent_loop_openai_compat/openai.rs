@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use ureq::Agent;
 
 use super::{ChatClient, Message, Reply, Tool, ToolCall};
+use crate::http;
 use crate::schema::OutputSchema;
 
 /// Sends each step of the conversation to `<base_url>/chat/completions`.
@@ -29,9 +30,7 @@ impl OpenAiClient {
             api_key,
             thinking: None,
             output_schema: None,
-            agent: Agent::new_with_config(
-                Agent::config_builder().http_status_as_error(false).build(),
-            ),
+            agent: http::agent(),
         }
     }
 
@@ -62,18 +61,10 @@ impl ChatClient for OpenAiClient {
             request = request.header("Authorization", format!("Bearer {key}"));
         }
         let url = &self.url;
-        let mut response = request
+        let response = request
             .content_type("application/json")
-            .send(body.to_string())
-            .map_err(|err| format!("request to `{url}` failed: {err}"))?;
-        let status = response.status();
-        let text = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|err| format!("cannot read response from `{url}`: {err}"))?;
-        if !status.is_success() {
-            return Err(format!("`{url}` responded with {status}: {}", text.trim()));
-        }
+            .send(body.to_string());
+        let text = http::read_response(url, response)?;
         let json: Value = serde_json::from_str(&text)
             .map_err(|err| format!("response from `{url}` is not JSON: {err}"))?;
         parse_reply(&json).ok_or_else(|| format!("response from `{url}` has no message"))

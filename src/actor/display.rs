@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use super::{Actor, AgentType, Auth};
+use super::{Actor, AgentType, Auth, list_files};
 use crate::{tavily, websearch};
 
 /// Writes the action statement that parses back into this actor, for
@@ -86,6 +86,16 @@ impl fmt::Display for Actor {
                     Some(path) => write!(f, " {}", quote_param(path)),
                     None => Ok(()),
                 }
+            }
+            Actor::ListFiles { dir, pattern } => {
+                write!(f, "list_files")?;
+                if let Some(dir) = dir {
+                    write!(f, " {}", quote_param(&format!("dir={dir}")))?;
+                }
+                if pattern != list_files::DEFAULT_PATTERN {
+                    write!(f, " {}", quote_param(&format!("pattern={pattern}")))?;
+                }
+                Ok(())
             }
             Actor::WriteFile { path } => write!(f, "write_file {}", quote_param(path)),
             Actor::MockPlaceholder => write!(f, "mock"),

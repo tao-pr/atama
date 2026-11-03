@@ -20,6 +20,7 @@ action fails, the task fails, and the next actions of the task do not run.
 | [`tavily_search`](#tavily_search) | Searches the web with Tavily. | The response JSON, unchanged |
 | [`agent:<type>`](#agenttype) | Runs a `coder` or `summarizer` agent. | The final reply of the model |
 | [`read_file`](#read_file) | Reads a text file. | The content of the file, unchanged |
+| [`list_files`](#list_files) | Lists the files of a directory. | One path per line |
 | [`write_file`](#write_file) | Writes the input to a file. | The input, unchanged |
 | [`foreach`](#foreach) | Runs an action once for each input line. | All outputs, one after the other |
 | [`mock`](#mock) | Does nothing. | The input, unchanged |
@@ -31,8 +32,8 @@ Some actions accept a value in double quotes, so that the value can have
 spaces, as in `task="Fix the failing test."`. Inside quotes, `\"` is a quote
 and `\\` is a backslash. Atama removes the quotes before it uses the value.
 
-These actions accept quotes: `websearch`, `agent:<type>`, `read_file` and
-`write_file`. The other actions split the line at each space, and they keep
+These actions accept quotes: `websearch`, `agent:<type>`, `read_file`,
+`list_files` and `write_file`. The other actions split the line at each space, and they keep
 quote characters as they are.
 
 ## `bash`
@@ -320,6 +321,49 @@ path. The input must be one line. To read one file for each line, use
 ```markdown
 - actions:
   - read_file ./notes.txt
+```
+
+## `list_files`
+
+```text
+list_files [dir=<path>] [pattern=<glob>]
+```
+
+Lists the files of one directory whose names match a pattern. The output
+has one path per line, sorted by name. Each line ends with a newline.
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `dir=<path>` | No | The directory. Put a path with spaces in quotes, as in `dir="my docs"`. The default is the input. |
+| `pattern=<glob>` | No | The pattern of the file names. The default is `*`. |
+
+Without `dir=`, the input, without spaces at the start and the end, is the
+directory. The input must be one line. To list one directory for each line,
+use `foreach list_files`.
+
+The action does not go into subdirectories, and it does not list them. A
+symbolic link to a file is in the list. Each path is the directory joined
+with the file name, so that `foreach read_file` can read the files. If no
+file matches, the output is empty, and the action succeeds.
+
+A pattern (a glob) can have these special characters:
+
+| Pattern | Matches |
+| --- | --- |
+| `*` | Any text, also no text. |
+| `?` | One character. |
+| `[abc]`, `[a-z]` | One character in the class or in the range. |
+| `[!abc]`, `[^abc]` | One character that is not in the class. |
+| `\*` | The character after `\`, as a plain character. |
+
+As in a shell, a pattern matches a name that starts with `.` only if the
+pattern also starts with `.`. For example, `*` does not match `.env`, but
+`.*` does. A pattern with `/` is an error.
+
+```markdown
+- actions:
+  - list_files dir=./notes pattern=*.md
+  - foreach read_file
 ```
 
 ## `write_file`

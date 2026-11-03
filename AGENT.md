@@ -136,6 +136,7 @@ its own output. The main actor types are:
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
 - `ReadFile` (`read_file [path]`) reads a text file. Without a path, the input, trimmed, is the path. It fails on an input with more than one line. The output is the content of the file, unchanged. `read_file` in `src/actor.rs` runs it.
+- `ListFiles` (`list_files [dir=<path>] [pattern=<glob>]`) lists the files of one directory whose names match a glob. The default pattern is `*`. Without `dir=`, the input, trimmed, is the directory. It does not go into subdirectories. The output is one path per line, sorted. `src/actor/list_files.rs` runs it and has the glob matcher.
 - `WriteFile` (`write_file <path>`) writes its input to a file, and makes the missing parent directories. The output is the input, unchanged, as with `tee`. `write_file` in `src/actor.rs` runs it.
 - `MockPlaceholder` (`mock`) passes its input on unchanged. `MockFail` (`mock fail`) always fails.
 
