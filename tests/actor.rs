@@ -915,6 +915,7 @@ fn profile(base_url: &str) -> ModelProfile {
         model: "test-model".into(),
         base_url: base_url.into(),
         api_key_env: None,
+        token_budget: None,
     }
 }
 

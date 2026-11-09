@@ -150,8 +150,9 @@ pub fn message_json(message: &Message) -> Value {
     }
 }
 
-/// Reads the reply from `choices[0].message` of a chat completions response.
-/// Returns `None` if the response has no message.
+/// Reads the reply from `choices[0].message` of a chat completions response,
+/// and its tokens from `usage.total_tokens`. Returns `None` if the response
+/// has no message.
 pub fn parse_reply(json: &Value) -> Option<Reply> {
     let message = json.get("choices")?.get(0)?.get("message")?;
     let tool_calls = message
@@ -174,6 +175,10 @@ pub fn parse_reply(json: &Value) -> Option<Reply> {
             .and_then(Value::as_str)
             .map(str::to_string),
         tool_calls,
+        tokens: json
+            .get("usage")
+            .and_then(|usage| usage.get("total_tokens"))
+            .and_then(Value::as_u64),
     })
 }
 

@@ -166,8 +166,8 @@ The code of the loop is in four files:
 ### Options of an agent action
 
 Each param of an agent action is an option. Every agent needs
-`model=<profile>` and takes `task=`, `max_steps=`, `thinking=` and
-`output_schema=`, and a
+`model=<profile>` and takes `task=`, `max_steps=`, `token_budget=`,
+`thinking=` and `output_schema=`, and a
 `summarizer` agent also takes
 `expertise=` and `max_output=`. A `coder` agent fails on these two options
 (`only_for`). A value can be in double quotes, so that it can have spaces,
@@ -212,7 +212,8 @@ the same way.
    JSON, and calls `Tool::call`. The result goes into the conversation as a
    tool message with the id of the call.
 9. Go back to step 5. If the model still calls tools after `max_steps`
-   replies, the run fails.
+   replies, the run fails. With a token budget, the run also fails if it
+   used the budget before step 5 (see "Token budget" below).
 
 The model, not Atama, decides which tools to call and with which
 arguments. The request has no `tool_choice` field, so the server uses
@@ -275,6 +276,20 @@ Now, the expertise is only the name of a field in the task. A `TAOTODO`
 comment on `SummarizerOptions::expertise` marks the plan to load domain
 expertise as skills later.
 
+### Token budget
+
+`token_budget=<n>` limits the tokens of one run. A model profile can set
+it, and the option of the action replaces the value of the profile
+(`AgentConfig::from_params`). `profile::parse_token_budget` reads both.
+`openai::parse_reply` reads `usage.total_tokens` into `Reply::tokens`.
+
+`run_with` adds up the tokens of each reply. Before each request, it fails
+if the run used the budget. So a run can go over the budget by the tokens
+of its last step, and a final reply in that step is still the output. If a
+budget is set and a reply has no `tokens`, the run fails. The debug header
+of each reply shows its tokens and the used budget.
+`AgentToolLoop::token_budget` sets the budget in tests.
+
 ### Model, debug output and tests
 
 `thinking=false` makes `AgentConfig::thinking` `Some(false)`. Then
@@ -285,7 +300,7 @@ its default.
 
 The model comes from a model profile (`src/profile.rs`). A job file can
 start with a ```` ```config ```` block, before the `# <name>` heading. Each
-line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]`, and
+line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`, and
 `ModelProfile::from_str` reads it. `parse_job` reads the block with
 `profile::parse_profiles`, and `parse_action` uses `profile::resolve` to
 put the profile that `model=<name>` names into `Actor::AgentTool::profile`.

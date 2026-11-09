@@ -23,6 +23,7 @@ fn profile() -> ModelProfile {
         model: "model-1".into(),
         base_url: "http://x.test/v1".into(),
         api_key_env: None,
+        token_budget: None,
     }
 }
 
@@ -51,6 +52,26 @@ fn reads_options_and_task_from_params_and_the_model_from_the_profile() {
     .unwrap();
     assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
     assert_eq!(config.task, "");
+}
+
+#[test]
+fn the_token_budget_of_the_action_replaces_the_budget_of_the_profile() {
+    let budget = |words: &[&str], profile_budget: Option<u64>| {
+        let profile = ModelProfile {
+            token_budget: profile_budget,
+            ..profile()
+        };
+        AgentConfig::from_params(AgentType::Coder, &params(words), Some(&profile), &no_env)
+            .unwrap()
+            .token_budget
+    };
+    assert_eq!(budget(&["model=m"], None), None);
+    assert_eq!(budget(&["model=m"], Some(9000)), Some(9000));
+    assert_eq!(budget(&["model=m", "token_budget=500"], None), Some(500));
+    assert_eq!(
+        budget(&["model=m", "token_budget=500"], Some(9000)),
+        Some(500)
+    );
 }
 
 #[test]
@@ -145,7 +166,7 @@ fn rejects_invalid_configuration() {
         ),
         (
             vec!["model=m", "base_url=http://x.test"],
-            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
+            "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
@@ -158,6 +179,14 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "max_steps=x"],
             "`max_steps=x` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=0"],
+            "`token_budget=0` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=-5"],
+            "`token_budget=-5` is not a positive number",
         ),
     ];
     for (input, message) in cases {
@@ -201,6 +230,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         model: "m".into(),
         api_key: Some("secret-key".into()),
         max_steps: 3,
+        token_budget: None,
         summarizer: None,
         task: "task".into(),
         thinking: None,
@@ -210,6 +240,13 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         config.summary(),
         "profile: p\nmodel: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
     );
+    config.token_budget = Some(800);
+    assert!(
+        config
+            .summary()
+            .ends_with("\napi key: set\ntoken_budget: 800")
+    );
+    config.token_budget = None;
     config.thinking = Some(false);
     assert!(
         config
@@ -340,7 +377,7 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
+            "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`"
                 .into(),
         ),

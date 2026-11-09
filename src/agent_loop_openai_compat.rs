@@ -51,6 +51,12 @@ pub mod tools;
 
 use agent_options::{AgentConfig, DEFAULT_MAX_STEPS};
 
+/// The tokens that one run used, and its limit.
+struct TokenBudget {
+    limit: u64,
+    used: u64,
+}
+
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -73,6 +79,10 @@ pub enum Message {
 pub struct Reply {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// The tokens of the request and the reply together, from
+    /// `usage.total_tokens` of the response. `None` if the server does not
+    /// send them.
+    pub tokens: Option<u64>,
 }
 
 /// A request from the model to run a tool.
@@ -109,6 +119,8 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// The most tokens that one run can use, if set.
+    token_budget: Option<u64>,
     /// The `reasoning_effort` that the client sends, for debug output only.
     reasoning_effort: Option<&'static str>,
     /// The schema block of the job that `output_schema=<name>` names.
@@ -131,6 +143,7 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            token_budget: None,
             reasoning_effort: None,
             schema_block: None,
             output_schema: None,
@@ -175,6 +188,16 @@ impl<'a> AgentToolLoop<'a> {
     /// Sets the most model replies that one run asks for.
     pub fn max_steps(mut self, max_steps: u32) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    /// Sets the most tokens that one run can use. The loop adds up the
+    /// tokens of each reply (see [`Reply::tokens`]). It does not send a new
+    /// request after the run used `token_budget` tokens or more, so one run
+    /// can go over the budget by the tokens of its last step. `None` sets no
+    /// limit. [`AgentToolLoop::run_loop`] sets it from `token_budget=`.
+    pub fn token_budget(mut self, token_budget: Option<u64>) -> Self {
+        self.token_budget = token_budget;
         self
     }
 
@@ -234,6 +257,7 @@ impl<'a> AgentToolLoop<'a> {
         let config = AgentConfig::from_params(self.agent, params, profile, env)?;
         self.profile = Some(config.profile.clone());
         self.max_steps = config.max_steps;
+        self.token_budget = config.token_budget;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
         self.output_schema = config
             .output_schema
@@ -241,10 +265,7 @@ impl<'a> AgentToolLoop<'a> {
             .map(|value| schema::load(value, self.schema_block.as_ref()))
             .transpose()?;
         let summary = config.summary();
-        self.write_debug(format!(
-            "=== {} configuration ===\n{summary}",
-            self.label()
-        ));
+        self.write_debug(format!("=== {} configuration ===\n{summary}", self.label()));
         let task = match &config.summarizer {
             Some(options) => options.task(&config.task, input)?,
             None => config.task.clone(),
@@ -271,9 +292,15 @@ impl<'a> AgentToolLoop<'a> {
     /// [`OutputSchema::check_reply`]). If such a reply does not match, the
     /// model gets the errors and can try again.
     ///
+    /// With a token budget (see [`AgentToolLoop::token_budget`]), the loop
+    /// counts the tokens of each reply, and stops before a request if the
+    /// run used the budget.
+    ///
     /// Fails if the task and the input are both empty, the client fails, or
     /// the model has no final reply, or no reply that matches the schema,
-    /// after `max_steps` replies.
+    /// after `max_steps` replies. With a token budget, it also fails if a
+    /// reply has no token count, or the run used the budget before the
+    /// final reply.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -289,10 +316,22 @@ impl<'a> AgentToolLoop<'a> {
         let mut messages = vec![Message::System(system), Message::User(prompt)];
         // The error of the last final reply that did not match the schema.
         let mut schema_error: Option<String> = None;
+        let mut budget = self
+            .token_budget
+            .map(|limit| TokenBudget { limit, used: 0 });
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
         for step in 1..=self.max_steps {
+            if let Some(TokenBudget { limit, used }) = budget
+                && used >= limit
+            {
+                return Err(format!(
+                    "`{}` used {used} tokens in {} steps, and its token budget is {limit}",
+                    self.label(),
+                    step - 1
+                ));
+            }
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
@@ -311,10 +350,27 @@ impl<'a> AgentToolLoop<'a> {
             }
             sent = messages.len();
             let reply = client.chat(&messages, &self.tools)?;
+            if let Some(budget) = &mut budget {
+                let tokens = reply.tokens.ok_or_else(|| {
+                    format!(
+                        "`{}` has a token budget of {}, but the server did not send \
+                         `usage.total_tokens` in its response",
+                        self.label(),
+                        budget.limit
+                    )
+                })?;
+                budget.used += tokens;
+            }
             if self.debug.is_some() {
                 let json = pretty(std::slice::from_ref(&Message::Assistant(reply.clone())));
+                let tokens = reply
+                    .tokens
+                    .map_or(String::new(), |tokens| format!(", {tokens} tokens"));
+                let used = budget.as_ref().map_or(String::new(), |budget| {
+                    format!(", {} of {} tokens used", budget.used, budget.limit)
+                });
                 self.write_debug(format!(
-                    "=== {} step {step}: response ({} tool calls) ===\n{json}",
+                    "=== {} step {step}: response ({} tool calls{tokens}{used}) ===\n{json}",
                     self.label(),
                     reply.tool_calls.len()
                 ));
@@ -330,7 +386,8 @@ impl<'a> AgentToolLoop<'a> {
                 };
                 self.write_debug(format!(
                     "=== {} step {step}: reply does not match output schema `{}` ===\n{error}",
-                    self.label(), schema.name
+                    self.label(),
+                    schema.name
                 ));
                 messages.push(Message::Assistant(reply));
                 messages.push(Message::User(format!(
@@ -369,12 +426,15 @@ impl<'a> AgentToolLoop<'a> {
             return Err(format!(
                 "`{}` did not reply with JSON that matches output schema `{}` in {} steps, \
                  the last error: {error}",
-                self.label(), schema.name, self.max_steps
+                self.label(),
+                schema.name,
+                self.max_steps
             ));
         }
         Err(format!(
             "`{}` did not finish in {} steps",
-            self.label(), self.max_steps
+            self.label(),
+            self.max_steps
         ))
     }
 

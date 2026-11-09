@@ -82,6 +82,15 @@ fn text_response(content: &str) -> String {
     json!({"choices": [{"message": {"role": "assistant", "content": content}}]}).to_string()
 }
 
+/// A chat completions response with a text reply that used `tokens` tokens.
+fn text_response_with_usage(content: &str, tokens: u64) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": tokens - 1, "completion_tokens": 1, "total_tokens": tokens},
+    })
+    .to_string()
+}
+
 /// A chat completions response with one tool call.
 fn tool_call_response(id: &str, name: &str, arguments: Value) -> String {
     json!({"choices": [{"message": {
@@ -104,6 +113,7 @@ fn profile(base_url: &str) -> ModelProfile {
         model: "model-1".into(),
         base_url: base_url.into(),
         api_key_env: None,
+        token_budget: None,
     }
 }
 
@@ -115,6 +125,7 @@ fn text(content: &str) -> Reply {
     Reply {
         content: Some(content.into()),
         tool_calls: Vec::new(),
+        tokens: None,
     }
 }
 
@@ -129,6 +140,7 @@ fn calls(calls: &[(&str, &str, &str)]) -> Reply {
                 arguments: arguments.to_string(),
             })
             .collect(),
+        tokens: None,
     }
 }
 
@@ -377,6 +389,114 @@ fn fails_when_the_model_does_not_finish_in_max_steps() {
     assert_eq!(arguments.borrow().len(), 2);
 }
 
+/// `reply` with a token count, as from `usage.total_tokens`.
+fn with_tokens(reply: Reply, tokens: u64) -> Reply {
+    Reply {
+        tokens: Some(tokens),
+        ..reply
+    }
+}
+
+#[test]
+fn stops_before_a_request_when_the_run_used_its_token_budget() {
+    let (tool, arguments) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(calls(&[("2", "lookup", "{}")]), 50)),
+    ]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap_err();
+
+    assert_eq!(
+        err,
+        "`agent:coder` used 110 tokens in 2 steps, and its token budget is 100"
+    );
+    // The tool calls of the last reply still run.
+    assert_eq!(arguments.borrow().len(), 2);
+    assert_eq!(client.conversations.len(), 2);
+}
+
+#[test]
+fn returns_a_final_reply_that_goes_over_the_token_budget() {
+    let (tool, _) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(text("done"), 70)),
+    ]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
+fn fails_with_a_token_budget_when_the_server_sends_no_token_count() {
+    let mut client = ScriptedClient::new(vec![Ok(text("done"))]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:coder` has a token budget of 100, but the server did not send \
+         `usage.total_tokens` in its response"
+    );
+
+    // Without a budget, a reply without a token count is fine.
+    let mut client = ScriptedClient::new(vec![Ok(text("done"))]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
+fn debug_writes_the_tokens_of_each_reply_and_the_used_budget() {
+    let (tool, _) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(text("done"), 30)),
+    ]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "=== agent:coder step 1: response (1 tool calls, 60 tokens, 60 of 100 tokens used) ==="
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "=== agent:coder step 2: response (0 tool calls, 30 tokens, 90 of 100 tokens used) ==="
+        ),
+        "{out}"
+    );
+
+    // Without a budget, the header has only the tokens of the reply.
+    let mut client = ScriptedClient::new(vec![Ok(with_tokens(text("done"), 30))]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Coder)
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:coder step 1: response (0 tool calls, 30 tokens) ==="),
+        "{out}"
+    );
+}
+
 #[test]
 fn fails_when_the_client_fails() {
     let mut client = ScriptedClient::new(vec![Err("model is down".into())]);
@@ -396,6 +516,7 @@ fn request_body_has_model_messages_and_tools() {
         Message::Assistant(Reply {
             content: Some("thinking".into()),
             tool_calls: calls(&[("c1", "bash", r#"{"command":"ls"}"#)]).tool_calls,
+            tokens: None,
         }),
         Message::Tool {
             call_id: "c1".into(),
@@ -456,6 +577,9 @@ fn parses_text_and_tool_call_replies() {
         parse_reply(&json).unwrap(),
         calls(&[("c1", "bash", r#"{"command":"ls"}"#)])
     );
+
+    let json = serde_json::from_str(&text_response_with_usage("hi", 42)).unwrap();
+    assert_eq!(parse_reply(&json).unwrap(), with_tokens(text("hi"), 42));
 
     let incomplete = json!({"choices": [{"message": {"tool_calls": [{}]}}]});
     assert_eq!(parse_reply(&incomplete).unwrap(), calls(&[("", "", "")]));
@@ -546,6 +670,56 @@ fn run_loop_uses_max_steps_from_the_params() {
         )
         .unwrap_err();
     assert_eq!(err, "`agent:coder (m)` did not finish in 1 steps");
+}
+
+#[test]
+fn run_loop_uses_the_token_budget_of_the_params_or_the_profile() {
+    // The action sets the budget.
+    let (url, _requests) = serve(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "unknown", "arguments": "{}"},
+            }]}}],
+            "usage": {"total_tokens": 300},
+        })
+        .to_string(),
+    )]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(
+            &params(&["model=m", "token_budget=200", "task=t"]),
+            Some(&profile(&url)),
+            "",
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:coder (m)` used 300 tokens in 1 steps, and its token budget is 200"
+    );
+
+    // The profile sets the budget, and the server sends no token count.
+    let (url, _requests) = serve(vec![(200, text_response("done"))]);
+    let budget_profile = ModelProfile {
+        token_budget: Some(200),
+        ..profile(&url)
+    };
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(&params(&["model=m", "task=t"]), Some(&budget_profile), "")
+        .unwrap_err();
+    assert!(err.contains("has a token budget of 200"), "{err}");
+
+    // The server sends the token count of a final reply.
+    let (url, _requests) = serve(vec![(200, text_response_with_usage("done", 150))]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(
+            &params(&["model=m", "token_budget=200", "task=t"]),
+            Some(&profile(&url)),
+            "",
+        )
+        .unwrap();
+    assert_eq!(output, "done");
 }
 
 #[test]

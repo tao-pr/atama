@@ -15,9 +15,10 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 7] = [
+const OPTION_KEYS: [&str; 8] = [
     "model",
     "max_steps",
+    "token_budget",
     "task",
     "thinking",
     "output_schema",
@@ -30,8 +31,8 @@ const OPTION_KEYS: [&str; 7] = [
 ///
 /// Each param is one option. Every agent type needs `model=<profile>`, the
 /// name of a [`ModelProfile`] of the job, and takes `task=<text>`,
-/// `max_steps=<n>`, `thinking=<true|false>` and `output_schema=<name|path>`
-/// (see [`crate::schema`]). A `summarizer` agent also takes `expertise=<text>` and
+/// `max_steps=<n>`, `token_budget=<n>`, `thinking=<true|false>` and
+/// `output_schema=<name|path>` (see [`crate::schema`]). A `summarizer` agent also takes `expertise=<text>` and
 /// `max_output=<size>` (see [`SummarizerOptions`]). In the job file, a value
 /// can be in double quotes, so that it can have spaces, as in
 /// `task="Fix the tests"`. The parser removes the quotes. The profile sets
@@ -45,6 +46,11 @@ pub struct AgentConfig {
     pub model: String,
     pub api_key: Option<String>,
     pub max_steps: u32,
+    /// The most tokens that the run can use, from `token_budget=<n>` of the
+    /// action, else from the profile. `None` sets no limit. The loop adds
+    /// up the `usage.total_tokens` of each reply (see
+    /// [`crate::AgentToolLoop::token_budget`]).
+    pub token_budget: Option<u64>,
     /// The options of a `summarizer` agent. `None` for other agent types.
     pub summarizer: Option<SummarizerOptions>,
     /// The task, the instruction for the model.
@@ -189,6 +195,7 @@ fn only_for(owner: AgentType, values: &[(&str, &Option<String>)]) -> Result<(), 
 struct Values {
     model: Option<String>,
     max_steps: Option<String>,
+    token_budget: Option<String>,
     task: Option<String>,
     thinking: Option<String>,
     output_schema: Option<String>,
@@ -212,6 +219,7 @@ impl Values {
             let option = match key {
                 "model" => &mut values.model,
                 "max_steps" => &mut values.max_steps,
+                "token_budget" => &mut values.token_budget,
                 "task" => &mut values.task,
                 "thinking" => &mut values.thinking,
                 "output_schema" => &mut values.output_schema,
@@ -244,7 +252,8 @@ impl AgentConfig {
     /// Fails if a param is not a known option, an option is empty, set twice
     /// or invalid, the params have an option of another agent type, there is
     /// no `model=`, `profile` is not the profile that `model=` names, or the
-    /// environment variable of the API key is not set.
+    /// environment variable of the API key is not set. `token_budget=` of
+    /// the action replaces the `token_budget` of the profile.
     pub fn from_params(
         agent: AgentType,
         params: &[String],
@@ -254,6 +263,7 @@ impl AgentConfig {
         let Values {
             model,
             max_steps,
+            token_budget,
             task,
             thinking,
             output_schema,
@@ -280,6 +290,10 @@ impl AgentConfig {
                 .filter(|steps| *steps > 0)
                 .ok_or_else(|| format!("`max_steps={value}` is not a positive number"))?,
         };
+        let token_budget = token_budget
+            .as_deref()
+            .map(crate::profile::parse_token_budget)
+            .transpose()?;
         let thinking = thinking
             .map(|value| match value.as_str() {
                 "true" => Ok(true),
@@ -305,6 +319,7 @@ impl AgentConfig {
             model: profile.model.clone(),
             api_key,
             max_steps,
+            token_budget: token_budget.or(profile.token_budget),
             summarizer,
             task: task.unwrap_or_default(),
             thinking,
@@ -316,7 +331,7 @@ impl AgentConfig {
 impl AgentConfig {
     /// The configuration for debug output, one `name: value` line each. It
     /// shows only whether the API key is set, never the key itself, and
-    /// `thinking` and `output_schema` only if the action sets them. For a
+    /// `token_budget`, `thinking` and `output_schema` only if they are set. For a
     /// `summarizer` agent, it also shows `expertise` and `max_output`.
     pub fn summary(&self) -> String {
         let key = if self.api_key.is_some() {
@@ -328,6 +343,9 @@ impl AgentConfig {
             "profile: {}\nmodel: {}\nbase_url: {}\nmax_steps: {}\napi key: {key}",
             self.profile, self.model, self.base_url, self.max_steps
         );
+        if let Some(budget) = self.token_budget {
+            summary.push_str(&format!("\ntoken_budget: {budget}"));
+        }
         if let Some(thinking) = self.thinking {
             summary.push_str(&format!("\nthinking: {thinking}"));
         }

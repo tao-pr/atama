@@ -133,7 +133,7 @@ A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -143,10 +143,28 @@ on one line of the `config` block:
   must set it.
 - `api_key=<ENV_VAR>`: the environment variable with the API key. Leave it
   out for a server without a key, such as Ollama.
+- `token_budget=<n>`: the most tokens that one run of an agent can use.
+  Leave it out for no limit. See "Token budget" below.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job
 does not start.
+
+### Token budget (optional)
+
+A token budget limits the tokens that one run of an agent uses. Set it on a
+model profile with `token_budget=<n>`, or on one action, as in
+`agent:coder model=local-qwen token_budget=50000`. The value of the action
+replaces the value of the profile.
+
+Atama adds up `usage.total_tokens` from each response of the server. Each
+request sends the whole conversation, so each step costs more than the step
+before it. Atama does not send a new request after the run used the budget,
+and the action fails. A run can go over the budget by the tokens of its
+last step. If that step gives the final reply, the action succeeds.
+
+If a budget is set and the server sends no `usage` in its response, the
+action fails.
 
 ### Output schemas (optional)
 

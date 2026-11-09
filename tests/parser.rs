@@ -204,12 +204,14 @@ fn reads_model_profiles_from_the_config_block() {
                 model: "qwen3.5:0.8b".into(),
                 base_url: "http://localhost:11434/v1".into(),
                 api_key_env: None,
+                token_budget: None,
             },
             ModelProfile {
                 name: "cloud".into(),
                 model: "gpt-5".into(),
                 base_url: "https://api.openai.com/v1".into(),
                 api_key_env: Some("OPENAI_API_KEY".into()),
+                token_budget: None,
             },
         ]
     );
@@ -218,6 +220,16 @@ fn reads_model_profiles_from_the_config_block() {
         job.tasks[0].actions[0].to_string(),
         "agent:coder model=local task=t"
     );
+}
+
+#[test]
+fn reads_the_token_budget_of_a_profile() {
+    let profile: ModelProfile = "p: model=m, base_url=http://x.test, token_budget=5000"
+        .parse()
+        .unwrap();
+    assert_eq!(profile.token_budget, Some(5000));
+    let profile: ModelProfile = "p: model=m, base_url=http://x.test".parse().unwrap();
+    assert_eq!(profile.token_budget, None);
 }
 
 #[test]
@@ -265,7 +277,16 @@ fn rejects_invalid_model_profiles() {
         (
             job("```config\np: key=k\n```\n", "mock"),
             2,
-            "unknown setting `key` in profile `p`, expected `model=`, `base_url=` or `api_key=`",
+            "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=` \
+             or `token_budget=`",
+        ),
+        (
+            job(
+                "```config\np: model=m, base_url=u, token_budget=0\n```\n",
+                "mock",
+            ),
+            2,
+            "`token_budget=0` is not a positive number in profile `p`",
         ),
         (
             job("```config\np: model=\n```\n", "mock"),
@@ -835,6 +856,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
             model: "hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M".into(),
             base_url: "http://localhost:11434/v1".into(),
             api_key_env: None,
+            token_budget: None,
         })
     );
     let no_env = |_: &str| None;
@@ -853,6 +875,40 @@ fn sample_agents_job_searches_and_then_summarizes() {
     );
     // The task tells the model what to do. Its wording can change.
     assert!(!config.task.is_empty());
+}
+
+#[test]
+fn sample_coder_job_sets_a_token_budget_on_the_profile_and_the_action() {
+    let job = parse_job(include_str!("../jobs/sample_coder.md")).expect("job should parse");
+    let no_env = |_: &str| None;
+    let budgets: Vec<(String, Option<u64>)> = job
+        .tasks
+        .iter()
+        .flat_map(|task| &task.actions)
+        .filter_map(|actor| match actor {
+            Actor::AgentTool {
+                agent: AgentType::Coder,
+                params,
+                profile,
+                ..
+            } => {
+                let config =
+                    AgentConfig::from_params(AgentType::Coder, params, profile.as_ref(), &no_env)
+                        .expect("valid options");
+                Some((config.profile, config.token_budget))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        budgets,
+        [
+            // The action sets its own budget.
+            ("local-spark2".to_string(), Some(40000)),
+            // The action uses the budget of its profile.
+            ("local-qwen2".to_string(), Some(60000)),
+        ]
+    );
 }
 
 #[test]
@@ -1178,8 +1234,14 @@ fn parses_list_files_actions() {
         );
     }
     let errors = [
-        ("list_files ./docs", "unexpected `./docs`, expected `dir=` or `pattern=`"),
-        ("list_files depth=2", "unknown option `depth`, expected `dir=` or `pattern=`"),
+        (
+            "list_files ./docs",
+            "unexpected `./docs`, expected `dir=` or `pattern=`",
+        ),
+        (
+            "list_files depth=2",
+            "unknown option `depth`, expected `dir=` or `pattern=`",
+        ),
         ("list_files dir=a dir=b", "duplicate option `dir`"),
         ("list_files pattern=", "option `pattern` has no value"),
         (
@@ -1193,7 +1255,11 @@ fn parses_list_files_actions() {
         ),
     ];
     for (statement, error) in errors {
-        assert_eq!(statement.parse::<Actor>(), Err(error.to_string()), "{statement}");
+        assert_eq!(
+            statement.parse::<Actor>(),
+            Err(error.to_string()),
+            "{statement}"
+        );
     }
 }
 

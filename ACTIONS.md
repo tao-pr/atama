@@ -254,6 +254,7 @@ Options of every agent:
 | `model=<profile>` | Yes | The name of a model profile in the `config` block. An unknown name stops the job before it starts. |
 | `task="<text>"` | No | The instruction. The input of the action goes below it. The action fails if it has no task and no input. |
 | `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10. |
+| `token_budget=<n>` | No | The most tokens in one run, a number above 0. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
 | `thinking=<true\|false>` | No | `false` sends `"reasoning_effort": "none"`, which turns off the thinking of the model on Ollama. Other servers can reject it. `true` is the same as no option. |
 | `output_schema=<name\|path>` | No | Makes the output a JSON value that matches a schema. See "Output schemas" in [README.md](README.md). |
 
