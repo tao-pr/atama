@@ -46,16 +46,14 @@ use crate::profile::ModelProfile;
 use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
+pub mod budget;
+pub mod checks;
 pub mod openai;
 pub mod tools;
 
 use agent_options::{AgentConfig, DEFAULT_MAX_STEPS};
-
-/// The tokens that one run used, and its limit.
-struct TokenBudget {
-    limit: u64,
-    used: u64,
-}
+use budget::{RunBudget, StopReason};
+use checks::{FinalCheck, Rejection, SchemaCheck};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,24 +312,21 @@ impl<'a> AgentToolLoop<'a> {
             system = format!("{system}\n\n{}", schema.instruction());
         }
         let mut messages = vec![Message::System(system), Message::User(prompt)];
-        // The error of the last final reply that did not match the schema.
-        let mut schema_error: Option<String> = None;
-        let mut budget = self
-            .token_budget
-            .map(|limit| TokenBudget { limit, used: 0 });
+        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
+        if let Some(schema) = &self.output_schema {
+            checks.push(Box::new(SchemaCheck::new(schema.clone())));
+        }
+        // The index of the check that failed last, and its error.
+        let mut last_failure: Option<(usize, String)> = None;
+        let mut budget = RunBudget::new(1, self.max_steps, self.token_budget);
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
-        for step in 1..=self.max_steps {
-            if let Some(TokenBudget { limit, used }) = budget
-                && used >= limit
-            {
-                return Err(format!(
-                    "`{}` used {used} tokens in {} steps, and its token budget is {limit}",
-                    self.label(),
-                    step - 1
-                ));
-            }
+        loop {
+            let step = match budget.start_step() {
+                Ok(step) => step,
+                Err(reason) => return Err(self.stop_error(&reason, &checks, last_failure)),
+            };
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
@@ -350,24 +345,16 @@ impl<'a> AgentToolLoop<'a> {
             }
             sent = messages.len();
             let reply = client.chat(&messages, &self.tools)?;
-            if let Some(budget) = &mut budget {
-                let tokens = reply.tokens.ok_or_else(|| {
-                    format!(
-                        "`{}` has a token budget of {}, but the server did not send \
-                         `usage.total_tokens` in its response",
-                        self.label(),
-                        budget.limit
-                    )
-                })?;
-                budget.used += tokens;
-            }
+            budget
+                .add_tokens(reply.tokens)
+                .map_err(|reason| reason.message(&self.label()))?;
             if self.debug.is_some() {
                 let json = pretty(std::slice::from_ref(&Message::Assistant(reply.clone())));
                 let tokens = reply
                     .tokens
                     .map_or(String::new(), |tokens| format!(", {tokens} tokens"));
-                let used = budget.as_ref().map_or(String::new(), |budget| {
-                    format!(", {} of {} tokens used", budget.used, budget.limit)
+                let used = budget.token_usage().map_or(String::new(), |(used, limit)| {
+                    format!(", {used} of {limit} tokens used")
                 });
                 self.write_debug(format!(
                     "=== {} step {step}: response ({} tool calls{tokens}{used}) ===\n{json}",
@@ -377,23 +364,22 @@ impl<'a> AgentToolLoop<'a> {
             }
             if reply.tool_calls.is_empty() {
                 let text = reply.content.clone().unwrap_or_default();
-                let Some(schema) = &self.output_schema else {
-                    return Ok(text);
-                };
-                let error = match schema.check_reply(&text) {
-                    Ok(json) => return Ok(json),
-                    Err(error) => error,
+                let Rejection {
+                    index,
+                    message,
+                    error,
+                } = match checks::run_checks(&mut checks, &text) {
+                    Ok(output) => return Ok(output),
+                    Err(rejection) => rejection,
                 };
                 self.write_debug(format!(
-                    "=== {} step {step}: reply does not match output schema `{}` ===\n{error}",
+                    "=== {} step {step}: {} ===\n{error}",
                     self.label(),
-                    schema.name
+                    checks[index].rejection()
                 ));
                 messages.push(Message::Assistant(reply));
-                messages.push(Message::User(format!(
-                    "Your reply is not valid: {error}\nReply again with only the JSON value."
-                )));
-                schema_error = Some(error);
+                messages.push(Message::User(message));
+                last_failure = Some((index, error));
                 continue;
             }
             let calls = reply.tool_calls.clone();
@@ -422,20 +408,25 @@ impl<'a> AgentToolLoop<'a> {
                 });
             }
         }
-        if let (Some(error), Some(schema)) = (schema_error, &self.output_schema) {
-            return Err(format!(
-                "`{}` did not reply with JSON that matches output schema `{}` in {} steps, \
-                 the last error: {error}",
+    }
+
+    /// The error of a run that stops for `reason`. If the run used all its
+    /// steps after a failed final check, the error names that check and its
+    /// last error.
+    fn stop_error(
+        &self,
+        reason: &StopReason,
+        checks: &[Box<dyn FinalCheck>],
+        last_failure: Option<(usize, String)>,
+    ) -> String {
+        match (reason, last_failure) {
+            (StopReason::Steps { max }, Some((index, error))) => format!(
+                "`{}` {} in {max} steps, the last error: {error}",
                 self.label(),
-                schema.name,
-                self.max_steps
-            ));
+                checks[index].failure()
+            ),
+            (reason, _) => reason.message(&self.label()),
         }
-        Err(format!(
-            "`{}` did not finish in {} steps",
-            self.label(),
-            self.max_steps
-        ))
     }
 
     /// Writes one block of debug output, if debug output is on. A failed

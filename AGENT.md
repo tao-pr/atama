@@ -156,12 +156,25 @@ model asks for tool calls, the loop runs them and sends the results back. If
 the model replies without a tool call, that reply is the output.
 `max_steps` limits the number of model replies.
 
-The code of the loop is in four files:
+The code of the loop is in six files:
 
 - `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `Tool` and `ChatClient` traits.
 - `src/agent_loop_openai_compat/agent_options.rs` has the options of an agent action: `AgentConfig`, `WebSearchOptions`, `SummarizerOptions`, `MaxOutput`, and the defaults and environment variable names of the options.
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
-- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
+- `src/agent_loop_openai_compat/checks.rs` has the `FinalCheck` trait and `SchemaCheck`.
+
+A step is one request to the model and its one reply. An iteration is one
+attempt at the whole task. It ends when the agent replies without tool
+calls. `max_steps` counts the steps of the whole run. `coder` and
+`summarizer` runs have one iteration.
+
+`run_with` asks `RunBudget::start_step` before each request. The budget
+fails with a `StopReason` if the run used its steps or its tokens. A reply
+without tool calls goes through the final checks (`checks::run_checks`).
+A failed check gives the model a user message, and the loop goes on. The
+output schema check is `SchemaCheck`.
 
 ### Options of an agent action
 
@@ -230,14 +243,20 @@ model gets the error text as the tool result, and it can try again.
 
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
-`tools::default_tools` gives each agent type its tools:
+The registry (`tools::tool_by_name` and `tools::TOOL_NAMES`) makes each
+tool by its name: `bash`, `read_file`, `write_file` and `list_files`.
+`tools::default_tool_names` names the tools of each agent type, and
+`tools::default_tools` makes them:
 
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
   field, so the model can only reply with text.
 
 The tools run the same code as the actions of a job file. `bash` runs an
-`Actor::BashScript`. If a result is
+`Actor::BashScript`. `read_file`, `write_file` and `list_files` run
+`Actor::ReadFile`, `Actor::WriteFile` and `Actor::ListFiles`. No agent type
+gets the file tools yet. `write_file` returns a short confirmation, not the
+content. If a result is
 longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
 it.
 
@@ -246,12 +265,15 @@ its agent type. For example, a `summarizer` agent cannot run `bash`. To give an
 agent type a new tool, do these steps:
 
 1. Write a type that implements `Tool` in `tools.rs`.
-2. Add the tool to the match arm of the agent type in `default_tools`.
-3. If the model must know when to use the tool, tell it in `system_prompt`.
-4. Add tests to `tests/agent_loop_openai_compat.rs`.
+2. Add the tool to `TOOL_NAMES` and `tool_by_name`.
+3. Add its name to the match arm of the agent type in `default_tool_names`.
+4. If the model must know when to use the tool, tell it in `system_prompt`.
+5. Add tests to `tests/agent_loop_openai_compat.rs`.
 
 Tests of the options are in `tests/agent_options.rs`. Tests that run the
-loop are in `tests/agent_loop_openai_compat.rs`.
+loop are in `tests/agent_loop_openai_compat.rs`. Tests of `RunBudget` are
+in `tests/budget.rs`, and tests of the final checks are in
+`tests/checks.rs`.
 
 `AgentToolLoop::with_tools` replaces the tools of a loop. Tests use it to
 give the loop mock tools.
@@ -283,7 +305,8 @@ it, and the option of the action replaces the value of the profile
 (`AgentConfig::from_params`). `profile::parse_token_budget` reads both.
 `openai::parse_reply` reads `usage.total_tokens` into `Reply::tokens`.
 
-`run_with` adds up the tokens of each reply. Before each request, it fails
+`RunBudget::add_tokens` adds up the tokens of each reply. Before each
+request, `RunBudget::start_step` fails
 if the run used the budget. So a run can go over the budget by the tokens
 of its last step, and a final reply in that step is still the output. If a
 budget is set and a reply has no `tokens`, the run fails. The debug header

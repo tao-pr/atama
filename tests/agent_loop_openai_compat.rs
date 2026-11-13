@@ -16,7 +16,10 @@ use atama::agent_loop_openai_compat::agent_options::{
     DEFAULT_EXPERTISE, DEFAULT_SUMMARIZER_PROMPT,
 };
 use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
-use atama::agent_loop_openai_compat::tools::{Bash, MAX_RESULT_CHARS, default_tools, truncate};
+use atama::agent_loop_openai_compat::tools::{
+    Bash, ListFiles, MAX_RESULT_CHARS, ReadFile, TOOL_NAMES, WriteFile, default_tool_names,
+    default_tools, tool_by_name, truncate,
+};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 use atama::profile::ModelProfile;
 use atama::schema::OutputSchema;
@@ -242,6 +245,111 @@ fn only_coder_gets_tools() {
     for (agent, expected) in cases {
         assert_eq!(names(&default_tools(agent)), expected, "{agent}");
     }
+}
+
+// Tool registry
+
+#[test]
+fn the_registry_makes_each_tool_by_its_name() {
+    assert_eq!(
+        TOOL_NAMES,
+        ["bash", "read_file", "write_file", "list_files"]
+    );
+    for name in TOOL_NAMES {
+        let tool = tool_by_name(name).expect(name);
+        assert_eq!(tool.name(), name);
+        assert!(!tool.description().is_empty(), "{name}");
+        assert_eq!(tool.parameters()["type"], "object", "{name}");
+    }
+    assert!(tool_by_name("rm").is_none());
+}
+
+#[test]
+fn default_tools_come_from_the_registry() {
+    assert_eq!(default_tool_names(AgentType::Coder), ["bash"]);
+    assert!(default_tool_names(AgentType::Summarizer).is_empty());
+    for agent in [AgentType::Coder, AgentType::Summarizer] {
+        assert_eq!(names(&default_tools(agent)), default_tool_names(agent));
+    }
+}
+
+/// Makes the fresh directory `<target tmp>/<name>` and returns its path.
+fn fresh_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn file_tools_write_read_and_list_files() {
+    let dir = fresh_dir("agent_file_tools");
+    let path = dir.join("sub/a.txt");
+    let path = path.to_str().unwrap();
+
+    let result = WriteFile
+        .call(&json!({"path": path, "content": "héllo"}))
+        .unwrap();
+    assert_eq!(result, format!("wrote 5 characters to `{path}`"));
+    assert_eq!(ReadFile.call(&json!({"path": path})).unwrap(), "héllo");
+
+    std::fs::write(dir.join("sub/b.md"), "x").unwrap();
+    let sub = dir.join("sub");
+    let sub = sub.to_str().unwrap();
+    assert_eq!(
+        ListFiles.call(&json!({"dir": sub})).unwrap(),
+        format!("{sub}/a.txt\n{sub}/b.md\n")
+    );
+    assert_eq!(
+        ListFiles
+            .call(&json!({"dir": sub, "pattern": "*.md"}))
+            .unwrap(),
+        format!("{sub}/b.md\n")
+    );
+}
+
+#[test]
+fn file_tools_fail_on_missing_or_wrong_arguments() {
+    let cases: [(Box<dyn Tool>, Value, &str); 5] = [
+        (
+            Box::new(ReadFile),
+            json!({}),
+            "missing string argument `path`",
+        ),
+        (
+            Box::new(WriteFile),
+            json!({"content": "x"}),
+            "missing string argument `path`",
+        ),
+        (
+            Box::new(WriteFile),
+            json!({"path": "x"}),
+            "missing string argument `content`",
+        ),
+        (
+            Box::new(ListFiles),
+            json!({"pattern": "*"}),
+            "missing string argument `dir`",
+        ),
+        (
+            Box::new(ListFiles),
+            json!({"dir": ".", "pattern": 1}),
+            "missing string argument `pattern`",
+        ),
+    ];
+    for (mut tool, arguments, expected) in cases {
+        assert_eq!(tool.call(&arguments).unwrap_err(), expected, "{arguments}");
+    }
+}
+
+#[test]
+fn read_file_fails_on_a_missing_file() {
+    let dir = fresh_dir("agent_read_missing");
+    let path = dir.join("none.txt");
+    let err = ReadFile
+        .call(&json!({"path": path.to_str().unwrap()}))
+        .unwrap_err();
+    assert!(err.contains("none.txt"), "{err}");
 }
 
 #[test]
