@@ -507,7 +507,6 @@ pub fn run_process(
         .map_err(|err| format!("cannot start {program}: {err}"))?;
     // The id of the process group is the id of the command.
     let _registered = crate::signals::register(child.id() as i32);
-    crate::signals::kill_if_stopping(child.id() as i32);
 
     // Write stdin and read stdout and stderr in other threads, so a command
     // that prints a lot before it reads its input cannot block forever.

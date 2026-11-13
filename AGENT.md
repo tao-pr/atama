@@ -351,9 +351,12 @@ command runs. `main` calls `signals::install`, which handles `SIGINT`,
 After the signal, `signals::wait_if_stopping` makes a thread that is about
 to start a command, and `main` at the end of the job, wait for the watcher
 thread. So no new command or task starts. A command that started just
-before the signal is killed at once (`signals::kill_if_stopping`). The
+before the signal also gets the signal, because each pass of
+`terminate_groups` reads the list again. The
 background commands of a bash script ignore `SIGINT`, so Ctrl-C kills them
-after `GRACE`. Tests are in `tests/signals.rs` and `tests/cli.rs`. The
+after `GRACE`. Tests are in `tests/signals.rs` and `tests/cli.rs`. In a
+coverage build (`cfg(coverage)`), the watcher thread writes the coverage
+data before Atama stops, so that the coverage of these tests counts. The
 guardrails and the success check command go into the system prompt. The
 loop does not block a tool call that breaks a guardrail yet.
 

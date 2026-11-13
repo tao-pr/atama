@@ -494,13 +494,21 @@ fn bash_sandbox_fails_if_the_working_directory_is_gone() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Runs a job whose only action starts a child process that runs for 30
-/// seconds, and sends `signal` to Atama when the child runs. Returns the
-/// exit status of Atama, the time that Atama took to stop after the
-/// signal, and the id of the child process.
+/// The script of [`signal_during_a_job`] that starts a child process that
+/// runs for 30 seconds, writes its id to `{pid}`, and waits for it.
+#[cfg(unix)]
+const WAIT_FOR_CHILD: &str = "sleep 30 & echo $! > '{pid}'; wait\n";
+
+/// Runs a job whose first task, `Wait`, runs `script`, and sends `signal`
+/// to Atama when the script wrote the id of its child process to `{pid}`.
+/// The task `Next` runs if `Wait` fails, and the task `Last` runs if `Wait`
+/// succeeds. Returns the exit status of Atama, the time that Atama took to
+/// stop after the signal, and the id of the child process. Fails if `Next`
+/// or `Last` ran.
 #[cfg(unix)]
 fn signal_during_a_job(
     name: &str,
+    script: &str,
     signal: i32,
 ) -> (std::process::ExitStatus, std::time::Duration, i32) {
     use std::time::{Duration, Instant};
@@ -508,14 +516,12 @@ fn signal_during_a_job(
     let (dir, job) = job_in_temp_dir(
         name,
         "# Signal\n\n## Wait\n\n- actions:\n  - bash bash {dir}/script.sh\n\n\
-         ## Next\n\n- begin_if: task(Wait) fail\n- actions:\n  - bash touch {dir}/next\n",
+         ## Next\n\n- begin_if: task(Wait) fail\n- actions:\n  - bash touch {dir}/next\n\n\
+         ## Last\n\n- begin_if: task(Wait) succeed\n- actions:\n  - bash touch {dir}/next\n",
     );
     let pid_file = dir.join("child.pid");
-    fs::write(
-        dir.join("script.sh"),
-        format!("sleep 30 & echo $! > '{}'; wait\n", pid_file.display()),
-    )
-    .unwrap();
+    let script = script.replace("{pid}", &pid_file.display().to_string());
+    fs::write(dir.join("script.sh"), script).unwrap();
     let mut atama = Command::new(env!("CARGO_BIN_EXE_atama"))
         .arg(&job)
         .stdout(std::process::Stdio::null())
@@ -548,7 +554,10 @@ fn signal_during_a_job(
         std::thread::sleep(Duration::from_millis(10));
     };
     let took = sent.elapsed();
-    assert!(!dir.join("next").exists(), "the next task ran after the signal");
+    assert!(
+        !dir.join("next").exists(),
+        "the next task ran after the signal"
+    );
     fs::remove_dir_all(dir).unwrap();
     (status, took, child)
 }
@@ -572,7 +581,7 @@ fn still_runs(pid: i32) -> bool {
 fn sigterm_stops_atama_and_the_commands_that_it_runs() {
     use std::os::unix::process::ExitStatusExt;
 
-    let (status, took, child) = signal_during_a_job("sigterm", libc::SIGTERM);
+    let (status, took, child) = signal_during_a_job("sigterm", WAIT_FOR_CHILD, libc::SIGTERM);
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
     assert!(took < atama::signals::GRACE, "{took:?}");
     assert!(!still_runs(child), "the child process {child} still runs");
@@ -585,8 +594,26 @@ fn sigint_stops_atama_and_kills_commands_that_ignore_it() {
 
     // A background command of a script ignores SIGINT, so Atama kills it
     // after the grace time.
-    let (status, took, child) = signal_during_a_job("sigint", libc::SIGINT);
+    let (status, took, child) = signal_during_a_job("sigint", WAIT_FOR_CHILD, libc::SIGINT);
     assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
+    assert!(took >= atama::signals::GRACE, "{took:?}");
+    assert!(!still_runs(child), "the child process {child} still runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn no_task_starts_after_a_signal_even_if_the_command_succeeds() {
+    use std::os::unix::process::ExitStatusExt;
+
+    // The script ends with status 0 on SIGTERM. Its child ignores SIGTERM
+    // and does not hold the output pipes, so the job could go on while
+    // Atama waits for the child.
+    let script = "(trap '' TERM; exec sleep 30 </dev/null >/dev/null 2>&1) & \
+                  echo $! > '{pid}'\n\
+                  trap 'exit 0' TERM\n\
+                  sleep 30 </dev/null >/dev/null 2>&1 & wait\n";
+    let (status, took, child) = signal_during_a_job("sigterm-ok", script, libc::SIGTERM);
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
     assert!(took >= atama::signals::GRACE, "{took:?}");
     assert!(!still_runs(child), "the child process {child} still runs");
 }

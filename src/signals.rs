@@ -51,19 +51,15 @@ mod unix {
     /// If Atama is stopping, waits until the watcher thread stops Atama,
     /// and never returns. Else returns at once.
     pub fn wait_if_stopping() {
-        while stopping() {
-            thread::park();
+        if stopping() {
+            wait_forever();
         }
     }
 
-    /// If Atama is stopping, kills the process group `group` at once. A
-    /// command that started just before the signal can miss the list of
-    /// the watcher thread, so [`crate::actor::run_process`] calls this
-    /// after it registers the group.
-    pub fn kill_if_stopping(group: i32) {
-        if stopping() {
-            // SAFETY: `kill` only sends a signal to the group of a command.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
+    /// Waits until the watcher thread stops Atama.
+    fn wait_forever() -> ! {
+        loop {
+            thread::park();
         }
     }
 
@@ -103,16 +99,24 @@ mod unix {
     /// Sends `signal` to each running process group, waits up to `grace`
     /// until all groups stopped, and kills the groups that still run with
     /// `SIGKILL`. Returns the number of groups that Atama killed.
+    ///
+    /// Each pass reads the list again, and sends `signal` to a group that
+    /// is new on it. So a command that started just before the signal also
+    /// stops.
     pub fn terminate_groups(signal: i32, grace: Duration) -> usize {
-        let groups = running_groups();
-        for group in &groups {
-            // SAFETY: `kill` only sends a signal. A negative id sends it to
-            // the process group that Atama made for one command.
-            unsafe { libc::kill(-group, signal) };
-        }
         let end = Instant::now() + grace;
-        let mut alive = groups.clone();
+        let mut seen = Vec::new();
+        let mut alive = Vec::new();
         loop {
+            for group in running_groups() {
+                if !seen.contains(&group) {
+                    // SAFETY: `kill` only sends a signal. A negative id sends
+                    // it to the process group that Atama made for one command.
+                    unsafe { libc::kill(-group, signal) };
+                    seen.push(group);
+                    alive.push(group);
+                }
+            }
             // SAFETY: signal 0 only asks whether the group still exists.
             alive.retain(|group| unsafe { libc::kill(-group, 0) } == 0);
             if alive.is_empty() || Instant::now() >= end {
@@ -129,17 +133,24 @@ mod unix {
 
     /// Handles `SIGINT`, `SIGTERM` and `SIGHUP` (see the module docs). Call
     /// it once, at the start of `main`.
+    ///
+    /// If Atama cannot make the pipe, it does not handle the signals.
     pub fn install() {
         let mut fds = [0; 2];
         // SAFETY: `fds` has room for the two file descriptors.
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return;
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+            install_with(fds);
         }
-        let [read_end, write_end] = fds;
+    }
+
+    /// Starts the watcher thread on the pipe `fds`, and sets the handler.
+    fn install_with([read_end, write_end]: [i32; 2]) {
         PIPE.store(write_end, Ordering::SeqCst);
         thread::spawn(move || {
             let signal = read_signal(read_end);
             terminate_groups(signal, super::GRACE);
+            #[cfg(coverage)]
+            write_coverage();
             // SAFETY: the default action of the signal stops Atama with it,
             // so that the exit status names the signal.
             unsafe {
@@ -152,6 +163,18 @@ mod unix {
             // handler.
             unsafe { libc::signal(signal, handle as *const () as libc::sighandler_t) };
         }
+    }
+
+    /// Writes the coverage data of a coverage build (`cargo llvm-cov`). A
+    /// process that a signal stops does not write it at exit, so the tests
+    /// of the signals would not count.
+    #[cfg(coverage)]
+    fn write_coverage() {
+        unsafe extern "C" {
+            fn __llvm_profile_write_file() -> i32;
+        }
+        // SAFETY: the function of the coverage runtime takes no arguments.
+        unsafe { __llvm_profile_write_file() };
     }
 
     /// Reads one signal number from the pipe. A read that a signal
@@ -176,8 +199,7 @@ mod unix {
 
 #[cfg(unix)]
 pub use unix::{
-    Registered, install, kill_if_stopping, register, running_groups, stopping, terminate_groups,
-    wait_if_stopping,
+    Registered, install, register, running_groups, stopping, terminate_groups, wait_if_stopping,
 };
 
 /// On other systems, commands have no process groups, and Atama does not
@@ -199,9 +221,7 @@ mod other {
     }
 
     pub fn wait_if_stopping() {}
-
-    pub fn kill_if_stopping(_group: i32) {}
 }
 
 #[cfg(not(unix))]
-pub use other::{Registered, install, kill_if_stopping, register, stopping, wait_if_stopping};
+pub use other::{Registered, install, register, stopping, wait_if_stopping};

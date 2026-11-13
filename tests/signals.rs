@@ -28,9 +28,10 @@ fn still_runs(pid: i32) -> bool {
     true
 }
 
-/// Starts `script` in bash in its own process group, on the list. The
-/// script prints the id of a child process on its first line. Returns that
-/// id. Another thread waits for bash, so that it does not stay a zombie.
+/// Starts `script` in bash in its own process group. The script prints the
+/// id of a child process on its first line. Then the group goes on the
+/// list. Returns the id of the child process. Another thread waits for
+/// bash, so that it does not stay a zombie.
 fn start_group(script: &str) -> (i32, atama::signals::Registered) {
     let mut child = Command::new("bash")
         .args(["-c", script])
@@ -38,11 +39,11 @@ fn start_group(script: &str) -> (i32, atama::signals::Registered) {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let registered = register(child.id() as i32);
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
+    let registered = register(child.id() as i32);
     thread::spawn(move || child.wait());
     (line.trim().parse().unwrap(), registered)
 }
@@ -87,4 +88,22 @@ fn kills_a_group_that_ignores_the_signal() {
         1
     );
     assert!(!still_runs(child));
+}
+
+#[test]
+fn passes_the_signal_on_to_a_group_that_starts_during_the_grace_time() {
+    let _lock = LOCK.lock().unwrap();
+    // This group ignores the signal, so the grace time does not end early.
+    let (stubborn, _first) = start_group("trap '' TERM; sleep 30 & echo $!; wait");
+    let late = thread::spawn(|| {
+        thread::sleep(Duration::from_millis(100));
+        start_group("sleep 30 & echo $!; wait")
+    });
+    assert_eq!(
+        terminate_groups(libc::SIGTERM, Duration::from_millis(600)),
+        1
+    );
+    let (late_child, _second) = late.join().unwrap();
+    assert!(!still_runs(stubborn));
+    assert!(!still_runs(late_child));
 }
