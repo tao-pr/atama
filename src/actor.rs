@@ -225,7 +225,7 @@ impl Actor {
     /// (see [`WebSearchOptions::search`]). The other actors ignore `debug`.
     pub fn act_with(&self, input: &str, debug: Option<&mut dyn Write>) -> Result<String, String> {
         match self {
-            Actor::BashScript { cmd, params } => run_bash(cmd, params, input),
+            Actor::BashScript { cmd, params } => run_bash(cmd, params, input, None),
             Actor::BashSandbox { cmd, params } => run_bash_sandbox(cmd, params, input),
             Actor::ApiCall {
                 verb,
@@ -372,14 +372,25 @@ fn bash_script(cmd: &str, params: &[String]) -> String {
     }
 }
 
-fn run_bash(cmd: &str, params: &[String], input: &str) -> Result<String, String> {
+/// Runs `cmd` with `params` in bash, with `input` on stdin, until
+/// `deadline`, and returns its stdout. [`Actor::BashScript`] runs it
+/// without a deadline, and the `bash` tool of the agent loop with the
+/// deadline of the run.
+///
+/// Fails as [`run_command`] fails.
+pub fn run_bash(
+    cmd: &str,
+    params: &[String],
+    input: &str,
+    deadline: Option<Instant>,
+) -> Result<String, String> {
     let mut command = Command::new("bash");
     command
         .arg("-c")
         .arg(bash_script(cmd, params))
         .arg("bash")
         .args(params);
-    run_command(command, "bash", cmd, input)
+    run_command(command, "bash", cmd, input, deadline)
 }
 
 /// The macOS sandbox profile of [`Actor::BashSandbox`]: no network, no
@@ -422,7 +433,7 @@ fn run_bash_sandbox(cmd: &str, params: &[String], input: &str) -> Result<String,
         .arg(script)
         .arg("bash")
         .args(params);
-    run_command(command, "sandbox-exec", cmd, input)
+    run_command(command, "sandbox-exec", cmd, input, None)
 }
 
 /// Fails, because only macOS has `sandbox-exec`.
@@ -431,19 +442,15 @@ fn run_bash_sandbox(_cmd: &str, _params: &[String], _input: &str) -> Result<Stri
     Err("`bash-sandbox` needs `sandbox-exec`, which only macOS has".to_string())
 }
 
-/// Runs `command` with `input` on stdin, and returns its stdout. `program`
-/// names the program in the error if it cannot start, and `cmd` names the
-/// command in the other errors.
+/// Runs `command` with `input` on stdin, until `deadline` (see
+/// [`run_process`]), and returns its stdout. `program` names the program in
+/// the error if it cannot start, and `cmd` names the command in the other
+/// errors.
 ///
-/// Fails if the program cannot start, or the command exits with a non-zero
-/// status or prints output that is not UTF-8.
-fn run_command(command: Command, program: &str, cmd: &str, input: &str) -> Result<String, String> {
-    run_command_until(command, program, cmd, input, None)
-}
-
-/// Runs `command` like [`run_command`], until `deadline` (see
-/// [`run_process`]).
-fn run_command_until(
+/// Fails if the program cannot start, the command still runs at
+/// `deadline`, or it exits with a non-zero status or prints output that is
+/// not UTF-8.
+fn run_command(
     command: Command,
     program: &str,
     cmd: &str,
@@ -461,17 +468,6 @@ fn run_command_until(
     }
     String::from_utf8(output.stdout)
         .map_err(|_| format!("`{cmd}` printed output that is not UTF-8"))
-}
-
-/// Runs `cmd` in bash like [`Actor::BashScript`], without params and
-/// input, until `deadline`. The `bash` tool of the agent loop uses it.
-///
-/// Fails as [`Actor::BashScript`] fails, or if the command still runs at
-/// `deadline` (see [`run_process`]).
-pub fn run_bash_until(cmd: &str, deadline: Option<Instant>) -> Result<String, String> {
-    let mut command = Command::new("bash");
-    command.arg("-c").arg(bash_script(cmd, &[])).arg("bash");
-    run_command_until(command, "bash", cmd, "", deadline)
 }
 
 /// Runs `command` with `input` on stdin, and returns its exit status,
@@ -564,30 +560,16 @@ fn wait_until(
         }
         let now = Instant::now();
         if now >= deadline {
-            kill_group(child);
+            // The id of the process group is the id of `child`.
+            #[cfg(unix)]
+            crate::signals::kill_group(child.id() as i32, libc::SIGKILL);
+            #[cfg(not(unix))]
+            let _ = child.kill();
             let _ = child.wait();
             return None;
         }
         thread::sleep((deadline - now).min(Duration::from_millis(10)));
     }
-}
-
-/// Kills the process group of `child`, which [`run_process`] made with the
-/// process id of `child` as its id.
-#[cfg(unix)]
-fn kill_group(child: &mut Child) {
-    let group = child.id() as libc::pid_t;
-    // SAFETY: `kill` only sends a signal. A negative id sends it to the
-    // process group of `child`, which has only the command and its children.
-    unsafe {
-        libc::kill(-group, libc::SIGKILL);
-    }
-}
-
-/// Kills `child`. Other systems have no process groups of this type.
-#[cfg(not(unix))]
-fn kill_group(child: &mut Child) {
-    let _ = child.kill();
 }
 
 /// Saves the response body to a file, overwriting any file with the same

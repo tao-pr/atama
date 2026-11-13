@@ -110,25 +110,30 @@ mod unix {
         loop {
             for group in running_groups() {
                 if !seen.contains(&group) {
-                    // SAFETY: `kill` only sends a signal. A negative id sends
-                    // it to the process group that Atama made for one command.
-                    unsafe { libc::kill(-group, signal) };
+                    kill_group(group, signal);
                     seen.push(group);
                     alive.push(group);
                 }
             }
-            // SAFETY: signal 0 only asks whether the group still exists.
-            alive.retain(|group| unsafe { libc::kill(-group, 0) } == 0);
+            // Signal 0 only asks whether the group still exists.
+            alive.retain(|group| kill_group(*group, 0));
             if alive.is_empty() || Instant::now() >= end {
                 break;
             }
             thread::sleep(Duration::from_millis(10));
         }
         for group in &alive {
-            // SAFETY: as above.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
+            kill_group(*group, libc::SIGKILL);
         }
         alive.len()
+    }
+
+    /// Sends `signal` to the process group `group`. Returns whether the
+    /// group exists.
+    pub fn kill_group(group: i32, signal: i32) -> bool {
+        // SAFETY: `kill` only sends a signal. A negative id sends it to the
+        // process group that Atama made for one command.
+        unsafe { libc::kill(-group, signal) == 0 }
     }
 
     /// Handles `SIGINT`, `SIGTERM` and `SIGHUP` (see the module docs). Call
@@ -199,7 +204,8 @@ mod unix {
 
 #[cfg(unix)]
 pub use unix::{
-    Registered, install, register, running_groups, stopping, terminate_groups, wait_if_stopping,
+    Registered, install, kill_group, register, running_groups, stopping, terminate_groups,
+    wait_if_stopping,
 };
 
 /// On other systems, commands have no process groups, and Atama does not

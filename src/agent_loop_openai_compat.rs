@@ -410,27 +410,26 @@ impl<'a> AgentToolLoop<'a> {
             system = format!("{system}\n\n{}", schema.instruction());
         }
         let mut messages = vec![Message::System(system), Message::User(prompt)];
-        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
-        if let Some(schema) = &self.output_schema {
-            checks.push(Box::new(SchemaCheck::new(schema.clone())));
-        }
-        // The index of the check that failed last, and its error.
-        let mut last_failure: Option<(usize, String)> = None;
         let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget);
-        let mut deadline = None;
         if let Some(max) = self.max_time {
             let start = self.started.unwrap_or_else(|| (self.clock)());
             budget = budget.with_time_limit(start, max);
-            deadline = Some(start + max);
         }
+        let deadline = budget.deadline();
         for tool in &mut self.tools {
             tool.set_deadline(deadline);
+        }
+        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
+        if let Some(schema) = &self.output_schema {
+            checks.push(Box::new(SchemaCheck::new(schema.clone())));
         }
         if let Some(command) = &self.success_check {
             checks.push(Box::new(
                 CommandCheck::new(command.clone()).with_deadline(deadline),
             ));
         }
+        // The index of the check that failed last, and its error.
+        let mut last_failure: Option<(usize, String)> = None;
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;

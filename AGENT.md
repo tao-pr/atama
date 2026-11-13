@@ -330,7 +330,7 @@ time is used. `AgentToolLoop::clock` replaces the clock in tests.
 The deadline of the run is its start plus `max_time`. `run_with` gives it
 to each tool with `Tool::set_deadline`, and to the success check with
 `CommandCheck::with_deadline`. The `bash` tool runs its command with
-`actor::run_bash_until`. At the deadline, `actor::run_process` kills the
+`actor::run_bash`, with the deadline. At the deadline, `actor::run_process` kills the
 whole process group of the command with `SIGKILL`, so that the child
 processes stop too, and fails with "`<cmd>` stopped after <n>s, because the
 time limit of the run is used". Tests of the deadline are in

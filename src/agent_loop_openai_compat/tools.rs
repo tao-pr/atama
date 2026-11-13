@@ -7,7 +7,7 @@ use super::Tool;
 use std::time::Instant;
 
 use crate::actor::list_files::DEFAULT_PATTERN;
-use crate::actor::{Actor, AgentType, run_bash_until};
+use crate::actor::{Actor, AgentType, run_bash};
 
 /// Most characters of a tool result that the model gets. A longer result is
 /// cut, so that one command cannot fill the model's context.
@@ -176,7 +176,8 @@ impl Tool for Bash {
     }
 
     fn call(&mut self, arguments: &Value) -> Result<String, String> {
-        let output = run_bash_until(&string_argument(arguments, "command")?, self.deadline)?;
+        let command = string_argument(arguments, "command")?;
+        let output = run_bash(&command, &[], "", self.deadline)?;
         Ok(truncate(output))
     }
 

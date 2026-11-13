@@ -68,6 +68,11 @@ impl RunBudget {
         }
     }
 
+    /// The end of the time limit, if a limit is set.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.time_limit.map(|(start, max)| start + max)
+    }
+
     /// The time that the run used at `now`, and its time limit, if a limit
     /// is set.
     pub fn time_usage(&self, now: Instant) -> Option<(Duration, Duration)> {
@@ -130,11 +135,6 @@ impl RunBudget {
     /// The number of the current iteration, from 1.
     pub fn iteration(&self) -> u32 {
         self.iterations
-    }
-
-    /// The steps that the run started.
-    pub fn steps(&self) -> u32 {
-        self.steps
     }
 
     /// The tokens that the run used, and the token budget, if a budget is

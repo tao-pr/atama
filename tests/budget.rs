@@ -8,12 +8,10 @@ use atama::agent_loop_openai_compat::budget::{RunBudget, StopReason};
 #[test]
 fn counts_steps_until_the_step_limit() {
     let mut budget = RunBudget::new(1, 2, None);
-    assert_eq!(budget.steps(), 0);
     assert_eq!(budget.start_step(), Ok(1));
     assert_eq!(budget.start_step(), Ok(2));
-    assert_eq!(budget.steps(), 2);
     assert_eq!(budget.start_step(), Err(StopReason::Steps { max: 2 }));
-    assert_eq!(budget.steps(), 2);
+    assert_eq!(budget.start_step(), Err(StopReason::Steps { max: 2 }));
 }
 
 #[test]
@@ -114,6 +112,7 @@ fn each_stop_reason_has_an_error_that_names_the_agent() {
 fn stops_when_the_run_used_its_time() {
     let start = Instant::now();
     let budget = RunBudget::new(1, 10, None).with_time_limit(start, Duration::from_secs(60));
+    assert_eq!(budget.deadline(), Some(start + Duration::from_secs(60)));
     assert_eq!(budget.check_time(start), Ok(()));
     assert_eq!(
         budget.time_usage(start + Duration::from_secs(59)),
@@ -134,6 +133,7 @@ fn without_a_time_limit_the_time_never_stops_the_run() {
     let later = Instant::now() + Duration::from_secs(1_000_000);
     assert_eq!(budget.check_time(later), Ok(()));
     assert_eq!(budget.time_usage(later), None);
+    assert_eq!(budget.deadline(), None);
 }
 
 #[test]

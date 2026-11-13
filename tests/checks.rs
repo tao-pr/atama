@@ -182,15 +182,3 @@ fn tail_keeps_the_last_characters() {
         "[cut: the output has 5 characters, these are the last 2]\ndé"
     );
 }
-
-#[test]
-fn command_check_fails_if_the_shell_cannot_start() {
-    let mut check = CommandCheck::new("true".into()).with_shell("/no/such/shell");
-    let CheckResult::Retry { error, .. } = check.check("done") else {
-        panic!("the shell cannot start");
-    };
-    assert!(
-        error.starts_with("cannot start /no/such/shell: "),
-        "{error}"
-    );
-}

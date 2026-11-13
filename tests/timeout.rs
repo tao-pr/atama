@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use atama::AgentToolLoop;
-use atama::actor::{AgentType, run_bash_until, run_process};
+use atama::actor::{AgentType, run_bash, run_process};
 use atama::agent_loop_openai_compat::checks::{CheckResult, CommandCheck, FinalCheck};
 use atama::agent_loop_openai_compat::tools::{Bash, Limited};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
@@ -46,9 +46,12 @@ fn still_runs(pid: &str) -> bool {
 
 #[test]
 fn a_command_that_ends_before_the_deadline_gives_its_output() {
-    assert_eq!(run_bash_until("echo hi", in_ms(10_000)), Ok("hi\n".into()));
-    assert_eq!(run_bash_until("echo hi", None), Ok("hi\n".into()));
-    let err = run_bash_until("echo bad >&2; exit 2", in_ms(10_000)).unwrap_err();
+    assert_eq!(
+        run_bash("echo hi", &[], "", in_ms(10_000)),
+        Ok("hi\n".into())
+    );
+    assert_eq!(run_bash("echo hi", &[], "", None), Ok("hi\n".into()));
+    let err = run_bash("echo bad >&2; exit 2", &[], "", in_ms(10_000)).unwrap_err();
     assert_eq!(
         err,
         "`echo bad >&2; exit 2` failed with exit status: 2: bad"
@@ -58,7 +61,7 @@ fn a_command_that_ends_before_the_deadline_gives_its_output() {
 #[test]
 fn stops_a_command_at_the_deadline() {
     let start = Instant::now();
-    let err = run_bash_until("sleep 10", in_ms(300)).unwrap_err();
+    let err = run_bash("sleep 10", &[], "", in_ms(300)).unwrap_err();
     assert_eq!(
         err,
         "`sleep 10` stopped after 0s, because the time limit of the run is used"
@@ -74,7 +77,7 @@ fn stops_a_command_at_the_deadline() {
 fn stops_a_command_at_once_if_the_deadline_is_past() {
     let start = Instant::now();
     let past = Some(Instant::now());
-    assert!(run_bash_until("sleep 10", past).is_err());
+    assert!(run_bash("sleep 10", &[], "", past).is_err());
     assert!(
         start.elapsed() < Duration::from_secs(3),
         "{:?}",
@@ -86,7 +89,7 @@ fn stops_a_command_at_once_if_the_deadline_is_past() {
 fn stops_the_child_processes_of_the_command_too() {
     let pid_file = fresh_path("timeout_child.pid");
     let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
-    assert!(run_bash_until(&script, in_ms(500)).is_err());
+    assert!(run_bash(&script, &[], "", in_ms(500)).is_err());
     let pid = std::fs::read_to_string(&pid_file).unwrap();
     assert!(
         !still_runs(pid.trim()),

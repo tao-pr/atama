@@ -124,8 +124,6 @@ impl FinalCheck for SchemaCheck {
 /// exit status, and its stdout and stderr together (see [`tail`]).
 pub struct CommandCheck {
     command: String,
-    /// The program that runs the command: `bash`.
-    shell: String,
     /// The deadline of the run, if set.
     deadline: Option<Instant>,
 }
@@ -134,7 +132,6 @@ impl CommandCheck {
     pub fn new(command: String) -> Self {
         CommandCheck {
             command,
-            shell: "bash".to_string(),
             deadline: None,
         }
     }
@@ -147,17 +144,11 @@ impl CommandCheck {
         self
     }
 
-    /// Replaces `bash` with another program. Tests use it.
-    pub fn with_shell(mut self, shell: &str) -> Self {
-        self.shell = shell.to_string();
-        self
-    }
-
     /// Runs the command. Fails with the exit status and the output.
     fn run(&self) -> Result<(), String> {
-        let mut command = Command::new(&self.shell);
+        let mut command = Command::new("bash");
         command.arg("-c").arg(&self.command);
-        let output = run_process(command, &self.shell, &self.command, "", self.deadline)?;
+        let output = run_process(command, "bash", &self.command, "", self.deadline)?;
         if output.status.success() {
             return Ok(());
         }
