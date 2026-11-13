@@ -46,7 +46,7 @@ cargo run -- jobs/sample_autonomous.md
 ## Create Success Checker Script
 
 - actions:
-  - agent:coder model=claude-haiku task="Write ./output/autonomous/check_report.py. It reads the JSON report in its first argument. For each of python, nodejs and postgresql, it downloads https://endoflife.date/api/<product>.json with urllib, and keeps the cycles whose eol is false or a date after today, in the order of the source. The report must have generated equal to today as YYYY-MM-DD, and products, which maps each product to its cycles. Each cycle has cycle, latest, eol (the date, or false) and days_left (days from today to eol, or null if eol is false). The script exits with 0 if the report matches. Else it prints the first difference and exits with 1."
+  - agent:coder model=claude-haiku max_steps=15 task="Write ./output/autonomous/check_report.py. It reads the JSON report in its first argument. For each of python, nodejs and postgresql, it downloads https://endoflife.date/api/<product>.json with urllib, and keeps the cycles whose eol is false or a date after today, in the order of the source. The report must have generated equal to today as YYYY-MM-DD, and products, which maps each product to its cycles. Each cycle has cycle, latest, eol (the date, or false) and days_left (days from today to eol, or null if eol is false). The script exits with 0 if the report matches. Else it prints the first difference and exits with 1. When the script compiles with python3 -m py_compile, reply with one sentence."
   - bash test -f ./output/autonomous/check_report.py
 
 ## Autonomous Report
