@@ -38,6 +38,7 @@
 //! different port, change the URL.
 
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -51,9 +52,9 @@ pub mod checks;
 pub mod openai;
 pub mod tools;
 
-use agent_options::{AgentConfig, DEFAULT_MAX_STEPS};
+use agent_options::{AgentConfig, DEFAULT_MAX_STEPS, format_duration};
 use budget::{RunBudget, StopReason};
-use checks::{FinalCheck, Rejection, SchemaCheck};
+use checks::{CommandCheck, FinalCheck, Rejection, SchemaCheck};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +104,12 @@ pub trait Tool {
     fn parameters(&self) -> Value;
     /// Runs the tool and returns its result for the model.
     fn call(&mut self, arguments: &Value) -> Result<String, String>;
+    /// Whether the model can call the tool now. A request offers only the
+    /// available tools. A tool at its call limit is not available (see
+    /// [`tools::Limited`]).
+    fn available(&self) -> bool {
+        true
+    }
 }
 
 /// A chat model that can call tools.
@@ -117,6 +124,20 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// The most iterations of one run. 1 for `coder` and `summarizer`.
+    max_iterations: u32,
+    /// The most wall clock time of one run, if set.
+    max_time: Option<Duration>,
+    /// The start of the action, for the time limit. `None` makes
+    /// [`AgentToolLoop::run_with`] start the time when it starts.
+    started: Option<Instant>,
+    /// Gives the current time. Tests replace it.
+    clock: Box<dyn Fn() -> Instant + 'a>,
+    /// The bash command of the success check, if set (see
+    /// [`checks::CommandCheck`]).
+    success_check: Option<String>,
+    /// The guardrails for the system prompt, if set.
+    guardrails: Option<String>,
     /// The most tokens that one run can use, if set.
     token_budget: Option<u64>,
     /// The `reasoning_effort` that the client sends, for debug output only.
@@ -141,6 +162,12 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            max_iterations: 1,
+            max_time: None,
+            started: None,
+            clock: Box::new(Instant::now),
+            success_check: None,
+            guardrails: None,
             token_budget: None,
             reasoning_effort: None,
             schema_block: None,
@@ -189,6 +216,43 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets the most iterations of one run. After a failed success check,
+    /// the next iteration starts.
+    pub fn max_iterations(mut self, max_iterations: u32) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    /// Sets the most wall clock time of one run. `None` sets no limit.
+    /// The loop examines the time before each request and before each tool
+    /// call.
+    pub fn max_time(mut self, max_time: Option<Duration>) -> Self {
+        self.max_time = max_time;
+        self
+    }
+
+    /// Replaces the clock of the time limit. Tests use it so that they do
+    /// not need to wait.
+    pub fn clock(mut self, clock: impl Fn() -> Instant + 'a) -> Self {
+        self.clock = Box::new(clock);
+        self
+    }
+
+    /// Sets the bash command of the success check. The check runs on each
+    /// reply without tool calls, and a failed check starts the next
+    /// iteration (see [`checks::CommandCheck`]).
+    pub fn success_check(mut self, command: Option<String>) -> Self {
+        self.success_check = command;
+        self
+    }
+
+    /// Sets the guardrails, rules in natural language that the loop puts
+    /// into the system prompt.
+    pub fn guardrails(mut self, guardrails: Option<String>) -> Self {
+        self.guardrails = guardrails;
+        self
+    }
+
     /// Sets the most tokens that one run can use. The loop adds up the
     /// tokens of each reply (see [`Reply::tokens`]). It does not send a new
     /// request after the run used `token_budget` tokens or more, so one run
@@ -215,9 +279,14 @@ impl<'a> AgentToolLoop<'a> {
         }
     }
 
-    /// Names of the tools that the model can call.
+    /// Names of the tools that the model can call now (see
+    /// [`Tool::available`]).
     pub fn tool_names(&self) -> Vec<&str> {
-        self.tools.iter().map(|tool| tool.name()).collect()
+        self.tools
+            .iter()
+            .filter(|tool| tool.available())
+            .map(|tool| tool.name())
+            .collect()
     }
 
     /// Runs the agent with `params` from the action statement, the model
@@ -252,8 +321,15 @@ impl<'a> AgentToolLoop<'a> {
         input: &str,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
+        self.started = Some((self.clock)());
         let config = AgentConfig::from_params(self.agent, params, profile, env)?;
         self.profile = Some(config.profile.clone());
+        if let Some(options) = &config.autonomous {
+            self.max_iterations = options.max_iterations;
+            self.max_time = Some(options.max_time);
+            self.success_check = Some(options.success_check.clone());
+            self.guardrails = options.guardrails.clone();
+        }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
@@ -294,11 +370,17 @@ impl<'a> AgentToolLoop<'a> {
     /// counts the tokens of each reply, and stops before a request if the
     /// run used the budget.
     ///
+    /// With a success check (see [`AgentToolLoop::success_check`]), a reply
+    /// without tool calls ends an iteration. If the check fails, the model
+    /// gets the reason, and the next iteration starts. The guardrails (see
+    /// [`AgentToolLoop::guardrails`]) are in the system prompt.
+    ///
     /// Fails if the task and the input are both empty, the client fails, or
-    /// the model has no final reply, or no reply that matches the schema,
-    /// after `max_steps` replies. With a token budget, it also fails if a
-    /// reply has no token count, or the run used the budget before the
-    /// final reply.
+    /// the model has no final reply, or no reply that passes the checks,
+    /// after `max_steps` replies or `max_iterations` iterations. With a
+    /// token budget, it also fails if a reply has no token count, or the run
+    /// used the budget before the final reply. With a time limit, it fails
+    /// if the run used the time before a request or a tool call.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -308,6 +390,18 @@ impl<'a> AgentToolLoop<'a> {
         let prompt = user_prompt(task, input)
             .ok_or_else(|| format!("`{}` needs `task=` or an input", self.label()))?;
         let mut system = system_prompt(self.agent).to_string();
+        if let Some(command) = &self.success_check {
+            system = format!(
+                "{system}\n\nWhen you reply without tool calls, the success check \
+                 `{command}` runs. If it exits with status 0, the task is done. Else you get \
+                 its output, and you continue the work."
+            );
+        }
+        if let Some(guardrails) = &self.guardrails {
+            system = format!(
+                "{system}\n\nGuardrails. You must obey these rules in all your work:\n{guardrails}"
+            );
+        }
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
         }
@@ -316,17 +410,26 @@ impl<'a> AgentToolLoop<'a> {
         if let Some(schema) = &self.output_schema {
             checks.push(Box::new(SchemaCheck::new(schema.clone())));
         }
+        if let Some(command) = &self.success_check {
+            checks.push(Box::new(CommandCheck::new(command.clone())));
+        }
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
-        let mut budget = RunBudget::new(1, self.max_steps, self.token_budget);
+        let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget);
+        if let Some(max) = self.max_time {
+            let start = self.started.unwrap_or_else(|| (self.clock)());
+            budget = budget.with_time_limit(start, max);
+        }
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
         loop {
-            let step = match budget.start_step() {
+            let now = (self.clock)();
+            let step = match budget.check_time(now).and_then(|()| budget.start_step()) {
                 Ok(step) => step,
                 Err(reason) => return Err(self.stop_error(&reason, &checks, last_failure)),
             };
+            let at = self.position(&budget, step);
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
@@ -336,8 +439,11 @@ impl<'a> AgentToolLoop<'a> {
                 let format = self.output_schema.as_ref().map_or(String::new(), |schema| {
                     format!(", output_schema: {}", schema.name)
                 });
+                let time = budget.time_usage(now).map_or(String::new(), |(used, max)| {
+                    format!(", {}s of {}", used.as_secs(), format_duration(max))
+                });
                 self.write_debug(format!(
-                    "=== {} step {step}: request ({} messages, {} new, tools: {tools}{effort}{format}) ===\n{new}",
+                    "=== {} {at}: request ({} messages, {} new, tools: {tools}{effort}{format}{time}) ===\n{new}",
                     self.label(),
                     messages.len(),
                     messages.len() - sent,
@@ -357,7 +463,7 @@ impl<'a> AgentToolLoop<'a> {
                     format!(", {used} of {limit} tokens used")
                 });
                 self.write_debug(format!(
-                    "=== {} step {step}: response ({} tool calls{tokens}{used}) ===\n{json}",
+                    "=== {} {at}: response ({} tool calls{tokens}{used}) ===\n{json}",
                     self.label(),
                     reply.tool_calls.len()
                 ));
@@ -373,10 +479,24 @@ impl<'a> AgentToolLoop<'a> {
                     Err(rejection) => rejection,
                 };
                 self.write_debug(format!(
-                    "=== {} step {step}: {} ===\n{error}",
+                    "=== {} {at}: {} ===\n{error}",
                     self.label(),
                     checks[index].rejection()
                 ));
+                let mut message = message;
+                if checks[index].ends_iteration() {
+                    match budget.next_iteration() {
+                        Ok(iteration) => {
+                            message = format!(
+                                "{message}\nThis is iteration {iteration} of {}.",
+                                self.max_iterations
+                            );
+                        }
+                        Err(reason) => {
+                            return Err(self.stop_error(&reason, &checks, Some((index, error))));
+                        }
+                    }
+                }
                 messages.push(Message::Assistant(reply));
                 messages.push(Message::User(message));
                 last_failure = Some((index, error));
@@ -386,6 +506,9 @@ impl<'a> AgentToolLoop<'a> {
             messages.push(Message::Assistant(reply));
             let count = calls.len();
             for (index, call) in calls.into_iter().enumerate() {
+                if let Err(reason) = budget.check_time((self.clock)()) {
+                    return Err(self.stop_error(&reason, &checks, last_failure));
+                }
                 let result = self.call_tool(&call);
                 if self.debug.is_some() {
                     let outcome = match &result {
@@ -393,7 +516,7 @@ impl<'a> AgentToolLoop<'a> {
                         Err(err) => format!("error: {err}"),
                     };
                     self.write_debug(format!(
-                        "=== {} step {step}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
+                        "=== {} {at}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
                         self.label(),
                         index + 1,
                         call.name,
@@ -411,21 +534,42 @@ impl<'a> AgentToolLoop<'a> {
     }
 
     /// The error of a run that stops for `reason`. If the run used all its
-    /// steps after a failed final check, the error names that check and its
-    /// last error.
+    /// steps or iterations after a failed final check, the error names that
+    /// check and its last error. If the run used its tokens or its time
+    /// after a failed success check, the error adds the last error of the
+    /// check.
     fn stop_error(
         &self,
         reason: &StopReason,
         checks: &[Box<dyn FinalCheck>],
         last_failure: Option<(usize, String)>,
     ) -> String {
+        let label = self.label();
         match (reason, last_failure) {
             (StopReason::Steps { max }, Some((index, error))) => format!(
-                "`{}` {} in {max} steps, the last error: {error}",
-                self.label(),
+                "`{label}` {} in {max} steps, the last error: {error}",
                 checks[index].failure()
             ),
-            (reason, _) => reason.message(&self.label()),
+            (StopReason::Iterations { max }, Some((index, error))) => format!(
+                "`{label}` {} in {max} iterations, the last error: {error}",
+                checks[index].failure()
+            ),
+            (StopReason::Tokens { .. } | StopReason::Time { .. }, Some((index, error)))
+                if checks[index].ends_iteration() =>
+            {
+                format!("{}, the last error: {error}", reason.message(&label))
+            }
+            (reason, _) => reason.message(&label),
+        }
+    }
+
+    /// The position of a step in debug headers: `step 3`, or
+    /// `iteration 2 step 3` if the run can have more than one iteration.
+    fn position(&self, budget: &RunBudget, step: u32) -> String {
+        if self.max_iterations > 1 {
+            format!("iteration {} step {step}", budget.iteration())
+        } else {
+            format!("step {step}")
         }
     }
 
@@ -486,6 +630,12 @@ fn system_prompt(agent: AgentType) -> &'static str {
             "You are a coding agent that works in the current directory. Use the \
              tools to read, change and test code for the task. When you are done, \
              reply with a short summary of the changes, without tool calls."
+        }
+        AgentType::Autonomous => {
+            "You are an autonomous agent that works in the current directory. Nobody \
+             watches you while you work. Use the tools to do the task step by step. Read \
+             before you change, and test your changes. When you think that the task is \
+             done, reply with a short summary of the work, without tool calls."
         }
         AgentType::Summarizer => {
             "You are a summarizing agent. The user message has an instruction, an \

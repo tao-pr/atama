@@ -81,6 +81,9 @@ impl ChatClient for OpenAiClient {
 /// If `output_schema` is set, the body has its `response_format` (see
 /// [`OutputSchema::response_format`]), which asks the server for a reply
 /// that matches the schema.
+///
+/// The `tools` field has only the available tools (see
+/// [`Tool::available`]). Without available tools, the body has no `tools`.
 pub fn request_body(
     model: &str,
     messages: &[Message],
@@ -92,6 +95,7 @@ pub fn request_body(
         "model": model,
         "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
     });
+    let tools: Vec<_> = tools.iter().filter(|tool| tool.available()).collect();
     if !tools.is_empty() {
         body["tools"] = tools
             .iter()

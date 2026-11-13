@@ -2,9 +2,12 @@
 //! `src/agent_loop_openai_compat/agent_options.rs`.
 
 use atama::actor::{Actor, AgentType};
+use std::time::Duration;
+
 use atama::agent_loop_openai_compat::agent_options::{
-    AgentConfig, DEFAULT_EXPERTISE, DEFAULT_MAX_STEPS, DEFAULT_SUMMARIZER_PROMPT, MaxOutput,
-    SummarizerOptions,
+    AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_SUMMARIZER_PROMPT,
+    MaxOutput, SummarizerOptions, format_duration, parse_duration,
 };
 use atama::profile::ModelProfile;
 
@@ -167,7 +170,8 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
-             `expertise=`, `max_output=`",
+             `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
+             `guardrails=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -235,6 +239,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         task: "task".into(),
         thinking: None,
         output_schema: None,
+        autonomous: None,
     };
     assert_eq!(
         config.summary(),
@@ -378,7 +383,8 @@ fn rejects_invalid_summarizer_options() {
             AgentType::Summarizer,
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
-             `expertise=`, `max_output=`"
+             `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
+             `guardrails=`"
                 .into(),
         ),
         (
@@ -448,4 +454,144 @@ fn summarizer_task_has_the_expertise_and_the_length_limit() {
         options(None).task("", " \n"),
         Err("`agent:summarizer` needs an input to summarize".to_string())
     );
+}
+
+// autonomous
+
+fn autonomous(words: &[&str]) -> Result<AgentConfig, String> {
+    AgentConfig::from_params(
+        AgentType::Autonomous,
+        &params(words),
+        Some(&profile()),
+        &no_env,
+    )
+}
+
+#[test]
+fn autonomous_reads_its_options_with_defaults() {
+    let config = autonomous(&["model=m", "success_check=cargo test"]).unwrap();
+    assert_eq!(config.max_steps, DEFAULT_AUTONOMOUS_MAX_STEPS);
+    assert_eq!(
+        config.autonomous,
+        Some(AutonomousOptions {
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            max_time: DEFAULT_MAX_TIME,
+            success_check: "cargo test".into(),
+            guardrails: None,
+        })
+    );
+    assert!(config.summarizer.is_none());
+
+    let config = autonomous(&[
+        "model=m",
+        "success_check=true",
+        "max_iterations=2",
+        "max_time=90s",
+        "max_steps=7",
+        "guardrails=Do not push.",
+    ])
+    .unwrap();
+    assert_eq!(config.max_steps, 7);
+    assert_eq!(
+        config.autonomous,
+        Some(AutonomousOptions {
+            max_iterations: 2,
+            max_time: Duration::from_secs(90),
+            success_check: "true".into(),
+            guardrails: Some("Do not push.".into()),
+        })
+    );
+    assert_eq!(
+        config.summary(),
+        "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
+         max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nguardrails: Do not push."
+    );
+    let config = autonomous(&["model=m", "success_check=true"]).unwrap();
+    assert!(
+        config
+            .summary()
+            .ends_with("\nmax_time: 30m\nsuccess_check: true\nguardrails: not set")
+    );
+}
+
+#[test]
+fn autonomous_rejects_invalid_options() {
+    let cases = [
+        (
+            vec!["model=m"],
+            "`agent:autonomous` needs `success_check=<command>`, a bash command that exits \
+             with status 0 when the task is done",
+        ),
+        (
+            vec!["model=m", "success_check=true", "max_iterations=0"],
+            "`max_iterations=0` is not a positive number",
+        ),
+        (
+            vec!["model=m", "success_check=true", "max_time=10"],
+            "`max_time=10` is not a duration, expected a positive number and a unit as in \
+             `90s`, `20m` or `1h`",
+        ),
+        (
+            vec!["model=m", "success_check=true", "expertise=law"],
+            "option `expertise` works only with `agent:summarizer`",
+        ),
+    ];
+    for (words, expected) in cases {
+        assert_eq!(
+            autonomous(&words).err().as_deref(),
+            Some(expected),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
+fn other_agents_reject_the_options_of_autonomous() {
+    for agent in [AgentType::Coder, AgentType::Summarizer] {
+        for option in [
+            "max_iterations=2",
+            "max_time=1m",
+            "success_check=true",
+            "guardrails=x",
+        ] {
+            let key = option.split_once('=').unwrap().0;
+            let err = AgentConfig::from_params(
+                agent,
+                &params(&["model=m", option]),
+                Some(&profile()),
+                &no_env,
+            )
+            .err();
+            assert_eq!(
+                err,
+                Some(format!("option `{key}` works only with `agent:autonomous`")),
+                "{agent} {option}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parses_and_formats_durations() {
+    let cases = [("90s", 90), ("20m", 1200), ("1h", 3600), ("2h", 7200)];
+    for (text, seconds) in cases {
+        assert_eq!(
+            parse_duration(text),
+            Ok(Duration::from_secs(seconds)),
+            "{text}"
+        );
+    }
+    for text in ["", "s", "0m", "-1m", "1.5h", "10", "10d", "1é"] {
+        assert!(parse_duration(text).is_err(), "{text}");
+    }
+    let cases = [
+        (90, "90s"),
+        (1200, "20m"),
+        (3600, "1h"),
+        (3660, "61m"),
+        (0, "0s"),
+    ];
+    for (seconds, text) in cases {
+        assert_eq!(format_duration(Duration::from_secs(seconds)), text);
+    }
 }

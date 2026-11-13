@@ -131,7 +131,7 @@ its own output. The main actor types are:
 - `BashSandbox` (`bash-sandbox <cmd> [args...]`) runs a command in bash inside `sandbox-exec`, on macOS only. The profile, `src/actor/bash_sandbox.sb`, denies the network, `sudo`, `su` and `login`, and files outside the working directory, except the system directories that programs need. `run_bash_sandbox` in `src/actor.rs` sets `PATH` to `SANDBOX_PATH` and stops if the user is root.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
-- `AgentTool` (`agent:<type> ...`) runs an agent, `coder` or `summarizer`. The output is the final reply of the model.
+- `AgentTool` (`agent:<type> ...`) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -182,8 +182,9 @@ Each param of an agent action is an option. Every agent needs
 `model=<profile>` and takes `task=`, `max_steps=`, `token_budget=`,
 `thinking=` and `output_schema=`, and a
 `summarizer` agent also takes
-`expertise=` and `max_output=`. A `coder` agent fails on these two options
-(`only_for`). A value can be in double quotes, so that it can have spaces,
+`expertise=` and `max_output=`. An `autonomous` agent also takes
+`success_check=`, `max_iterations=`, `max_time=` and `guardrails=`. Other
+agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
 `src/parser.rs`) splits the params of an `agent:` line at whitespace, but
@@ -251,6 +252,13 @@ tool by its name: `bash`, `read_file`, `write_file` and `list_files`.
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
   field, so the model can only reply with text.
+- `autonomous` gets `AUTONOMOUS_DEFAULT_TOOLS`: `bash`, `read_file`,
+  `write_file` and `list_files`. Each one is in a `tools::Limited`, with
+  `DEFAULT_MAX_CALLS` (50) and `DEFAULT_MAX_FAILURES` (10).
+
+`Limited` counts the calls and the failed calls of a tool. A call at a
+limit fails and does not run the tool. A tool at a limit is not available
+(`Tool::available`), so `request_body` and `tool_names` leave it out.
 
 The tools run the same code as the actions of a job file. `bash` runs an
 `Actor::BashScript`. `read_file`, `write_file` and `list_files` run
@@ -297,6 +305,35 @@ does not ask the model.
 Now, the expertise is only the name of a field in the task. A `TAOTODO`
 comment on `SummarizerOptions::expertise` marks the plan to load domain
 expertise as skills later.
+
+### The `autonomous` agent
+
+An `autonomous` agent works in iterations until its success check passes.
+It takes `success_check=<command>` (required), `max_iterations=<n>`
+(default `DEFAULT_MAX_ITERATIONS`, 5), `max_time=<duration>` (default
+`DEFAULT_MAX_TIME`, 30 minutes) and `guardrails=<text>`. Its default
+`max_steps` is `DEFAULT_AUTONOMOUS_MAX_STEPS` (50). `AgentConfig::from_params`
+reads these options into `AutonomousOptions` only for `autonomous`. Other
+agent types fail on them (`only_for`). `parse_duration` reads `90s`, `20m`
+or `1h`, and `format_duration` writes it back.
+
+`checks::CommandCheck` runs the success check with `bash -c`. It is a
+`FinalCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
+`RunBudget::next_iteration`, and gives the model the exit status and the
+end of stdout and stderr (`checks::tail`, `MAX_CHECK_CHARS`). The output
+schema check runs first, and its failure does not end the iteration.
+
+`run_loop_with_env` starts the time when the action starts.
+`RunBudget::check_time` stops the run before a request or a tool call if the
+time is used. `AgentToolLoop::clock` replaces the clock in tests. The
+guardrails and the success check command go into the system prompt. The
+loop does not block a tool call that breaks a guardrail yet.
+
+The debug headers of a run with more than one iteration name the
+iteration, as in `iteration 2 step 3`. With a time limit, the request
+header shows the used time, as in `41s of 30m`. Tests of the agent are in
+`tests/autonomous.rs`. The plan of the next phases is in
+`PLAN-autonomous-loop.md`.
 
 ### Token budget
 

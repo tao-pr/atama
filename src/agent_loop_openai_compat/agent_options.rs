@@ -4,18 +4,27 @@
 //! [`AgentConfig::from_params`] reads the options of an agent. It reads the
 //! options of a `summarizer` agent into [`SummarizerOptions`].
 
+use std::time::Duration;
+
 use crate::actor::AgentType;
 use crate::profile::ModelProfile;
 
 /// Most model replies that one run of the loop asks for.
 pub const DEFAULT_MAX_STEPS: u32 = 10;
+/// Most model replies of one run of an `autonomous` agent, in all its
+/// iterations.
+pub const DEFAULT_AUTONOMOUS_MAX_STEPS: u32 = 50;
+/// Most iterations of one run of an `autonomous` agent.
+pub const DEFAULT_MAX_ITERATIONS: u32 = 5;
+/// Most wall clock time of one run of an `autonomous` agent.
+pub const DEFAULT_MAX_TIME: Duration = Duration::from_secs(30 * 60);
 /// Expertise of a `summarizer` agent if the action has no `expertise=`.
 pub const DEFAULT_EXPERTISE: &str = "general";
 /// Instruction of a `summarizer` agent if the action has no `task=`.
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 8] = [
+const OPTION_KEYS: [&str; 12] = [
     "model",
     "max_steps",
     "token_budget",
@@ -24,6 +33,10 @@ const OPTION_KEYS: [&str; 8] = [
     "output_schema",
     "expertise",
     "max_output",
+    "max_iterations",
+    "max_time",
+    "success_check",
+    "guardrails",
 ];
 
 /// The configuration of one run, read from the action's params, its model
@@ -63,6 +76,102 @@ pub struct AgentConfig {
     /// job, or the path of a JSON schema file (see [`crate::schema::load`]).
     /// `None` lets the model reply with any text.
     pub output_schema: Option<String>,
+    /// The options of an `autonomous` agent. `None` for other agent types.
+    pub autonomous: Option<AutonomousOptions>,
+}
+
+/// The options of an `autonomous` agent: its limits, its success check and
+/// its guardrails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutonomousOptions {
+    /// From `max_iterations=<n>`. The default is [`DEFAULT_MAX_ITERATIONS`].
+    pub max_iterations: u32,
+    /// From `max_time=<duration>`, as in `90s`, `20m` or `1h`. The default
+    /// is [`DEFAULT_MAX_TIME`].
+    pub max_time: Duration,
+    /// From `success_check=<command>`: a bash command. Exit status 0 means
+    /// that the task is done.
+    pub success_check: String,
+    /// From `guardrails=<text>`: rules that the agent must obey, in natural
+    /// language. The loop puts them into the system prompt.
+    pub guardrails: Option<String>,
+}
+
+impl AutonomousOptions {
+    /// Reads the options from the values of `max_iterations=`,
+    /// `max_time=`, `success_check=` and `guardrails=`.
+    ///
+    /// Fails if a value is invalid, or there is no `success_check=`.
+    fn from_values(
+        max_iterations: Option<String>,
+        max_time: Option<String>,
+        success_check: Option<String>,
+        guardrails: Option<String>,
+    ) -> Result<Self, String> {
+        let success_check = success_check.ok_or_else(|| {
+            "`agent:autonomous` needs `success_check=<command>`, a bash command that exits \
+             with status 0 when the task is done"
+                .to_string()
+        })?;
+        Ok(AutonomousOptions {
+            max_iterations: match max_iterations {
+                None => DEFAULT_MAX_ITERATIONS,
+                Some(value) => positive("max_iterations", &value)?,
+            },
+            max_time: match max_time {
+                None => DEFAULT_MAX_TIME,
+                Some(value) => parse_duration(&value)?,
+            },
+            success_check,
+            guardrails,
+        })
+    }
+}
+
+/// Reads a duration: a positive number and a unit, `s`, `m` or `h`, as in
+/// `90s`, `20m` or `1h`.
+pub fn parse_duration(value: &str) -> Result<Duration, String> {
+    let invalid = || {
+        format!(
+            "`max_time={value}` is not a duration, expected a positive number and a unit \
+             as in `90s`, `20m` or `1h`"
+        )
+    };
+    let unit = value.chars().last().ok_or_else(invalid)?;
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 60 * 60,
+        _ => return Err(invalid()),
+    };
+    let count: u64 = value[..value.len() - 1]
+        .parse()
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(invalid)?;
+    Ok(Duration::from_secs(count * seconds))
+}
+
+/// Writes a duration as `max_time=` reads it: in hours, minutes or seconds,
+/// the largest unit that has no rest, as in `1h`, `20m` or `90s`.
+pub fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds > 0 && seconds.is_multiple_of(3600) {
+        format!("{}h", seconds / 3600)
+    } else if seconds > 0 && seconds.is_multiple_of(60) {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+/// Reads the value of the option `key` as a number greater than 0.
+fn positive(key: &str, value: &str) -> Result<u32, String> {
+    value
+        .parse()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("`{key}={value}` is not a positive number"))
 }
 
 /// The options of a `summarizer` agent: the field of the reader, and how
@@ -201,6 +310,10 @@ struct Values {
     output_schema: Option<String>,
     expertise: Option<String>,
     max_output: Option<String>,
+    max_iterations: Option<String>,
+    max_time: Option<String>,
+    success_check: Option<String>,
+    guardrails: Option<String>,
 }
 
 impl Values {
@@ -225,6 +338,10 @@ impl Values {
                 "output_schema" => &mut values.output_schema,
                 "expertise" => &mut values.expertise,
                 "max_output" => &mut values.max_output,
+                "max_iterations" => &mut values.max_iterations,
+                "max_time" => &mut values.max_time,
+                "success_check" => &mut values.success_check,
+                "guardrails" => &mut values.guardrails,
                 _ => {
                     return Err(format!(
                         "unknown option `{key}`, expected {}",
@@ -269,6 +386,10 @@ impl AgentConfig {
             output_schema,
             expertise,
             max_output,
+            max_iterations,
+            max_time,
+            success_check,
+            guardrails,
         } = Values::read(params)?;
 
         // The options of one agent type only control that agent, so another
@@ -279,16 +400,29 @@ impl AgentConfig {
                 &[("expertise", &expertise), ("max_output", &max_output)],
             )?;
         }
+        if agent != AgentType::Autonomous {
+            only_for(
+                AgentType::Autonomous,
+                &[
+                    ("max_iterations", &max_iterations),
+                    ("max_time", &max_time),
+                    ("success_check", &success_check),
+                    ("guardrails", &guardrails),
+                ],
+            )?;
+        }
         let summarizer = (agent == AgentType::Summarizer)
             .then(|| SummarizerOptions::from_values(expertise, max_output))
             .transpose()?;
+        let autonomous = (agent == AgentType::Autonomous)
+            .then(|| {
+                AutonomousOptions::from_values(max_iterations, max_time, success_check, guardrails)
+            })
+            .transpose()?;
         let max_steps = match max_steps {
+            None if agent == AgentType::Autonomous => DEFAULT_AUTONOMOUS_MAX_STEPS,
             None => DEFAULT_MAX_STEPS,
-            Some(value) => value
-                .parse()
-                .ok()
-                .filter(|steps| *steps > 0)
-                .ok_or_else(|| format!("`max_steps={value}` is not a positive number"))?,
+            Some(value) => positive("max_steps", &value)?,
         };
         let token_budget = token_budget
             .as_deref()
@@ -324,6 +458,7 @@ impl AgentConfig {
             task: task.unwrap_or_default(),
             thinking,
             output_schema,
+            autonomous,
         })
     }
 }
@@ -359,6 +494,15 @@ impl AgentConfig {
             summary.push_str(&format!(
                 "\nexpertise: {}\nmax_output: {max_output}",
                 options.expertise
+            ));
+        }
+        if let Some(options) = &self.autonomous {
+            summary.push_str(&format!(
+                "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nguardrails: {}",
+                options.max_iterations,
+                format_duration(options.max_time),
+                options.success_check,
+                options.guardrails.as_deref().unwrap_or("not set"),
             ));
         }
         summary

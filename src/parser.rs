@@ -722,12 +722,14 @@ impl FromStr for AgentType {
         match s {
             "coder" => Ok(AgentType::Coder),
             "summarizer" => Ok(AgentType::Summarizer),
+            "autonomous" => Ok(AgentType::Autonomous),
             "websearch" => Err(
                 "`agent:websearch` is now the `websearch` action, because it asks no model"
                     .to_string(),
             ),
             _ => Err(format!(
-                "unknown agent type `{s}`, expected `agent:coder` or `agent:summarizer`"
+                "unknown agent type `{s}`, expected `agent:coder`, `agent:summarizer` or \
+                 `agent:autonomous`"
             )),
         }
     }

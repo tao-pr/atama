@@ -5,12 +5,18 @@
 //! tool calls. `max_steps` counts the steps of the whole run, in all
 //! iterations. `coder` and `summarizer` runs have one iteration.
 
+use std::time::{Duration, Instant};
+
+use super::agent_options::format_duration;
+
 /// The limits of one run, and what the run used of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunBudget {
     max_iterations: u32,
     max_steps: u32,
     token_budget: Option<u64>,
+    /// The start of the run and its most wall clock time, if set.
+    time_limit: Option<(Instant, Duration)>,
     iterations: u32,
     steps: u32,
     tokens: u64,
@@ -27,6 +33,8 @@ pub enum StopReason {
     MissingTokens { limit: u64 },
     /// The run used all its iterations.
     Iterations { max: u32 },
+    /// The run used its time limit.
+    Time { max: Duration },
 }
 
 impl RunBudget {
@@ -37,10 +45,34 @@ impl RunBudget {
             max_iterations,
             max_steps,
             token_budget,
+            time_limit: None,
             iterations: 1,
             steps: 0,
             tokens: 0,
         }
+    }
+
+    /// Sets a time limit: the run can work for `max` from `start`.
+    pub fn with_time_limit(mut self, start: Instant, max: Duration) -> Self {
+        self.time_limit = Some((start, max));
+        self
+    }
+
+    /// Fails if the run used its time limit at `now`.
+    pub fn check_time(&self, now: Instant) -> Result<(), StopReason> {
+        match self.time_limit {
+            Some((start, max)) if now.saturating_duration_since(start) >= max => {
+                Err(StopReason::Time { max })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The time that the run used at `now`, and its time limit, if a limit
+    /// is set.
+    pub fn time_usage(&self, now: Instant) -> Option<(Duration, Duration)> {
+        self.time_limit
+            .map(|(start, max)| (now.saturating_duration_since(start), max))
     }
 
     /// Starts the next step, and returns its number, from 1.
@@ -128,6 +160,10 @@ impl StopReason {
             StopReason::Iterations { max } => {
                 format!("`{label}` did not finish in {max} iterations")
             }
+            StopReason::Time { max } => format!(
+                "`{label}` did not finish in its time limit of {}",
+                format_duration(*max)
+            ),
         }
     }
 }

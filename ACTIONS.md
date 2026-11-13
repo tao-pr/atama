@@ -18,7 +18,7 @@ action fails, the task fails, and the next actions of the task do not run.
 | [`download`](#download) | Downloads a file. | The file path |
 | [`websearch`](#websearch) | Searches the web for one topic with Tavily. | The response JSON, unchanged |
 | [`tavily_search`](#tavily_search) | Searches the web with Tavily. | The response JSON, unchanged |
-| [`agent:<type>`](#agenttype) | Runs a `coder` or `summarizer` agent. | The final reply of the model |
+| [`agent:<type>`](#agenttype) | Runs a `coder`, `summarizer` or `autonomous` agent. | The final reply of the model |
 | [`read_file`](#read_file) | Reads a text file. | The content of the file, unchanged |
 | [`list_files`](#list_files) | Lists the files of a directory. | One path per line |
 | [`write_file`](#write_file) | Writes the input to a file. | The input, unchanged |
@@ -236,8 +236,8 @@ agent:<type> model=<profile> [options...]
 ```
 
 Sends a task to a chat model and runs the tools that the model asks for. The
-first reply without a tool call is the output. The type is `coder` or
-`summarizer`.
+first reply without a tool call is the output. The type is `coder`,
+`summarizer` or `autonomous`.
 
 The model must support tool calls. It must be on a server with an OpenAI
 compatible `/chat/completions` endpoint, such as OpenAI, Ollama, vLLM or LM
@@ -253,7 +253,7 @@ Options of every agent:
 | --- | --- | --- |
 | `model=<profile>` | Yes | The name of a model profile in the `config` block. An unknown name stops the job before it starts. |
 | `task="<text>"` | No | The instruction. The input of the action goes below it. The action fails if it has no task and no input. |
-| `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10. |
+| `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10, and 50 for `autonomous`. |
 | `token_budget=<n>` | No | The most tokens in one run, a number above 0. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
 | `thinking=<true\|false>` | No | `false` sends `"reasoning_effort": "none"`, which turns off the thinking of the model on Ollama. Other servers can reject it. `true` is the same as no option. |
 | `output_schema=<name\|path>` | No | Makes the output a JSON value that matches a schema. See "Output schemas" in [README.md](README.md). |
@@ -266,7 +266,7 @@ and each tool call to stderr. See "Debug output" in [README.md](README.md).
 A `coder` agent has the `bash` tool. The tool runs a command in the
 directory where you start Atama. Atama cuts a tool result after 20,000
 characters. A `coder` agent fails on the options `expertise=` and
-`max_output=`.
+`max_output=`, and on the options of `autonomous`.
 
 If you use `agent:coder`, the model can run any command with your
 permissions. Use it only in a directory and with a model that you trust.
@@ -300,6 +300,47 @@ The size of `max_output=` is one of these:
 - actions:
   - read_file ./notes.md
   - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
+```
+
+### `agent:autonomous`
+
+An `autonomous` agent works on its task in iterations until its success
+check passes. An iteration is one attempt at the whole task. It ends when
+the agent replies without tool calls, which means "I am done". Then the
+success check runs. If the check fails, the agent gets the output of the
+check, and the next iteration starts.
+
+A step is one request to the model and its one reply. For example, the
+agent reads a file, edits it, runs the tests and says that it is done. That
+is 4 steps in iteration 1. `max_iterations=` limits how many times the agent
+can say that it is done and try again. `max_steps=` limits the steps of the
+whole run.
+
+The run stops at the first of these events:
+
+- The success check passes. The action succeeds, and the output is the last reply.
+- The run used all its iterations, steps, tokens or time. The action fails, and the error has the last error of the success check.
+
+The agent has the tools `bash`, `read_file`, `write_file` and `list_files`.
+Each tool has a limit of 50 calls and 10 failed calls in one run. A call
+over a limit fails, and the next request does not offer the tool.
+
+It takes these options:
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `success_check="<command>"` | Yes | A bash command. Exit status 0 means that the task is done. The agent gets the exit status and the last 5,000 characters of stdout and stderr of a failed check. |
+| `max_iterations=<n>` | No | The most iterations, a number above 0. The default is 5. |
+| `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. Atama examines the time before each request and each tool call. |
+| `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. Atama does not block a tool call that breaks a rule. |
+
+If you use `agent:autonomous`, the model can run any command with your
+permissions, and nobody approves each command. Use it only in a directory
+and with a model that you trust.
+
+```markdown
+- actions:
+  - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m guardrails="Do not change files in tests/."
 ```
 
 ## `read_file`

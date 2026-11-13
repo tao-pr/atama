@@ -229,7 +229,11 @@ fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
 
 #[test]
 fn has_the_default_tools_of_its_agent_type() {
-    for agent in [AgentType::Coder, AgentType::Summarizer] {
+    for agent in [
+        AgentType::Coder,
+        AgentType::Summarizer,
+        AgentType::Autonomous,
+    ] {
         let agent_loop = AgentToolLoop::new(agent);
         assert_eq!(agent_loop.agent(), agent);
         assert_eq!(agent_loop.tool_names(), names(&default_tools(agent)));
@@ -268,7 +272,11 @@ fn the_registry_makes_each_tool_by_its_name() {
 fn default_tools_come_from_the_registry() {
     assert_eq!(default_tool_names(AgentType::Coder), ["bash"]);
     assert!(default_tool_names(AgentType::Summarizer).is_empty());
-    for agent in [AgentType::Coder, AgentType::Summarizer] {
+    for agent in [
+        AgentType::Coder,
+        AgentType::Summarizer,
+        AgentType::Autonomous,
+    ] {
         assert_eq!(names(&default_tools(agent)), default_tool_names(agent));
     }
 }
@@ -845,6 +853,56 @@ fn label_names_the_profile_after_the_loop_reads_it() {
         )
         .unwrap();
     assert_eq!(agent.label(), "agent:coder (m)");
+}
+
+#[test]
+fn run_loop_runs_an_autonomous_agent_with_its_options() {
+    let (url, requests) = serve(vec![
+        (200, text_response("done")),
+        (200, text_response("done again")),
+    ]);
+    let mut out = Vec::new();
+    let err = AgentToolLoop::new(AgentType::Autonomous)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success_check=test -n \"$DONE\" || { DONE=1; exit 1; }",
+                "max_iterations=2",
+                "guardrails=Do not push.",
+            ]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:autonomous (m)` did not pass its success check \
+         `test -n \"$DONE\" || { DONE=1; exit 1; }` in 2 iterations, the last error: \
+         exit status: 1\n"
+    );
+    let first = request_json(&requests.recv().unwrap());
+    let system = first["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with("in all your work:\nDo not push."),
+        "{system}"
+    );
+    let tools: Vec<&str> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["bash", "read_file", "write_file", "list_files"]);
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("max_iterations: 2\nmax_time: 30m\n"), "{out}");
+    assert!(
+        out.contains("=== agent:autonomous (m) iteration 2 step 2: request ("),
+        "{out}"
+    );
+    assert!(out.contains("s of 30m) ==="), "{out}");
 }
 
 #[test]

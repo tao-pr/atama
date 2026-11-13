@@ -138,6 +138,11 @@ fn parses_agent_tool_actions() {
     let cases = [
         ("agent:summarizer", AgentType::Summarizer, vec![]),
         (
+            "agent:autonomous success_check=\"cargo test\" max_time=20m",
+            AgentType::Autonomous,
+            vec!["success_check=cargo test", "max_time=20m"],
+        ),
+        (
             "agent:coder max_steps=3 task=\"fix the  tests\"",
             AgentType::Coder,
             vec!["max_steps=3", "task=fix the  tests"],

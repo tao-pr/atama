@@ -138,6 +138,9 @@ pub enum AgentType {
     Coder,
     /// Summarizes its input.
     Summarizer,
+    /// Works on a task in iterations until its success check passes or a
+    /// limit stops it.
+    Autonomous,
 }
 
 /// How an [`Actor::ApiCall`] authenticates with the API.

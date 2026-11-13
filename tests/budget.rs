@@ -1,6 +1,8 @@
 //! Tests for `RunBudget`, the limits of one run of the agent loop, in
 //! `src/agent_loop_openai_compat/budget.rs`.
 
+use std::time::{Duration, Instant};
+
 use atama::agent_loop_openai_compat::budget::{RunBudget, StopReason};
 
 #[test]
@@ -106,4 +108,41 @@ fn each_stop_reason_has_an_error_that_names_the_agent() {
     for (reason, expected) in cases {
         assert_eq!(reason.message("agent:coder"), expected);
     }
+}
+
+#[test]
+fn stops_when_the_run_used_its_time() {
+    let start = Instant::now();
+    let budget = RunBudget::new(1, 10, None).with_time_limit(start, Duration::from_secs(60));
+    assert_eq!(budget.check_time(start), Ok(()));
+    assert_eq!(
+        budget.time_usage(start + Duration::from_secs(59)),
+        Some((Duration::from_secs(59), Duration::from_secs(60)))
+    );
+    assert_eq!(budget.check_time(start + Duration::from_secs(59)), Ok(()));
+    assert_eq!(
+        budget.check_time(start + Duration::from_secs(60)),
+        Err(StopReason::Time {
+            max: Duration::from_secs(60)
+        })
+    );
+}
+
+#[test]
+fn without_a_time_limit_the_time_never_stops_the_run() {
+    let budget = RunBudget::new(1, 10, None);
+    let later = Instant::now() + Duration::from_secs(1_000_000);
+    assert_eq!(budget.check_time(later), Ok(()));
+    assert_eq!(budget.time_usage(later), None);
+}
+
+#[test]
+fn the_time_error_names_the_limit() {
+    let reason = StopReason::Time {
+        max: Duration::from_secs(20 * 60),
+    };
+    assert_eq!(
+        reason.message("agent:autonomous"),
+        "`agent:autonomous` did not finish in its time limit of 20m"
+    );
 }
