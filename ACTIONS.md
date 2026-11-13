@@ -315,7 +315,7 @@ There are two success checks. You must give one of them, and you can give
 both:
 
 - `success_check=` is a bash command. Exit status 0 means that the task is done.
-- `success=` is success criteria in natural language. A separate request to the model of the agent, the judge, decides whether the work meets them. The judge gets the task, the criteria, the tool calls of the agent with their results, and its last reply.
+- `success=` is success criteria in natural language. A separate request to the model of the agent, the judge, decides whether the work meets them. The judge gets the task, the criteria, the tool calls of the agent with their results, and its last reply. If the tool calls and results are longer than 10,000 characters, the judge gets only their end.
 
 If you give both, the command runs first, and the judge runs only if the
 command passes.
@@ -348,6 +348,7 @@ It takes these options:
 | `guard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
 | `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `guard=judge`. |
+| `loop=<name>` | No | The name of a loop block with more options. See [Loop blocks](#loop-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
 model profile of the agent. For example, a small local model can judge the
@@ -355,6 +356,10 @@ work of a large one. The API key of the judge profile comes from its own
 `api_key=` variable. The tokens of the judge and the guard count in the
 token budget of the action. With `guard=judge`, each tool call costs one
 more request to the model.
+
+With `--debug`, each header of a run with more than one iteration names
+the iteration, as in `iteration 2 step 3`. The header of each request also
+shows the used time, as in `41s of 30m`.
 
 If you use `agent:autonomous`, the model can run any command with your
 permissions, and nobody approves each command. Use it only in a directory

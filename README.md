@@ -54,6 +54,8 @@ Examples:
   `output_schema=`.
 - `jobs/sample_coder.md`: a `coder` agent that writes a Python program, and
   a `summarizer` agent that explains it.
+- `jobs/sample_autonomous.md`: an `autonomous` agent that works until a
+  check script accepts its report.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
@@ -120,12 +122,24 @@ Atama makes a graph of the tasks from their `begin_if` conditions.
 
 ## Agents
 
-An `agent:coder` or `agent:summarizer` action sends its task to a chat
-model. [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each
-agent. This section describes the parts of the job file that agents use.
+An `agent:<type>` action sends its task to a chat model. There are three
+agent types:
 
-If you use `agent:coder`, the model can run any command with your
-permissions. Use it only in a directory and with a model that you trust.
+- `coder` runs bash commands to do a task.
+- `summarizer` summarizes its input. It has no tools.
+- `autonomous` works in iterations until its success checks pass. A check
+  is a bash command, criteria for a judge model, or both. Limits on
+  iterations, steps, tokens and time stop the run. Guardrails tell the agent
+  what it must not do, and a judge can block a tool call that breaks them.
+
+[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
+```` ```loop:<name> ```` block can hold the options of an `autonomous`
+agent (see [Loop blocks](ACTIONS.md#loop-blocks)). This section describes
+the parts of the job file that agents use.
+
+If you use `agent:coder` or `agent:autonomous`, the model can run any
+command with your permissions. Use them only in a directory and with a
+model that you trust.
 
 ### Model profiles
 
