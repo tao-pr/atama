@@ -492,7 +492,9 @@ impl<'a> AgentToolLoop<'a> {
     /// the reply has tool calls, the loop runs them in order and adds their
     /// results to the conversation. A failed tool call does not stop the
     /// loop: the model gets the error and can try again. The text of the
-    /// first reply without tool calls is the output.
+    /// first reply without tool calls is the output. If the whole text of a
+    /// reply is a tool call in JSON, the loop runs it as a tool call (see
+    /// [`openai::text_tool_calls`]).
     ///
     /// With an output schema (see [`AgentToolLoop::output_schema`]), the
     /// system prompt tells the model the schema, and the output is the JSON
@@ -627,7 +629,24 @@ impl<'a> AgentToolLoop<'a> {
                 ));
             }
             sent = messages.len();
-            let reply = client.chat(&messages, &self.tools)?;
+            let mut reply = client.chat(&messages, &self.tools)?;
+            if reply.tool_calls.is_empty()
+                && !self.tool_names().is_empty()
+                && let Some(calls) = reply
+                    .content
+                    .as_deref()
+                    .and_then(|text| openai::text_tool_calls(text, &format!("text-{step}")))
+            {
+                // A tool call in the text of the reply: the loop runs it as a
+                // real one, and sends it back to the model in `tool_calls`.
+                self.write_debug(format!(
+                    "=== {} {at}: the reply has {} tool calls in its text ===",
+                    self.label(),
+                    calls.len()
+                ));
+                reply.tool_calls = calls;
+                reply.content = None;
+            }
             budget
                 .add_tokens(reply.tokens)
                 .map_err(|reason| reason.message(&self.label()))?;

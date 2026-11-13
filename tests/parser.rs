@@ -1747,19 +1747,26 @@ fn rejects_an_invalid_judge_model() {
 }
 
 #[test]
-fn sample_autonomous_job_has_two_agents_with_their_own_checks() {
+fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
     let job = parse_job(include_str!("../jobs/sample_autonomous.md")).expect("job should parse");
-    let agents: Vec<&Actor> = job.tasks[1..].iter().map(|task| &task.actions[0]).collect();
-    assert_eq!(agents.len(), 2);
-    for (agent, check) in agents.iter().zip(["success_check=", "success="]) {
-        let Actor::AgentTool { agent, params, .. } = agent else {
-            panic!("expected an agent, got {agent:?}");
-        };
-        assert_eq!(*agent, AgentType::Autonomous);
-        assert!(params.iter().any(|p| p.starts_with(check)), "{params:?}");
-        assert!(
-            params.iter().any(|p| p.starts_with("token_budget=")),
-            "{params:?}"
-        );
-    }
+    let Actor::AgentTool { agent, params, .. } = &job.tasks[1].actions[0] else {
+        panic!("expected the coder, got {:?}", job.tasks[1].actions[0]);
+    };
+    assert_eq!(*agent, AgentType::Coder);
+    assert!(
+        params.iter().any(|p| p.contains("check_fizzbuzz.py")),
+        "{params:?}"
+    );
+    let Actor::AgentTool { agent, params, .. } = &job.tasks[2].actions[0] else {
+        panic!("expected the agent, got {:?}", job.tasks[2].actions[0]);
+    };
+    assert_eq!(*agent, AgentType::Autonomous);
+    assert!(
+        params.contains(
+            &"success_check=python3 ./output/autonomous/check_fizzbuzz.py \
+              ./output/autonomous/fizzbuzz.txt"
+                .to_string()
+        ),
+        "{params:?}"
+    );
 }

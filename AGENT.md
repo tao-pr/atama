@@ -221,7 +221,11 @@ the same way.
    id, the name of a tool, and the arguments as a JSON string.
 7. Decide whether to stop. If the reply has no tool calls, `run_with`
    returns the text of the reply as the output. Else, `run_with` adds the
-   reply to the conversation and goes on.
+   reply to the conversation and goes on. Some small models write a tool
+   call as JSON text, often in a code fence. If the agent has tools and the
+   whole text is `{"name": ..., "arguments": ...}` or a list of them,
+   `openai::text_tool_calls` reads them, and `run_with` runs them as tool
+   calls.
 8. Call the tools. `run_with` calls the tools in the order of the reply.
    `call_tool` finds the tool with the same name, parses the arguments as
    JSON, and calls `Tool::call`. The result goes into the conversation as a

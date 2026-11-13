@@ -212,3 +212,37 @@ fn text(json: &Value, path: &[&str]) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// The tool calls that a model wrote as the text of its reply, instead of
+/// in `tool_calls`. Some small models on Ollama do this, as in
+/// `{"name": "bash", "arguments": {"command": "ls"}}`, often in a code
+/// fence. Returns `None` unless the whole text, without a code fence, is
+/// one such JSON object or an array of them. Each object must have only the
+/// keys `name`, a string, and `arguments`, an object or a string. The id of
+/// call `i` is `<id_prefix>-<i>`, from 1.
+pub fn text_tool_calls(content: &str, id_prefix: &str) -> Option<Vec<ToolCall>> {
+    let json: Value = serde_json::from_str(crate::schema::strip_fence(content)).ok()?;
+    let objects = match json {
+        Value::Array(objects) if !objects.is_empty() => objects,
+        Value::Object(_) => vec![json],
+        _ => return None,
+    };
+    objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            let object = object.as_object().filter(|object| object.len() == 2)?;
+            let name = object.get("name")?.as_str()?;
+            let arguments = match object.get("arguments")? {
+                Value::String(text) => text.clone(),
+                Value::Object(_) => object["arguments"].to_string(),
+                _ => return None,
+            };
+            Some(ToolCall {
+                id: format!("{id_prefix}-{}", index + 1),
+                name: name.to_string(),
+                arguments,
+            })
+        })
+        .collect()
+}

@@ -15,7 +15,9 @@ use atama::actor::AgentType;
 use atama::agent_loop_openai_compat::agent_options::{
     DEFAULT_EXPERTISE, DEFAULT_SUMMARIZER_PROMPT,
 };
-use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
+use atama::agent_loop_openai_compat::openai::{
+    OpenAiClient, parse_reply, request_body, text_tool_calls,
+};
 use atama::agent_loop_openai_compat::tools::{
     Bash, ListFiles, MAX_RESULT_CHARS, ReadFile, TOOL_NAMES, WriteFile, default_tool_names,
     default_tools, tool_by_name, truncate,
@@ -1145,6 +1147,90 @@ fn run_loop_sends_the_judge_requests_to_the_judge_model() {
         run(Some(judge)),
         "model profile `small` needs the API key in `JUDGE_KEY`, but `JUDGE_KEY` is not set"
     );
+}
+
+#[test]
+fn reads_tool_calls_that_a_model_wrote_as_text() {
+    let call = |id: &str, name: &str, arguments: &str| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments: arguments.into(),
+    };
+    assert_eq!(
+        text_tool_calls(
+            "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}\n```",
+            "text-1"
+        ),
+        Some(vec![call("text-1-1", "bash", "{\"command\":\"ls\"}")])
+    );
+    assert_eq!(
+        text_tool_calls(
+            r#"[{"name": "a", "arguments": "{}"}, {"name": "b", "arguments": {}}]"#,
+            "t"
+        ),
+        Some(vec![call("t-1", "a", "{}"), call("t-2", "b", "{}")])
+    );
+    let not_calls = [
+        "Done. I wrote the file.",
+        "[]",
+        "42",
+        r#"{"name": "bash"}"#,
+        r#"{"name": "bash", "arguments": {}, "id": "1"}"#,
+        r#"{"name": 1, "arguments": {}}"#,
+        r#"{"name": "bash", "arguments": 3}"#,
+        r#"[{"name": "a", "arguments": {}}, "b"]"#,
+        "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"broken\n```",
+    ];
+    for text in not_calls {
+        assert_eq!(text_tool_calls(text, "t"), None, "{text}");
+    }
+}
+
+#[test]
+fn the_loop_runs_a_tool_call_in_the_text_of_a_reply() {
+    let (tool, arguments) = Recorder::boxed("bash", Ok("written"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(text(
+            "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"touch a\"}}\n```",
+        )),
+        Ok(text("done")),
+    ]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+    assert_eq!(*arguments.borrow(), [json!({"command": "touch a"})]);
+    // The model gets its call back in `tool_calls`, with the result.
+    let second = &client.conversations[1];
+    assert_eq!(
+        second[2],
+        Message::Assistant(calls(&[("text-1-1", "bash", "{\"command\":\"touch a\"}")]))
+    );
+    assert_eq!(
+        second[3],
+        Message::Tool {
+            call_id: "text-1-1".into(),
+            content: "written".into()
+        }
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:coder step 1: the reply has 1 tool calls in its text ==="),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_tool_call_in_the_text_is_the_output_of_an_agent_without_tools() {
+    let reply = r#"{"name": "bash", "arguments": {}}"#;
+    let mut client = ScriptedClient::new(vec![Ok(text(reply))]);
+    let output = AgentToolLoop::new(AgentType::Summarizer)
+        .run_with(&mut client, "task", "input")
+        .unwrap();
+    assert_eq!(output, reply);
 }
 
 #[test]
