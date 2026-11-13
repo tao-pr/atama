@@ -373,7 +373,7 @@ fn bash_script(cmd: &str, params: &[String]) -> String {
 }
 
 /// Runs `cmd` with `params` in bash, with `input` on stdin, until
-/// `deadline`, and returns its stdout. [`Actor::BashScript`] runs it
+/// `deadline_time`, and returns its stdout. [`Actor::BashScript`] runs it
 /// without a deadline, and the `bash` tool of the agent loop with the
 /// deadline of the run.
 ///
@@ -382,7 +382,7 @@ pub fn run_bash(
     cmd: &str,
     params: &[String],
     input: &str,
-    deadline: Option<Instant>,
+    deadline_time: Option<Instant>,
 ) -> Result<String, String> {
     let mut command = Command::new("bash");
     command
@@ -390,7 +390,7 @@ pub fn run_bash(
         .arg(bash_script(cmd, params))
         .arg("bash")
         .args(params);
-    run_command(command, "bash", cmd, input, deadline)
+    run_command(command, "bash", cmd, input, deadline_time)
 }
 
 /// The macOS sandbox profile of [`Actor::BashSandbox`]: no network, no
@@ -442,22 +442,22 @@ fn run_bash_sandbox(_cmd: &str, _params: &[String], _input: &str) -> Result<Stri
     Err("`bash-sandbox` needs `sandbox-exec`, which only macOS has".to_string())
 }
 
-/// Runs `command` with `input` on stdin, until `deadline` (see
+/// Runs `command` with `input` on stdin, until `deadline_time` (see
 /// [`run_process`]), and returns its stdout. `program` names the program in
 /// the error if it cannot start, and `cmd` names the command in the other
 /// errors.
 ///
 /// Fails if the program cannot start, the command still runs at
-/// `deadline`, or it exits with a non-zero status or prints output that is
+/// `deadline_time`, or it exits with a non-zero status or prints output that is
 /// not UTF-8.
 fn run_command(
     command: Command,
     program: &str,
     cmd: &str,
     input: &str,
-    deadline: Option<Instant>,
+    deadline_time: Option<Instant>,
 ) -> Result<String, String> {
-    let output = run_process(command, program, cmd, input, deadline)?;
+    let output = run_process(command, program, cmd, input, deadline_time)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -472,21 +472,21 @@ fn run_command(
 
 /// Runs `command` with `input` on stdin, and returns its exit status,
 /// stdout and stderr. `program` names the program in the error if it
-/// cannot start, and `cmd` names the command if it stops at the deadline.
+/// cannot start, and `cmd` names the command if it stops at the deadline_time.
 ///
 /// The command runs in its own process group, which is on the list of
 /// [`crate::signals`] while the command runs. So a termination signal to
-/// Atama reaches the command and its child processes. With a `deadline`, if
-/// the command still runs at `deadline`, Atama kills the whole group.
+/// Atama reaches the command and its child processes. With a `deadline_time`, if
+/// the command still runs at `deadline_time`, Atama kills the whole group.
 ///
 /// Fails if the program cannot start, or the command still runs at
-/// `deadline`.
+/// `deadline_time`.
 pub fn run_process(
     mut command: Command,
     program: &str,
     cmd: &str,
     input: &str,
-    deadline: Option<Instant>,
+    deadline_time: Option<Instant>,
 ) -> Result<Output, String> {
     #[cfg(unix)]
     {
@@ -515,9 +515,9 @@ pub fn run_process(
     let stdout = read_all(child.stdout.take().expect("stdout is piped"));
     let stderr = read_all(child.stderr.take().expect("stderr is piped"));
 
-    let status = match deadline {
+    let status = match deadline_time {
         None => child.wait(),
-        Some(deadline) => match wait_until(&mut child, deadline) {
+        Some(deadline_time) => match wait_until(&mut child, deadline_time) {
             Some(status) => status,
             None => {
                 // The reader threads can still wait for a process that left
@@ -547,19 +547,19 @@ fn read_all(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>>
     })
 }
 
-/// Waits until `child` exits or `deadline` comes. Returns the result of the
+/// Waits until `child` exits or `deadline_time` comes. Returns the result of the
 /// wait, or `None` if Atama killed the process group of `child` at
-/// `deadline`.
+/// `deadline_time`.
 fn wait_until(
     child: &mut Child,
-    deadline: Instant,
+    deadline_time: Instant,
 ) -> Option<io::Result<std::process::ExitStatus>> {
     loop {
         if let Some(result) = child.try_wait().transpose() {
             return Some(result);
         }
         let now = Instant::now();
-        if now >= deadline {
+        if now >= deadline_time {
             // The id of the process group is the id of `child`.
             #[cfg(unix)]
             crate::signals::kill_group(child.id() as i32, libc::SIGKILL);
@@ -568,7 +568,7 @@ fn wait_until(
             let _ = child.wait();
             return None;
         }
-        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        thread::sleep((deadline_time - now).min(Duration::from_millis(10)));
     }
 }
 

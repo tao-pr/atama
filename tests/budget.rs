@@ -112,7 +112,10 @@ fn each_stop_reason_has_an_error_that_names_the_agent() {
 fn stops_when_the_run_used_its_time() {
     let start = Instant::now();
     let budget = RunBudget::new(1, 10, None).with_time_limit(start, Duration::from_secs(60));
-    assert_eq!(budget.deadline(), Some(start + Duration::from_secs(60)));
+    assert_eq!(
+        budget.deadline_time(),
+        Some(start + Duration::from_secs(60))
+    );
     assert_eq!(budget.check_time(start), Ok(()));
     assert_eq!(
         budget.time_usage(start + Duration::from_secs(59)),
@@ -133,7 +136,7 @@ fn without_a_time_limit_the_time_never_stops_the_run() {
     let later = Instant::now() + Duration::from_secs(1_000_000);
     assert_eq!(budget.check_time(later), Ok(()));
     assert_eq!(budget.time_usage(later), None);
-    assert_eq!(budget.deadline(), None);
+    assert_eq!(budget.deadline_time(), None);
 }
 
 #[test]

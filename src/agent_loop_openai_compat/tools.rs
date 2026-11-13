@@ -144,17 +144,17 @@ impl Tool for Limited {
         self.limit_error().is_none()
     }
 
-    fn set_deadline(&mut self, deadline: Option<Instant>) {
-        self.tool.set_deadline(deadline);
+    fn set_deadline_time(&mut self, deadline_time: Option<Instant>) {
+        self.tool.set_deadline_time(deadline_time);
     }
 }
 
 /// `bash`: runs a command in bash in the current directory and returns its
 /// stdout. With a deadline, it stops the command and its child processes at
-/// the deadline (see [`Tool::set_deadline`]).
+/// the deadline (see [`Tool::set_deadline_time`]).
 #[derive(Default)]
 pub struct Bash {
-    deadline: Option<Instant>,
+    deadline_time: Option<Instant>,
 }
 
 impl Tool for Bash {
@@ -177,12 +177,12 @@ impl Tool for Bash {
 
     fn call(&mut self, arguments: &Value) -> Result<String, String> {
         let command = string_argument(arguments, "command")?;
-        let output = run_bash(&command, &[], "", self.deadline)?;
+        let output = run_bash(&command, &[], "", self.deadline_time)?;
         Ok(truncate(output))
     }
 
-    fn set_deadline(&mut self, deadline: Option<Instant>) {
-        self.deadline = deadline;
+    fn set_deadline_time(&mut self, deadline_time: Option<Instant>) {
+        self.deadline_time = deadline_time;
     }
 }
 

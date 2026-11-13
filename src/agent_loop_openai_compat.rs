@@ -117,7 +117,7 @@ pub trait Tool {
     /// Sets the deadline of the run. A tool that runs a command stops it
     /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
     /// The default does nothing.
-    fn set_deadline(&mut self, _deadline: Option<Instant>) {}
+    fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
 }
 
 /// A chat model that can call tools.
@@ -481,9 +481,9 @@ impl<'a> AgentToolLoop<'a> {
             let start = self.started.unwrap_or_else(|| (self.clock)());
             budget = budget.with_time_limit(start, max);
         }
-        let deadline = budget.deadline();
+        let deadline_time = budget.deadline_time();
         for tool in &mut self.tools {
-            tool.set_deadline(deadline);
+            tool.set_deadline_time(deadline_time);
         }
         let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
         if let Some(schema) = &self.output_schema {
@@ -491,7 +491,7 @@ impl<'a> AgentToolLoop<'a> {
         }
         if let Some(command) = &self.success_check {
             checks.push(Box::new(
-                CommandCheck::new(command.clone()).with_deadline(deadline),
+                CommandCheck::new(command.clone()).with_deadline_time(deadline_time),
             ));
         }
         if let Some(criteria) = &self.success {

@@ -134,22 +134,22 @@ impl FinalCheck for SchemaCheck {
 pub struct CommandCheck {
     command: String,
     /// The deadline of the run, if set.
-    deadline: Option<Instant>,
+    deadline_time: Option<Instant>,
 }
 
 impl CommandCheck {
     pub fn new(command: String) -> Self {
         CommandCheck {
             command,
-            deadline: None,
+            deadline_time: None,
         }
     }
 
     /// Sets the deadline of the run. If the command still runs at the
     /// deadline, Atama stops it and its child processes, and the check
     /// fails (see [`run_process`]).
-    pub fn with_deadline(mut self, deadline: Option<Instant>) -> Self {
-        self.deadline = deadline;
+    pub fn with_deadline_time(mut self, deadline_time: Option<Instant>) -> Self {
+        self.deadline_time = deadline_time;
         self
     }
 
@@ -157,7 +157,7 @@ impl CommandCheck {
     fn run(&self) -> Result<(), String> {
         let mut command = Command::new("bash");
         command.arg("-c").arg(&self.command);
-        let output = run_process(command, "bash", &self.command, "", self.deadline)?;
+        let output = run_process(command, "bash", &self.command, "", self.deadline_time)?;
         if output.status.success() {
             return Ok(());
         }

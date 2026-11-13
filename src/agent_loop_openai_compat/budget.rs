@@ -96,7 +96,7 @@ impl RunBudget {
     }
 
     /// The end of the time limit, if a limit is set.
-    pub fn deadline(&self) -> Option<Instant> {
+    pub fn deadline_time(&self) -> Option<Instant> {
         self.time_limit.map(|(start, max)| start + max)
     }
 

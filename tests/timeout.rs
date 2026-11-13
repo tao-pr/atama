@@ -114,19 +114,19 @@ fn run_process_gives_the_status_and_both_outputs() {
 #[test]
 fn the_bash_tool_stops_its_command_at_the_deadline() {
     let mut tool = Limited::new(Box::new(Bash::default()), None, None);
-    tool.set_deadline(in_ms(300));
+    tool.set_deadline_time(in_ms(300));
     let start = Instant::now();
     let err = tool.call(&json!({"command": "sleep 10"})).unwrap_err();
     assert!(err.starts_with("`sleep 10` stopped after "), "{err}");
     assert!(start.elapsed() < Duration::from_secs(3));
 
-    tool.set_deadline(None);
+    tool.set_deadline_time(None);
     assert_eq!(tool.call(&json!({"command": "echo ok"})), Ok("ok\n".into()));
 }
 
 #[test]
 fn the_success_check_stops_at_the_deadline() {
-    let mut check = CommandCheck::new("sleep 10".into()).with_deadline(in_ms(300));
+    let mut check = CommandCheck::new("sleep 10".into()).with_deadline_time(in_ms(300));
     let mut client = ScriptedClient {
         replies: VecDeque::new(),
         conversations: Vec::new(),
