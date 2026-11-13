@@ -258,7 +258,7 @@ impl OutputSchema {
 }
 
 /// The text without a code fence around it, trimmed.
-fn strip_fence(text: &str) -> &str {
+pub fn strip_fence(text: &str) -> &str {
     let text = text.trim();
     let Some(rest) = text.strip_prefix("```") else {
         return text;

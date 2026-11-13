@@ -131,7 +131,7 @@ its own output. The main actor types are:
 - `BashSandbox` (`bash-sandbox <cmd> [args...]`) runs a command in bash inside `sandbox-exec`, on macOS only. The profile, `src/actor/bash_sandbox.sb`, denies the network, `sudo`, `su` and `login`, and files outside the working directory, except the system directories that programs need. `run_bash_sandbox` in `src/actor.rs` sets `PATH` to `SANDBOX_PATH` and stops if the user is root.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
-- `AgentTool` (`agent:<type> ...`) runs an agent, `coder` or `summarizer`. The output is the final reply of the model.
+- `AgentTool` (`agent:<type> ...`) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -156,21 +156,36 @@ model asks for tool calls, the loop runs them and sends the results back. If
 the model replies without a tool call, that reply is the output.
 `max_steps` limits the number of model replies.
 
-The code of the loop is in four files:
+The code of the loop is in six files:
 
 - `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `Tool` and `ChatClient` traits.
 - `src/agent_loop_openai_compat/agent_options.rs` has the options of an agent action: `AgentConfig`, `WebSearchOptions`, `SummarizerOptions`, `MaxOutput`, and the defaults and environment variable names of the options.
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
-- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
+- `src/agent_loop_openai_compat/checks.rs` has the `FinalCheck` trait and `SchemaCheck`.
+
+A step is one request to the model and its one reply. An iteration is one
+attempt at the whole task. It ends when the agent replies without tool
+calls. `max_steps` counts the steps of the whole run. `coder` and
+`summarizer` runs have one iteration.
+
+`run_with` asks `RunBudget::start_step` before each request. The budget
+fails with a `StopReason` if the run used its steps or its tokens. A reply
+without tool calls goes through the final checks (`checks::run_checks`).
+A failed check gives the model a user message, and the loop goes on. The
+output schema check is `SchemaCheck`.
 
 ### Options of an agent action
 
 Each param of an agent action is an option. Every agent needs
-`model=<profile>` and takes `task=`, `max_steps=`, `thinking=` and
-`output_schema=`, and a
+`model=<profile>` and takes `task=`, `max_steps=`, `token_budget=`,
+`thinking=` and `output_schema=`, and a
 `summarizer` agent also takes
-`expertise=` and `max_output=`. A `coder` agent fails on these two options
-(`only_for`). A value can be in double quotes, so that it can have spaces,
+`expertise=` and `max_output=`. An `autonomous` agent also takes
+`success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
+`guard=`, `max_violations=`, `loop=` and `judge_model=`. Other
+agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
 `src/parser.rs`) splits the params of an `agent:` line at whitespace, but
@@ -206,13 +221,18 @@ the same way.
    id, the name of a tool, and the arguments as a JSON string.
 7. Decide whether to stop. If the reply has no tool calls, `run_with`
    returns the text of the reply as the output. Else, `run_with` adds the
-   reply to the conversation and goes on.
+   reply to the conversation and goes on. Some small models write a tool
+   call as JSON text, often in a code fence. If the agent has tools and the
+   whole text is `{"name": ..., "arguments": ...}` or a list of them,
+   `openai::text_tool_calls` reads them, and `run_with` runs them as tool
+   calls.
 8. Call the tools. `run_with` calls the tools in the order of the reply.
    `call_tool` finds the tool with the same name, parses the arguments as
    JSON, and calls `Tool::call`. The result goes into the conversation as a
    tool message with the id of the call.
 9. Go back to step 5. If the model still calls tools after `max_steps`
-   replies, the run fails.
+   replies, the run fails. With a token budget, the run also fails if it
+   used the budget before step 5 (see "Token budget" below).
 
 The model, not Atama, decides which tools to call and with which
 arguments. The request has no `tool_choice` field, so the server uses
@@ -229,14 +249,27 @@ model gets the error text as the tool result, and it can try again.
 
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
-`tools::default_tools` gives each agent type its tools:
+The registry (`tools::tool_by_name` and `tools::TOOL_NAMES`) makes each
+tool by its name: `bash`, `read_file`, `write_file` and `list_files`.
+`tools::default_tool_names` names the tools of each agent type, and
+`tools::default_tools` makes them:
 
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
   field, so the model can only reply with text.
+- `autonomous` gets `AUTONOMOUS_DEFAULT_TOOLS`: `bash`, `read_file`,
+  `write_file` and `list_files`. Each one is in a `tools::Limited`, with
+  `DEFAULT_MAX_CALLS` (50) and `DEFAULT_MAX_FAILURES` (10).
+
+`Limited` counts the calls and the failed calls of a tool. A call at a
+limit fails and does not run the tool. A tool at a limit is not available
+(`Tool::available`), so `request_body` and `tool_names` leave it out.
 
 The tools run the same code as the actions of a job file. `bash` runs an
-`Actor::BashScript`. If a result is
+`Actor::BashScript`. `read_file`, `write_file` and `list_files` run
+`Actor::ReadFile`, `Actor::WriteFile` and `Actor::ListFiles`. No agent type
+gets the file tools yet. `write_file` returns a short confirmation, not the
+content. If a result is
 longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
 it.
 
@@ -245,12 +278,15 @@ its agent type. For example, a `summarizer` agent cannot run `bash`. To give an
 agent type a new tool, do these steps:
 
 1. Write a type that implements `Tool` in `tools.rs`.
-2. Add the tool to the match arm of the agent type in `default_tools`.
-3. If the model must know when to use the tool, tell it in `system_prompt`.
-4. Add tests to `tests/agent_loop_openai_compat.rs`.
+2. Add the tool to `TOOL_NAMES` and `tool_by_name`.
+3. Add its name to the match arm of the agent type in `default_tool_names`.
+4. If the model must know when to use the tool, tell it in `system_prompt`.
+5. Add tests to `tests/agent_loop_openai_compat.rs`.
 
 Tests of the options are in `tests/agent_options.rs`. Tests that run the
-loop are in `tests/agent_loop_openai_compat.rs`.
+loop are in `tests/agent_loop_openai_compat.rs`. Tests of `RunBudget` are
+in `tests/budget.rs`, and tests of the final checks are in
+`tests/checks.rs`.
 
 `AgentToolLoop::with_tools` replaces the tools of a loop. Tests use it to
 give the loop mock tools.
@@ -275,6 +311,145 @@ Now, the expertise is only the name of a field in the task. A `TAOTODO`
 comment on `SummarizerOptions::expertise` marks the plan to load domain
 expertise as skills later.
 
+### The `autonomous` agent
+
+An `autonomous` agent works in iterations until its success checks pass.
+It needs `success_check=<command>` or `success=<criteria>`, or both. It
+takes `max_iterations=<n>` (default `DEFAULT_MAX_ITERATIONS`, 5),
+`max_time=<duration>` (default `DEFAULT_MAX_TIME`, 30 minutes),
+`guardrails=<text>`, `guard=<prompt|judge>` (default `prompt`) and
+`max_violations=<n>` (default `DEFAULT_MAX_VIOLATIONS`, 3). Its default
+`max_steps` is `DEFAULT_AUTONOMOUS_MAX_STEPS` (50). `AgentConfig::from_params`
+reads these options into `AutonomousOptions` only for `autonomous`. Other
+agent types fail on them (`only_for`). `parse_duration` reads `90s`, `20m`
+or `1h`, and `format_duration` writes it back.
+
+`checks::CommandCheck` runs the success check with `bash -c`. It is a
+`FinalCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
+`RunBudget::next_iteration`, and gives the model the exit status and the
+end of stdout and stderr (`checks::tail`, `MAX_CHECK_CHARS`). The output
+schema check runs first, and its failure does not end the iteration.
+
+`run_loop_with_env` starts the time when the action starts.
+`RunBudget::check_time` stops the run before a request or a tool call if the
+time is used. `AgentToolLoop::clock` replaces the clock in tests.
+
+The deadline of the run (`deadline_time`, an `Instant`) is its start plus `max_time`. `run_with` gives it
+to each tool with `Tool::set_deadline_time`, and to the success check with
+`CommandCheck::with_deadline_time`. The `bash` tool runs its command with
+`actor::run_bash`, with the deadline. At the deadline, `actor::run_process` kills the
+whole process group of the command with `SIGKILL`, so that the child
+processes stop too, and fails with "`<cmd>` stopped after <n>s, because the
+time limit of the run is used". Tests of the deadline are in
+`tests/timeout.rs`.
+
+The debug headers of a run with more than one iteration name the
+iteration, as in `iteration 2 step 3`. With a time limit, the request
+header shows the used time, as in `41s of 30m`. Tests of the agent are in
+`tests/autonomous.rs`. The plan of the next phases is in
+`PLAN-autonomous-loop.md`.
+
+### Judges of the `autonomous` agent
+
+`success=<criteria>` adds `judge::SuccessJudge` to the final checks, after
+the command check. `guard=judge` makes `run_with` call `judge::review`
+before each tool call. Both send a separate request with `judge::Judge`:
+a system prompt, one user message, no tools, and a reply that must match
+`judge::verdict_schema`, `{"pass": <bool>, "reason": <text>}`. The request
+goes through `ChatClient::chat_without_tools` with its own
+`response_format`. By default, the judges use the client and the model of
+the agent. With `judge_model=<profile>`, `parse_action` puts the profile
+that it names (`profile::find`) into `Actor::AgentTool::judge_profile`, in
+a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
+key of that profile (`agent_options::read_api_key`), and sets it as
+`AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
+client, and adds the tokens of each judge reply to the budget.
+`judge_model=` needs `success=` or `guard=judge`. The context summary uses
+the model of the agent.
+
+The success judge gets the task, the criteria, the tool calls and results
+of the conversation (`judge::evidence`, the last `MAX_EVIDENCE_CHARS`) and
+the final reply. If the judge fails or its reply is not valid, the check
+fails with the error. The guard gets the guardrails, the tool name and the
+arguments. A blocked call does not run, the model gets "blocked by
+guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
+that fails blocks the call. After `max_violations` blocked calls, the run
+fails. `guard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Context compaction
+
+`max_context=<n>` (`AgentConfig::max_context`, `AgentToolLoop::max_context`)
+works for every agent type. Without it, the loop never summarizes. Before
+each request, `run_with` estimates the tokens of the conversation with
+`context::estimate_tokens`: the characters of the JSON of the messages,
+divided by `CHARS_PER_TOKEN` (4). If the estimate is more than the limit,
+`AgentToolLoop::compact` sends `context::summary_request` with
+`ChatClient::chat_without_tools` and no format, adds the tokens of the
+reply to the budget, and replaces the conversation with
+`context::compacted`: the system prompt, the task, and one user message
+that starts with `SUMMARY_HEADER`. The request of the step then goes with
+the compacted conversation. A failed summary request fails the run.
+`judge::evidence` includes the summary, so the success judge sees the
+earlier work. Tests are in `tests/context.rs`.
+
+### Loop blocks
+
+`src/loop_block.rs` reads ```` ```loop:<name> ```` blocks. `parse_job`
+reads each block with `loop_block::parse_block` into a `LoopBlock`: its
+options as `key=value` params (`LoopBlock::params`) and its `tools:` as
+`ToolLimits`. A list of text becomes one value with a `- <item>` line for
+each item. `BLOCK_KEYS` are the keys that a block can set, besides `tools`.
+
+For an `autonomous` action, `parse_action` uses `loop_block::resolve` to
+put the block that `loop=<name>` names into `Actor::AgentTool::loop_block`.
+`AgentToolLoop::run_loop_with_env` reads `LoopBlock::merge`, the options of
+the block and then the options of the action, so that an option of the
+action replaces the option of the block. `LoopBlock::make_tools` makes the
+tools of `tools:`, each in a `Limited`, and they replace the default
+tools. Tests are in `tests/loop_block.rs`.
+
+`parse_action` also calls `AgentConfig::check` for each agent action, with
+the options of its loop block. It reads the options as
+`AgentConfig::from_params` does, but it does not read the API key. So an
+invalid option stops the job before it starts.
+
+## Signals
+
+`actor::run_process` runs every command in its own process group, and puts
+the group on the list of `src/signals.rs` (`signals::register`) while the
+command runs. `main` calls `signals::install`, which handles `SIGINT`,
+`SIGTERM` and `SIGHUP`:
+
+1. The signal handler sets the stopping flag and writes the signal number to a pipe.
+2. A watcher thread reads the pipe and calls `signals::terminate_groups`. It sends the same signal to each running group.
+3. After `GRACE` (2 seconds), it kills the groups that still run with `SIGKILL`.
+4. Atama stops with the same signal, so the exit status names it.
+
+After the signal, `signals::wait_if_stopping` makes a thread that is about
+to start a command, and `main` at the end of the job, wait for the watcher
+thread. So no new command or task starts. A command that started just
+before the signal also gets the signal, because each pass of
+`terminate_groups` reads the list again. The
+background commands of a bash script ignore `SIGINT`, so Ctrl-C kills them
+after `GRACE`. Tests are in `tests/signals.rs` and `tests/cli.rs`. In a
+coverage build (`cfg(coverage)`), the watcher thread writes the coverage
+data before Atama stops, so that the coverage of these tests counts.
+
+### Token budget
+
+`token_budget=<n>` limits the tokens of one run. A model profile can set
+it, and the option of the action replaces the value of the profile
+(`AgentConfig::from_params`). `profile::parse_token_budget` reads both.
+`openai::parse_reply` reads `usage.total_tokens` into `Reply::tokens`.
+
+`RunBudget::add_tokens` adds up the tokens of each reply. Before each
+request, `RunBudget::start_step` fails
+if the run used the budget. So a run can go over the budget by the tokens
+of its last step, and a final reply in that step is still the output. If a
+budget is set and a reply has no `tokens`, the run fails. The debug header
+of each reply shows its tokens and the used budget.
+`AgentToolLoop::token_budget` sets the budget in tests.
+
 ### Model, debug output and tests
 
 `thinking=false` makes `AgentConfig::thinking` `Some(false)`. Then
@@ -285,7 +460,7 @@ its default.
 
 The model comes from a model profile (`src/profile.rs`). A job file can
 start with a ```` ```config ```` block, before the `# <name>` heading. Each
-line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]`, and
+line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`, and
 `ModelProfile::from_str` reads it. `parse_job` reads the block with
 `profile::parse_profiles`, and `parse_action` uses `profile::resolve` to
 put the profile that `model=<name>` names into `Actor::AgentTool::profile`.

@@ -2,9 +2,13 @@
 //! `src/agent_loop_openai_compat/agent_options.rs`.
 
 use atama::actor::{Actor, AgentType};
+use std::time::Duration;
+
 use atama::agent_loop_openai_compat::agent_options::{
-    AgentConfig, DEFAULT_EXPERTISE, DEFAULT_MAX_STEPS, DEFAULT_SUMMARIZER_PROMPT, MaxOutput,
-    SummarizerOptions,
+    AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS,
+    DEFAULT_SUMMARIZER_PROMPT, Guard, MaxOutput, SummarizerOptions, format_duration,
+    parse_duration,
 };
 use atama::profile::ModelProfile;
 
@@ -23,6 +27,7 @@ fn profile() -> ModelProfile {
         model: "model-1".into(),
         base_url: "http://x.test/v1".into(),
         api_key_env: None,
+        token_budget: None,
     }
 }
 
@@ -51,6 +56,26 @@ fn reads_options_and_task_from_params_and_the_model_from_the_profile() {
     .unwrap();
     assert_eq!(config.max_steps, DEFAULT_MAX_STEPS);
     assert_eq!(config.task, "");
+}
+
+#[test]
+fn the_token_budget_of_the_action_replaces_the_budget_of_the_profile() {
+    let budget = |words: &[&str], profile_budget: Option<u64>| {
+        let profile = ModelProfile {
+            token_budget: profile_budget,
+            ..profile()
+        };
+        AgentConfig::from_params(AgentType::Coder, &params(words), Some(&profile), &no_env)
+            .unwrap()
+            .token_budget
+    };
+    assert_eq!(budget(&["model=m"], None), None);
+    assert_eq!(budget(&["model=m"], Some(9000)), Some(9000));
+    assert_eq!(budget(&["model=m", "token_budget=500"], None), Some(500));
+    assert_eq!(
+        budget(&["model=m", "token_budget=500"], Some(9000)),
+        Some(500)
+    );
 }
 
 #[test]
@@ -145,8 +170,9 @@ fn rejects_invalid_configuration() {
         ),
         (
             vec!["model=m", "base_url=http://x.test"],
-            "unknown option `base_url`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
-             `expertise=`, `max_output=`",
+            "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
+             `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
+             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -158,6 +184,14 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "max_steps=x"],
             "`max_steps=x` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=0"],
+            "`token_budget=0` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=-5"],
+            "`token_budget=-5` is not a positive number",
         ),
     ];
     for (input, message) in cases {
@@ -201,15 +235,25 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         model: "m".into(),
         api_key: Some("secret-key".into()),
         max_steps: 3,
+        token_budget: None,
+        max_context: None,
         summarizer: None,
         task: "task".into(),
         thinking: None,
         output_schema: None,
+        autonomous: None,
     };
     assert_eq!(
         config.summary(),
         "profile: p\nmodel: m\nbase_url: http://x.test/v1\nmax_steps: 3\napi key: set"
     );
+    config.token_budget = Some(800);
+    assert!(
+        config
+            .summary()
+            .ends_with("\napi key: set\ntoken_budget: 800")
+    );
+    config.token_budget = None;
     config.thinking = Some(false);
     assert!(
         config
@@ -340,8 +384,9 @@ fn rejects_invalid_summarizer_options() {
         (
             AgentType::Summarizer,
             vec!["topic=rust".into()],
-            "unknown option `topic`, expected `model=`, `max_steps=`, `task=`, `thinking=`, `output_schema=`, \
-             `expertise=`, `max_output=`"
+            "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
+             `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
+             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`"
                 .into(),
         ),
         (
@@ -411,4 +456,223 @@ fn summarizer_task_has_the_expertise_and_the_length_limit() {
         options(None).task("", " \n"),
         Err("`agent:summarizer` needs an input to summarize".to_string())
     );
+}
+
+// autonomous
+
+fn autonomous(words: &[&str]) -> Result<AgentConfig, String> {
+    AgentConfig::from_params(
+        AgentType::Autonomous,
+        &params(words),
+        Some(&profile()),
+        &no_env,
+    )
+}
+
+#[test]
+fn autonomous_reads_its_options_with_defaults() {
+    let config = autonomous(&["model=m", "success_check=cargo test"]).unwrap();
+    assert_eq!(config.max_steps, DEFAULT_AUTONOMOUS_MAX_STEPS);
+    assert_eq!(
+        config.autonomous,
+        Some(AutonomousOptions {
+            max_iterations: DEFAULT_MAX_ITERATIONS,
+            max_time: DEFAULT_MAX_TIME,
+            success_check: Some("cargo test".into()),
+            success: None,
+            guardrails: None,
+            guard: Guard::Prompt,
+            max_violations: DEFAULT_MAX_VIOLATIONS,
+            loop_name: None,
+            judge_model: None,
+        })
+    );
+    assert!(config.summarizer.is_none());
+
+    let config = autonomous(&[
+        "model=m",
+        "success_check=true",
+        "max_iterations=2",
+        "max_time=90s",
+        "max_steps=7",
+        "guardrails=Do not push.",
+        "success=All tests pass.",
+        "guard=judge",
+        "max_violations=2",
+    ])
+    .unwrap();
+    assert_eq!(config.max_steps, 7);
+    assert_eq!(
+        config.autonomous,
+        Some(AutonomousOptions {
+            max_iterations: 2,
+            max_time: Duration::from_secs(90),
+            success_check: Some("true".into()),
+            success: Some("All tests pass.".into()),
+            guardrails: Some("Do not push.".into()),
+            guard: Guard::Judge,
+            max_violations: 2,
+            loop_name: None,
+            judge_model: None,
+        })
+    );
+    assert_eq!(
+        config.summary(),
+        "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
+         max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nsuccess: All tests pass.\n\
+         guardrails: Do not push.\nguard: judge\nmax_violations: 2\njudge_model: not set"
+    );
+    let config = autonomous(&["model=m", "success=done", "guard=prompt"]).unwrap();
+    assert!(
+        config.summary().ends_with(
+            "\nmax_time: 30m\nsuccess_check: not set\nsuccess: done\nguardrails: not set\n\
+             guard: prompt\nmax_violations: 3\njudge_model: not set"
+        ),
+        "{}",
+        config.summary()
+    );
+}
+
+#[test]
+fn autonomous_rejects_invalid_options() {
+    let cases = [
+        (
+            vec!["model=m"],
+            "`agent:autonomous` needs `success=<criteria>`, success criteria that a model \
+             judges, or `success_check=<command>`, a bash command that exits with status 0 \
+             when the task is done",
+        ),
+        (
+            vec!["model=m", "success=x", "guard=strict"],
+            "`guard=strict` is not `prompt` or `judge`",
+        ),
+        (
+            vec!["model=m", "success=x", "guard=judge"],
+            "`guard=judge` needs `guardrails=<text>`",
+        ),
+        (
+            vec!["model=m", "success=x", "max_violations=0"],
+            "`max_violations=0` is not a positive number",
+        ),
+        (
+            vec!["model=m", "success_check=true", "max_iterations=0"],
+            "`max_iterations=0` is not a positive number",
+        ),
+        (
+            vec!["model=m", "success_check=true", "max_time=10"],
+            "`max_time=10` is not a duration, expected a positive number and a unit as in \
+             `90s`, `20m` or `1h`",
+        ),
+        (
+            vec!["model=m", "success_check=true", "expertise=law"],
+            "option `expertise` works only with `agent:summarizer`",
+        ),
+    ];
+    for (words, expected) in cases {
+        assert_eq!(
+            autonomous(&words).err().as_deref(),
+            Some(expected),
+            "{words:?}"
+        );
+    }
+}
+
+#[test]
+fn other_agents_reject_the_options_of_autonomous() {
+    for agent in [AgentType::Coder, AgentType::Summarizer] {
+        for option in [
+            "max_iterations=2",
+            "max_time=1m",
+            "success_check=true",
+            "success=x",
+            "guardrails=x",
+            "guard=judge",
+            "max_violations=1",
+        ] {
+            let key = option.split_once('=').unwrap().0;
+            let err = AgentConfig::from_params(
+                agent,
+                &params(&["model=m", option]),
+                Some(&profile()),
+                &no_env,
+            )
+            .err();
+            assert_eq!(
+                err,
+                Some(format!("option `{key}` works only with `agent:autonomous`")),
+                "{agent} {option}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parses_and_formats_durations() {
+    let cases = [("90s", 90), ("20m", 1200), ("1h", 3600), ("2h", 7200)];
+    for (text, seconds) in cases {
+        assert_eq!(
+            parse_duration(text),
+            Ok(Duration::from_secs(seconds)),
+            "{text}"
+        );
+    }
+    for text in ["", "s", "0m", "-1m", "1.5h", "10", "10d", "1é"] {
+        assert!(parse_duration(text).is_err(), "{text}");
+    }
+    let cases = [
+        (90, "90s"),
+        (1200, "20m"),
+        (3600, "1h"),
+        (3660, "61m"),
+        (0, "0s"),
+    ];
+    for (seconds, text) in cases {
+        assert_eq!(format_duration(Duration::from_secs(seconds)), text);
+    }
+}
+
+#[test]
+fn every_agent_reads_max_context() {
+    for agent in [
+        AgentType::Coder,
+        AgentType::Summarizer,
+        AgentType::Autonomous,
+    ] {
+        let read = |words: &[&str]| {
+            let mut words = words.to_vec();
+            if agent == AgentType::Autonomous {
+                words.push("success=x");
+            }
+            AgentConfig::from_params(agent, &params(&words), Some(&profile()), &no_env)
+        };
+        assert_eq!(read(&["model=m"]).unwrap().max_context, None);
+        let config = read(&["model=m", "max_context=8000"]).unwrap();
+        assert_eq!(config.max_context, Some(8000));
+        assert!(config.summary().contains("\nmax_context: 8000"), "{agent}");
+        assert_eq!(
+            read(&["model=m", "max_context=0"]).err(),
+            Some("`max_context=0` is not a positive number".to_string())
+        );
+    }
+}
+
+#[test]
+fn autonomous_reads_judge_model() {
+    let config = autonomous(&["model=m", "success=x", "judge_model=small"]).unwrap();
+    let options = config.autonomous.as_ref().unwrap();
+    assert_eq!(options.judge_model.as_deref(), Some("small"));
+    assert!(
+        config.summary().ends_with("\njudge_model: small"),
+        "{}",
+        config.summary()
+    );
+    let config = autonomous(&[
+        "model=m",
+        "success_check=true",
+        "guardrails=g",
+        "guard=judge",
+        "judge_model=small",
+    ])
+    .unwrap();
+    assert!(config.autonomous.unwrap().judge_model.is_some());
 }

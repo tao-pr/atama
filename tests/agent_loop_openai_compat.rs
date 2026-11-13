@@ -15,8 +15,13 @@ use atama::actor::AgentType;
 use atama::agent_loop_openai_compat::agent_options::{
     DEFAULT_EXPERTISE, DEFAULT_SUMMARIZER_PROMPT,
 };
-use atama::agent_loop_openai_compat::openai::{OpenAiClient, parse_reply, request_body};
-use atama::agent_loop_openai_compat::tools::{Bash, MAX_RESULT_CHARS, default_tools, truncate};
+use atama::agent_loop_openai_compat::openai::{
+    OpenAiClient, parse_reply, request_body, text_tool_calls,
+};
+use atama::agent_loop_openai_compat::tools::{
+    Bash, ListFiles, MAX_RESULT_CHARS, ReadFile, TOOL_NAMES, WriteFile, default_tool_names,
+    default_tools, tool_by_name, truncate,
+};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 use atama::profile::ModelProfile;
 use atama::schema::OutputSchema;
@@ -82,6 +87,15 @@ fn text_response(content: &str) -> String {
     json!({"choices": [{"message": {"role": "assistant", "content": content}}]}).to_string()
 }
 
+/// A chat completions response with a text reply that used `tokens` tokens.
+fn text_response_with_usage(content: &str, tokens: u64) -> String {
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": tokens - 1, "completion_tokens": 1, "total_tokens": tokens},
+    })
+    .to_string()
+}
+
 /// A chat completions response with one tool call.
 fn tool_call_response(id: &str, name: &str, arguments: Value) -> String {
     json!({"choices": [{"message": {
@@ -104,6 +118,7 @@ fn profile(base_url: &str) -> ModelProfile {
         model: "model-1".into(),
         base_url: base_url.into(),
         api_key_env: None,
+        token_budget: None,
     }
 }
 
@@ -115,6 +130,7 @@ fn text(content: &str) -> Reply {
     Reply {
         content: Some(content.into()),
         tool_calls: Vec::new(),
+        tokens: None,
     }
 }
 
@@ -129,6 +145,7 @@ fn calls(calls: &[(&str, &str, &str)]) -> Reply {
                 arguments: arguments.to_string(),
             })
             .collect(),
+        tokens: None,
     }
 }
 
@@ -214,7 +231,11 @@ fn names(tools: &[Box<dyn Tool>]) -> Vec<String> {
 
 #[test]
 fn has_the_default_tools_of_its_agent_type() {
-    for agent in [AgentType::Coder, AgentType::Summarizer] {
+    for agent in [
+        AgentType::Coder,
+        AgentType::Summarizer,
+        AgentType::Autonomous,
+    ] {
         let agent_loop = AgentToolLoop::new(agent);
         assert_eq!(agent_loop.agent(), agent);
         assert_eq!(agent_loop.tool_names(), names(&default_tools(agent)));
@@ -230,6 +251,115 @@ fn only_coder_gets_tools() {
     for (agent, expected) in cases {
         assert_eq!(names(&default_tools(agent)), expected, "{agent}");
     }
+}
+
+// Tool registry
+
+#[test]
+fn the_registry_makes_each_tool_by_its_name() {
+    assert_eq!(
+        TOOL_NAMES,
+        ["bash", "read_file", "write_file", "list_files"]
+    );
+    for name in TOOL_NAMES {
+        let tool = tool_by_name(name).expect(name);
+        assert_eq!(tool.name(), name);
+        assert!(!tool.description().is_empty(), "{name}");
+        assert_eq!(tool.parameters()["type"], "object", "{name}");
+    }
+    assert!(tool_by_name("rm").is_none());
+}
+
+#[test]
+fn default_tools_come_from_the_registry() {
+    assert_eq!(default_tool_names(AgentType::Coder), ["bash"]);
+    assert!(default_tool_names(AgentType::Summarizer).is_empty());
+    for agent in [
+        AgentType::Coder,
+        AgentType::Summarizer,
+        AgentType::Autonomous,
+    ] {
+        assert_eq!(names(&default_tools(agent)), default_tool_names(agent));
+    }
+}
+
+/// Makes the fresh directory `<target tmp>/<name>` and returns its path.
+fn fresh_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn file_tools_write_read_and_list_files() {
+    let dir = fresh_dir("agent_file_tools");
+    let path = dir.join("sub/a.txt");
+    let path = path.to_str().unwrap();
+
+    let result = WriteFile
+        .call(&json!({"path": path, "content": "héllo"}))
+        .unwrap();
+    assert_eq!(result, format!("wrote 5 characters to `{path}`"));
+    assert_eq!(ReadFile.call(&json!({"path": path})).unwrap(), "héllo");
+
+    std::fs::write(dir.join("sub/b.md"), "x").unwrap();
+    let sub = dir.join("sub");
+    let sub = sub.to_str().unwrap();
+    assert_eq!(
+        ListFiles.call(&json!({"dir": sub})).unwrap(),
+        format!("{sub}/a.txt\n{sub}/b.md\n")
+    );
+    assert_eq!(
+        ListFiles
+            .call(&json!({"dir": sub, "pattern": "*.md"}))
+            .unwrap(),
+        format!("{sub}/b.md\n")
+    );
+}
+
+#[test]
+fn file_tools_fail_on_missing_or_wrong_arguments() {
+    let cases: [(Box<dyn Tool>, Value, &str); 5] = [
+        (
+            Box::new(ReadFile),
+            json!({}),
+            "missing string argument `path`",
+        ),
+        (
+            Box::new(WriteFile),
+            json!({"content": "x"}),
+            "missing string argument `path`",
+        ),
+        (
+            Box::new(WriteFile),
+            json!({"path": "x"}),
+            "missing string argument `content`",
+        ),
+        (
+            Box::new(ListFiles),
+            json!({"pattern": "*"}),
+            "missing string argument `dir`",
+        ),
+        (
+            Box::new(ListFiles),
+            json!({"dir": ".", "pattern": 1}),
+            "missing string argument `pattern`",
+        ),
+    ];
+    for (mut tool, arguments, expected) in cases {
+        assert_eq!(tool.call(&arguments).unwrap_err(), expected, "{arguments}");
+    }
+}
+
+#[test]
+fn read_file_fails_on_a_missing_file() {
+    let dir = fresh_dir("agent_read_missing");
+    let path = dir.join("none.txt");
+    let err = ReadFile
+        .call(&json!({"path": path.to_str().unwrap()}))
+        .unwrap_err();
+    assert!(err.contains("none.txt"), "{err}");
 }
 
 #[test]
@@ -377,6 +507,114 @@ fn fails_when_the_model_does_not_finish_in_max_steps() {
     assert_eq!(arguments.borrow().len(), 2);
 }
 
+/// `reply` with a token count, as from `usage.total_tokens`.
+fn with_tokens(reply: Reply, tokens: u64) -> Reply {
+    Reply {
+        tokens: Some(tokens),
+        ..reply
+    }
+}
+
+#[test]
+fn stops_before_a_request_when_the_run_used_its_token_budget() {
+    let (tool, arguments) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(calls(&[("2", "lookup", "{}")]), 50)),
+    ]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap_err();
+
+    assert_eq!(
+        err,
+        "`agent:coder` used 110 tokens in 2 steps, and its token budget is 100"
+    );
+    // The tool calls of the last reply still run.
+    assert_eq!(arguments.borrow().len(), 2);
+    assert_eq!(client.conversations.len(), 2);
+}
+
+#[test]
+fn returns_a_final_reply_that_goes_over_the_token_budget() {
+    let (tool, _) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(text("done"), 70)),
+    ]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
+fn fails_with_a_token_budget_when_the_server_sends_no_token_count() {
+    let mut client = ScriptedClient::new(vec![Ok(text("done"))]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .token_budget(Some(100))
+        .run_with(&mut client, "task", "")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:coder` has a token budget of 100, but the server did not send \
+         `usage.total_tokens` in its response"
+    );
+
+    // Without a budget, a reply without a token count is fine.
+    let mut client = ScriptedClient::new(vec![Ok(text("done"))]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
+fn debug_writes_the_tokens_of_each_reply_and_the_used_budget() {
+    let (tool, _) = Recorder::boxed("lookup", Ok("found"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(with_tokens(calls(&[("1", "lookup", "{}")]), 60)),
+        Ok(with_tokens(text("done"), 30)),
+    ]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .token_budget(Some(100))
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "=== agent:coder step 1: response (1 tool calls, 60 tokens, 60 of 100 tokens used) ==="
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "=== agent:coder step 2: response (0 tool calls, 30 tokens, 90 of 100 tokens used) ==="
+        ),
+        "{out}"
+    );
+
+    // Without a budget, the header has only the tokens of the reply.
+    let mut client = ScriptedClient::new(vec![Ok(with_tokens(text("done"), 30))]);
+    let mut out = Vec::new();
+    AgentToolLoop::new(AgentType::Coder)
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:coder step 1: response (0 tool calls, 30 tokens) ==="),
+        "{out}"
+    );
+}
+
 #[test]
 fn fails_when_the_client_fails() {
     let mut client = ScriptedClient::new(vec![Err("model is down".into())]);
@@ -396,6 +634,7 @@ fn request_body_has_model_messages_and_tools() {
         Message::Assistant(Reply {
             content: Some("thinking".into()),
             tool_calls: calls(&[("c1", "bash", r#"{"command":"ls"}"#)]).tool_calls,
+            tokens: None,
         }),
         Message::Tool {
             call_id: "c1".into(),
@@ -423,8 +662,8 @@ fn request_body_has_model_messages_and_tools() {
                 "type": "function",
                 "function": {
                     "name": "bash",
-                    "description": Bash.description(),
-                    "parameters": Bash.parameters(),
+                    "description": Bash::default().description(),
+                    "parameters": Bash::default().parameters(),
                 },
             }],
         })
@@ -456,6 +695,9 @@ fn parses_text_and_tool_call_replies() {
         parse_reply(&json).unwrap(),
         calls(&[("c1", "bash", r#"{"command":"ls"}"#)])
     );
+
+    let json = serde_json::from_str(&text_response_with_usage("hi", 42)).unwrap();
+    assert_eq!(parse_reply(&json).unwrap(), with_tokens(text("hi"), 42));
 
     let incomplete = json!({"choices": [{"message": {"tool_calls": [{}]}}]});
     assert_eq!(parse_reply(&incomplete).unwrap(), calls(&[("", "", "")]));
@@ -549,6 +791,56 @@ fn run_loop_uses_max_steps_from_the_params() {
 }
 
 #[test]
+fn run_loop_uses_the_token_budget_of_the_params_or_the_profile() {
+    // The action sets the budget.
+    let (url, _requests) = serve(vec![(
+        200,
+        json!({
+            "choices": [{"message": {"tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "unknown", "arguments": "{}"},
+            }]}}],
+            "usage": {"total_tokens": 300},
+        })
+        .to_string(),
+    )]);
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(
+            &params(&["model=m", "token_budget=200", "task=t"]),
+            Some(&profile(&url)),
+            "",
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:coder (m)` used 300 tokens in 1 steps, and its token budget is 200"
+    );
+
+    // The profile sets the budget, and the server sends no token count.
+    let (url, _requests) = serve(vec![(200, text_response("done"))]);
+    let budget_profile = ModelProfile {
+        token_budget: Some(200),
+        ..profile(&url)
+    };
+    let err = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(&params(&["model=m", "task=t"]), Some(&budget_profile), "")
+        .unwrap_err();
+    assert!(err.contains("has a token budget of 200"), "{err}");
+
+    // The server sends the token count of a final reply.
+    let (url, _requests) = serve(vec![(200, text_response_with_usage("done", 150))]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_loop(
+            &params(&["model=m", "token_budget=200", "task=t"]),
+            Some(&profile(&url)),
+            "",
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+}
+
+#[test]
 fn label_names_the_profile_after_the_loop_reads_it() {
     let mut agent = AgentToolLoop::new(AgentType::Coder);
     assert_eq!(agent.label(), "agent:coder");
@@ -563,6 +855,382 @@ fn label_names_the_profile_after_the_loop_reads_it() {
         )
         .unwrap();
     assert_eq!(agent.label(), "agent:coder (m)");
+}
+
+#[test]
+fn run_loop_runs_an_autonomous_agent_with_its_options() {
+    let (url, requests) = serve(vec![
+        (200, text_response("done")),
+        (200, text_response("done again")),
+    ]);
+    let mut out = Vec::new();
+    let err = AgentToolLoop::new(AgentType::Autonomous)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success_check=test -n \"$DONE\" || { DONE=1; exit 1; }",
+                "max_iterations=2",
+                "guardrails=Do not push.",
+            ]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:autonomous (m)` did not pass its success check \
+         `test -n \"$DONE\" || { DONE=1; exit 1; }` in 2 iterations, the last error: \
+         exit status: 1\n"
+    );
+    let first = request_json(&requests.recv().unwrap());
+    let system = first["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with("in all your work:\nDo not push."),
+        "{system}"
+    );
+    let tools: Vec<&str> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["bash", "read_file", "write_file", "list_files"]);
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("max_iterations: 2\nmax_time: 30m\n"), "{out}");
+    assert!(
+        out.contains("=== agent:autonomous (m) iteration 2 step 2: request ("),
+        "{out}"
+    );
+    assert!(out.contains("s of 30m) ==="), "{out}");
+}
+
+#[test]
+fn chat_without_tools_sends_its_format_instead_of_the_output_schema() {
+    let (url, requests) = serve(vec![
+        (200, text_response("{}")),
+        (200, text_response("text")),
+    ]);
+    let format = title_schema();
+    let other = OutputSchema {
+        name: "other".into(),
+        schema: json!({"type": "object"}),
+    };
+    let mut client = OpenAiClient::new(&url, "model-1", None).with_output_schema(Some(other));
+    let reply = client
+        .chat_without_tools(&[Message::User("x".into())], Some(&format))
+        .unwrap();
+    assert_eq!(reply.content.as_deref(), Some("{}"));
+    let body = request_json(&requests.recv().unwrap());
+    assert_eq!(body["response_format"], format.response_format());
+    assert!(body.get("tools").is_none(), "{body}");
+
+    client
+        .chat_without_tools(&[Message::User("x".into())], None)
+        .unwrap();
+    let body = request_json(&requests.recv().unwrap());
+    assert!(body.get("response_format").is_none(), "{body}");
+}
+
+#[test]
+fn chat_without_tools_of_another_client_sends_the_messages_without_tools() {
+    let mut client = ScriptedClient::new(vec![Ok(text("{}"))]);
+    let reply = client
+        .chat_without_tools(&[Message::User("x".into())], Some(&title_schema()))
+        .unwrap();
+    assert_eq!(reply, text("{}"));
+    assert_eq!(client.tool_names, [Vec::<String>::new()]);
+}
+
+#[test]
+fn run_loop_runs_the_judges_of_an_autonomous_agent() {
+    let verdict = |pass: bool| text_response(&json!({"pass": pass, "reason": "r"}).to_string());
+    let (url, requests) = serve(vec![
+        (
+            200,
+            tool_call_response("c1", "bash", json!({"command": "true"})),
+        ),
+        (200, verdict(true)),
+        (200, text_response("done")),
+        (200, verdict(true)),
+    ]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success=It works.",
+                "guardrails=Do not push.",
+                "guard=judge",
+                "max_violations=1",
+            ]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let bodies: Vec<Value> = (0..4)
+        .map(|_| request_json(&requests.recv().unwrap()))
+        .collect();
+    assert!(bodies[0]["tools"].is_array());
+    assert_eq!(
+        bodies[1]["response_format"]["json_schema"]["name"],
+        "verdict"
+    );
+    assert_eq!(
+        bodies[3]["response_format"]["json_schema"]["name"],
+        "verdict"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "success: It works.\nguardrails: Do not push.\nguard: judge\nmax_violations: 1"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
+    let block = atama::loop_block::parse_block(
+        "fix",
+        &[
+            "max_iterations: 7",
+            "success_check: false",
+            "guardrails:",
+            "- Do not push.",
+            "tools:",
+            "- read_file max_calls=2",
+        ],
+    )
+    .unwrap();
+    let (url, requests) = serve(vec![(200, text_response("done"))]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .loop_block(Some(block))
+        .debug(&mut out)
+        .run_loop_with_env(
+            // The action replaces the success check of the block.
+            &params(&["model=m", "task=t", "loop=fix", "success_check=true"]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let body = request_json(&requests.recv().unwrap());
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["read_file"]);
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with("in all your work:\n- Do not push."),
+        "{system}"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("max_iterations: 7\n"), "{out}");
+    assert!(out.contains("success_check: true\n"), "{out}");
+}
+
+#[test]
+fn run_loop_fails_if_loop_names_no_block() {
+    let err = AgentToolLoop::new(AgentType::Autonomous)
+        .run_loop_with_env(
+            &params(&["model=m", "loop=fix", "success=x"]),
+            Some(&profile("http://x.test")),
+            "",
+            &no_env,
+        )
+        .unwrap_err();
+    assert_eq!(err, "loop block `fix` is not defined in the job");
+}
+
+#[test]
+fn run_loop_summarizes_a_context_over_max_context() {
+    let (url, requests) = serve(vec![
+        (
+            200,
+            tool_call_response("c1", "bash", json!({"command": "seq 1 500"})),
+        ),
+        (200, text_response("listed 500 numbers")),
+        (200, text_response("done")),
+    ]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_loop_with_env(
+            &params(&["model=m", "task=t", "max_context=200"]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let bodies: Vec<Value> = (0..3)
+        .map(|_| request_json(&requests.recv().unwrap()))
+        .collect();
+    assert!(bodies[1].get("tools").is_none(), "{}", bodies[1]);
+    assert_eq!(bodies[2]["messages"].as_array().unwrap().len(), 3);
+    assert!(
+        bodies[2]["messages"][2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("listed 500 numbers")
+    );
+}
+
+#[test]
+fn run_loop_sends_the_judge_requests_to_the_judge_model() {
+    let (agent_url, agent_requests) = serve(vec![(200, text_response("done"))]);
+    let (judge_url, judge_requests) = serve(vec![(
+        200,
+        text_response(&json!({"pass": true, "reason": "ok"}).to_string()),
+    )]);
+    let judge = ModelProfile {
+        name: "small".into(),
+        model: "judge-1".into(),
+        base_url: judge_url,
+        api_key_env: Some("JUDGE_KEY".into()),
+        token_budget: None,
+    };
+    let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .judge_profile(Some(judge.clone()))
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success=It works.",
+                "judge_model=small",
+            ]),
+            Some(&profile(&agent_url)),
+            "",
+            &env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    assert_eq!(
+        request_json(&agent_requests.recv().unwrap())["model"],
+        "model-1"
+    );
+    let request = judge_requests.recv().unwrap();
+    assert!(request.contains("Bearer judge-secret"), "{request}");
+    let body = request_json(&request);
+    assert_eq!(body["model"], "judge-1");
+    assert_eq!(body["response_format"]["json_schema"]["name"], "verdict");
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("\njudge_model: small"), "{out}");
+
+    // Without the profile, or without its API key, the run fails.
+    let run = |judge: Option<ModelProfile>| {
+        AgentToolLoop::new(AgentType::Autonomous)
+            .judge_profile(judge)
+            .run_loop_with_env(
+                &params(&["model=m", "success=x", "judge_model=small"]),
+                Some(&profile("http://x.test")),
+                "",
+                &no_env,
+            )
+            .unwrap_err()
+    };
+    assert_eq!(run(None), "model profile `small` is not defined in the job");
+    assert_eq!(
+        run(Some(judge)),
+        "model profile `small` needs the API key in `JUDGE_KEY`, but `JUDGE_KEY` is not set"
+    );
+}
+
+#[test]
+fn reads_tool_calls_that_a_model_wrote_as_text() {
+    let call = |id: &str, name: &str, arguments: &str| ToolCall {
+        id: id.into(),
+        name: name.into(),
+        arguments: arguments.into(),
+    };
+    assert_eq!(
+        text_tool_calls(
+            "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"ls\"}}\n```",
+            "text-1"
+        ),
+        Some(vec![call("text-1-1", "bash", "{\"command\":\"ls\"}")])
+    );
+    assert_eq!(
+        text_tool_calls(
+            r#"[{"name": "a", "arguments": "{}"}, {"name": "b", "arguments": {}}]"#,
+            "t"
+        ),
+        Some(vec![call("t-1", "a", "{}"), call("t-2", "b", "{}")])
+    );
+    let not_calls = [
+        "Done. I wrote the file.",
+        "[]",
+        "42",
+        r#"{"name": "bash"}"#,
+        r#"{"name": "bash", "arguments": {}, "id": "1"}"#,
+        r#"{"name": 1, "arguments": {}}"#,
+        r#"{"name": "bash", "arguments": 3}"#,
+        r#"[{"name": "a", "arguments": {}}, "b"]"#,
+        "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"broken\n```",
+    ];
+    for text in not_calls {
+        assert_eq!(text_tool_calls(text, "t"), None, "{text}");
+    }
+}
+
+#[test]
+fn the_loop_runs_a_tool_call_in_the_text_of_a_reply() {
+    let (tool, arguments) = Recorder::boxed("bash", Ok("written"));
+    let mut client = ScriptedClient::new(vec![
+        Ok(text(
+            "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"touch a\"}}\n```",
+        )),
+        Ok(text("done")),
+    ]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .with_tools(vec![tool])
+        .debug(&mut out)
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+    assert_eq!(*arguments.borrow(), [json!({"command": "touch a"})]);
+    // The model gets its call back in `tool_calls`, with the result.
+    let second = &client.conversations[1];
+    assert_eq!(
+        second[2],
+        Message::Assistant(calls(&[("text-1-1", "bash", "{\"command\":\"touch a\"}")]))
+    );
+    assert_eq!(
+        second[3],
+        Message::Tool {
+            call_id: "text-1-1".into(),
+            content: "written".into()
+        }
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("=== agent:coder step 1: the reply has 1 tool calls in its text ==="),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_tool_call_in_the_text_is_the_output_of_an_agent_without_tools() {
+    let reply = r#"{"name": "bash", "arguments": {}}"#;
+    let mut client = ScriptedClient::new(vec![Ok(text(reply))]);
+    let output = AgentToolLoop::new(AgentType::Summarizer)
+        .run_with(&mut client, "task", "input")
+        .unwrap();
+    assert_eq!(output, reply);
 }
 
 #[test]
@@ -592,7 +1260,7 @@ fn run_loop_fails_on_invalid_configuration() {
 
 #[test]
 fn bash_tool_returns_stdout_or_the_error() {
-    let mut tool = Bash;
+    let mut tool = Bash::default();
     assert_eq!(tool.name(), "bash");
     assert_eq!(tool.parameters()["required"], json!(["command"]));
 
@@ -615,7 +1283,10 @@ fn bash_tool_writes_a_file_with_a_heredoc() {
     let path = format!("target/bash-tool-heredoc-{}.py", std::process::id());
     let command = format!("cat > {path} <<'EOF'\nprint('hi')\nEOF");
 
-    assert_eq!(Bash.call(&json!({"command": command})), Ok(String::new()));
+    assert_eq!(
+        Bash::default().call(&json!({"command": command})),
+        Ok(String::new())
+    );
     let content = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     assert_eq!(content, "print('hi')\n");

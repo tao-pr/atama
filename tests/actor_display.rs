@@ -19,6 +19,7 @@ fn writes_actions_back_as_statements() {
         "foreach agent:summarizer model=p max_output=\"3 sentences\"",
         "websearch topic=\"rust  release notes\" max_results=3 fetch_content=true base_url=http://x.test",
         "agent:coder task=fix.md",
+        "agent:autonomous model=p success_check=\"cargo test\" guardrails=\"Do not push.\"",
         "agent:summarizer expertise=law max_output=\"3 sentences\"",
         r#"agent:coder task="say \"hi\" \\ a\\b" "" "a b" a=b\c"#,
         "tavily_search",
@@ -103,6 +104,8 @@ fn writes_agent_tool_with_its_type_and_params() {
             params: vec!["a".into(), "b".into()],
             profile: None,
             output_schema: None,
+            loop_block: None,
+            judge_profile: None,
         };
         assert_eq!(actor.to_string(), format!("agent:{name} a b"));
     }

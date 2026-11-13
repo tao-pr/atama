@@ -110,6 +110,7 @@ impl fmt::Display for AgentType {
         f.write_str(match self {
             AgentType::Coder => "coder",
             AgentType::Summarizer => "summarizer",
+            AgentType::Autonomous => "autonomous",
         })
     }
 }

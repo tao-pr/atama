@@ -56,6 +56,24 @@ impl ChatClient for OpenAiClient {
             self.thinking,
             self.output_schema.as_ref(),
         );
+        self.send(body)
+    }
+
+    /// Sends the messages without tools, with the `response_format` of
+    /// `format` if it is set, instead of the output schema of the client.
+    fn chat_without_tools(
+        &mut self,
+        messages: &[Message],
+        format: Option<&OutputSchema>,
+    ) -> Result<Reply, String> {
+        let body = request_body(&self.model, messages, &[], self.thinking, format);
+        self.send(body)
+    }
+}
+
+impl OpenAiClient {
+    /// Sends `body` to the server, and reads the reply.
+    fn send(&mut self, body: Value) -> Result<Reply, String> {
         let mut request = self.agent.post(&self.url);
         if let Some(key) = &self.api_key {
             request = request.header("Authorization", format!("Bearer {key}"));
@@ -81,6 +99,9 @@ impl ChatClient for OpenAiClient {
 /// If `output_schema` is set, the body has its `response_format` (see
 /// [`OutputSchema::response_format`]), which asks the server for a reply
 /// that matches the schema.
+///
+/// The `tools` field has only the available tools (see
+/// [`Tool::available`]). Without available tools, the body has no `tools`.
 pub fn request_body(
     model: &str,
     messages: &[Message],
@@ -92,6 +113,7 @@ pub fn request_body(
         "model": model,
         "messages": messages.iter().map(message_json).collect::<Vec<_>>(),
     });
+    let tools: Vec<_> = tools.iter().filter(|tool| tool.available()).collect();
     if !tools.is_empty() {
         body["tools"] = tools
             .iter()
@@ -150,8 +172,9 @@ pub fn message_json(message: &Message) -> Value {
     }
 }
 
-/// Reads the reply from `choices[0].message` of a chat completions response.
-/// Returns `None` if the response has no message.
+/// Reads the reply from `choices[0].message` of a chat completions response,
+/// and its tokens from `usage.total_tokens`. Returns `None` if the response
+/// has no message.
 pub fn parse_reply(json: &Value) -> Option<Reply> {
     let message = json.get("choices")?.get(0)?.get("message")?;
     let tool_calls = message
@@ -174,6 +197,10 @@ pub fn parse_reply(json: &Value) -> Option<Reply> {
             .and_then(Value::as_str)
             .map(str::to_string),
         tool_calls,
+        tokens: json
+            .get("usage")
+            .and_then(|usage| usage.get("total_tokens"))
+            .and_then(Value::as_u64),
     })
 }
 
@@ -184,4 +211,38 @@ fn text(json: &Value, path: &[&str]) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
+}
+
+/// The tool calls that a model wrote as the text of its reply, instead of
+/// in `tool_calls`. Some small models on Ollama do this, as in
+/// `{"name": "bash", "arguments": {"command": "ls"}}`, often in a code
+/// fence. Returns `None` unless the whole text, without a code fence, is
+/// one such JSON object or an array of them. Each object must have only the
+/// keys `name`, a string, and `arguments`, an object or a string. The id of
+/// call `i` is `<id_prefix>-<i>`, from 1.
+pub fn text_tool_calls(content: &str, id_prefix: &str) -> Option<Vec<ToolCall>> {
+    let json: Value = serde_json::from_str(crate::schema::strip_fence(content)).ok()?;
+    let objects = match json {
+        Value::Array(objects) if !objects.is_empty() => objects,
+        Value::Object(_) => vec![json],
+        _ => return None,
+    };
+    objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            let object = object.as_object().filter(|object| object.len() == 2)?;
+            let name = object.get("name")?.as_str()?;
+            let arguments = match object.get("arguments")? {
+                Value::String(text) => text.clone(),
+                Value::Object(_) => object["arguments"].to_string(),
+                _ => return None,
+            };
+            Some(ToolCall {
+                id: format!("{id_prefix}-{}", index + 1),
+                name: name.to_string(),
+                arguments,
+            })
+        })
+        .collect()
 }

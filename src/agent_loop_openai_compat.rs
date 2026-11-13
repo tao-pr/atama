@@ -38,18 +38,29 @@
 //! different port, change the URL.
 
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::actor::AgentType;
+use crate::loop_block::LoopBlock;
 use crate::profile::ModelProfile;
 use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
+pub mod budget;
+pub mod checks;
+pub mod context;
+pub mod judge;
 pub mod openai;
 pub mod tools;
 
-use agent_options::{AgentConfig, DEFAULT_MAX_STEPS};
+use agent_options::{
+    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, Guard, format_duration,
+};
+use budget::{RunBudget, StopReason};
+use checks::{CommandCheck, FinalCheck, Rejection, SchemaCheck};
+use judge::{Judge, SuccessJudge};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +84,10 @@ pub enum Message {
 pub struct Reply {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// The tokens of the request and the reply together, from
+    /// `usage.total_tokens` of the response. `None` if the server does not
+    /// send them.
+    pub tokens: Option<u64>,
 }
 
 /// A request from the model to run a tool.
@@ -95,6 +110,16 @@ pub trait Tool {
     fn parameters(&self) -> Value;
     /// Runs the tool and returns its result for the model.
     fn call(&mut self, arguments: &Value) -> Result<String, String>;
+    /// Whether the model can call the tool now. A request offers only the
+    /// available tools. A tool at its call limit is not available (see
+    /// [`tools::Limited`]).
+    fn available(&self) -> bool {
+        true
+    }
+    /// Sets the deadline of the run. A tool that runs a command stops it
+    /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
+    /// The default does nothing.
+    fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
 }
 
 /// A chat model that can call tools.
@@ -102,6 +127,19 @@ pub trait ChatClient {
     /// Sends the conversation and the available tools, and returns the
     /// model's next reply.
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String>;
+
+    /// Sends a request aside from the conversation of the agent: without
+    /// tools and without the output schema of the agent. If `format` is set,
+    /// it asks for a reply that matches it. The judges (see
+    /// [`judge::Judge`]) and the summary of the context use it. The default
+    /// sends the messages with [`ChatClient::chat`].
+    fn chat_without_tools(
+        &mut self,
+        messages: &[Message],
+        _format: Option<&OutputSchema>,
+    ) -> Result<Reply, String> {
+        self.chat(messages, &[])
+    }
 }
 
 /// Runs one agent of a given type until it finishes its work.
@@ -109,12 +147,45 @@ pub struct AgentToolLoop<'a> {
     agent: AgentType,
     tools: Vec<Box<dyn Tool>>,
     max_steps: u32,
+    /// The most iterations of one run. 1 for `coder` and `summarizer`.
+    max_iterations: u32,
+    /// The most wall clock time of one run, if set.
+    max_time: Option<Duration>,
+    /// The start of the action, for the time limit. `None` makes
+    /// [`AgentToolLoop::run_with`] start the time when it starts.
+    started: Option<Instant>,
+    /// Gives the current time. Tests replace it.
+    clock: Box<dyn Fn() -> Instant + 'a>,
+    /// The bash command of the success check, if set (see
+    /// [`checks::CommandCheck`]).
+    success_check: Option<String>,
+    /// The success criteria that a judge examines, if set (see
+    /// [`judge::SuccessJudge`]).
+    success: Option<String>,
+    /// The guardrails for the system prompt, if set.
+    guardrails: Option<String>,
+    /// How the loop enforces the guardrails.
+    guard: Guard,
+    /// The most tool calls that the guard blocks before the run fails.
+    max_violations: u32,
+    /// The most tokens that one run can use, if set.
+    token_budget: Option<u64>,
+    /// The most estimated tokens of the conversation before the loop
+    /// summarizes it, if set (see [`context`]).
+    max_context: Option<u64>,
     /// The `reasoning_effort` that the client sends, for debug output only.
     reasoning_effort: Option<&'static str>,
     /// The schema block of the job that `output_schema=<name>` names.
     schema_block: Option<OutputSchema>,
     /// The schema that the final reply must match, if set.
     output_schema: Option<OutputSchema>,
+    /// The loop block of the job that `loop=<name>` names.
+    loop_block: Option<LoopBlock>,
+    /// The model profile of the job that `judge_model=<name>` names.
+    judge_profile: Option<ModelProfile>,
+    /// The client of the judges, if they do not use the client of the
+    /// agent (see [`AgentToolLoop::judge_client`]).
+    judge_client: Option<Box<dyn ChatClient + 'a>>,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
     /// The name of the model profile of the action, if known. The debug
@@ -131,9 +202,23 @@ impl<'a> AgentToolLoop<'a> {
             agent,
             tools: tools::default_tools(agent),
             max_steps: DEFAULT_MAX_STEPS,
+            max_iterations: 1,
+            max_time: None,
+            started: None,
+            clock: Box::new(Instant::now),
+            success_check: None,
+            success: None,
+            guardrails: None,
+            guard: Guard::Prompt,
+            max_violations: DEFAULT_MAX_VIOLATIONS,
+            token_budget: None,
+            max_context: None,
             reasoning_effort: None,
             schema_block: None,
             output_schema: None,
+            loop_block: None,
+            judge_profile: None,
+            judge_client: None,
             debug: None,
             profile: None,
         }
@@ -164,6 +249,31 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets the loop block of the job that the `loop=<name>` of the action
+    /// names. [`AgentToolLoop::run_loop`] reads the options of the block
+    /// with the options of the action, and takes the tools of the block
+    /// (see [`LoopBlock::merge`] and [`LoopBlock::make_tools`]).
+    pub fn loop_block(mut self, block: Option<LoopBlock>) -> Self {
+        self.loop_block = block;
+        self
+    }
+
+    /// Sets the model profile of the job that the `judge_model=<name>` of
+    /// the action names. [`AgentToolLoop::run_loop`] makes the client of the
+    /// judges from it.
+    pub fn judge_profile(mut self, profile: Option<ModelProfile>) -> Self {
+        self.judge_profile = profile;
+        self
+    }
+
+    /// Sets the client of the judges: the success judge and the guard (see
+    /// [`judge`]). Without it, the judges use the client of the agent.
+    /// [`AgentToolLoop::run_loop`] sets it from `judge_model=`.
+    pub fn judge_client(mut self, client: impl ChatClient + 'a) -> Self {
+        self.judge_client = Some(Box::new(client));
+        self
+    }
+
     /// Sets the schema that the final reply of [`AgentToolLoop::run_with`]
     /// must match. [`AgentToolLoop::run_loop`] sets it from
     /// `output_schema=`.
@@ -175,6 +285,85 @@ impl<'a> AgentToolLoop<'a> {
     /// Sets the most model replies that one run asks for.
     pub fn max_steps(mut self, max_steps: u32) -> Self {
         self.max_steps = max_steps;
+        self
+    }
+
+    /// Sets the most iterations of one run. After a failed success check,
+    /// the next iteration starts.
+    pub fn max_iterations(mut self, max_iterations: u32) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    /// Sets the most wall clock time of one run. `None` sets no limit.
+    /// The loop examines the time before each request and before each tool
+    /// call.
+    pub fn max_time(mut self, max_time: Option<Duration>) -> Self {
+        self.max_time = max_time;
+        self
+    }
+
+    /// Replaces the clock of the time limit. Tests use it so that they do
+    /// not need to wait.
+    pub fn clock(mut self, clock: impl Fn() -> Instant + 'a) -> Self {
+        self.clock = Box::new(clock);
+        self
+    }
+
+    /// Sets the bash command of the success check. The check runs on each
+    /// reply without tool calls, and a failed check starts the next
+    /// iteration (see [`checks::CommandCheck`]).
+    pub fn success_check(mut self, command: Option<String>) -> Self {
+        self.success_check = command;
+        self
+    }
+
+    /// Sets the success criteria. On each reply without tool calls, a judge
+    /// decides whether the work meets them, and a failed check starts the
+    /// next iteration (see [`judge::SuccessJudge`]).
+    pub fn success(mut self, criteria: Option<String>) -> Self {
+        self.success = criteria;
+        self
+    }
+
+    /// Sets how the loop enforces the guardrails. With [`Guard::Judge`], a
+    /// judge examines each tool call before it runs, and the loop blocks a
+    /// call that breaks a guardrail (see [`judge::review`]).
+    pub fn guard(mut self, guard: Guard) -> Self {
+        self.guard = guard;
+        self
+    }
+
+    /// Sets the most tool calls that the guard blocks before the run fails.
+    pub fn max_violations(mut self, max_violations: u32) -> Self {
+        self.max_violations = max_violations;
+        self
+    }
+
+    /// Sets the guardrails, rules in natural language that the loop puts
+    /// into the system prompt.
+    pub fn guardrails(mut self, guardrails: Option<String>) -> Self {
+        self.guardrails = guardrails;
+        self
+    }
+
+    /// Sets the most tokens that one run can use. The loop adds up the
+    /// tokens of each reply (see [`Reply::tokens`]). It does not send a new
+    /// request after the run used `token_budget` tokens or more, so one run
+    /// can go over the budget by the tokens of its last step. `None` sets no
+    /// limit. [`AgentToolLoop::run_loop`] sets it from `token_budget=`.
+    pub fn token_budget(mut self, token_budget: Option<u64>) -> Self {
+        self.token_budget = token_budget;
+        self
+    }
+
+    /// Sets the most tokens of the conversation, as
+    /// [`context::estimate_tokens`] estimates them. Before a request with
+    /// more tokens, the loop replaces the conversation after the task with a
+    /// summary (see [`context`]). `None` never summarizes.
+    /// [`AgentToolLoop::run_loop`] sets it from `max_context=`.
+    pub fn max_context(mut self, max_context: Option<u64>) -> Self {
+        self.max_context = max_context;
         self
     }
 
@@ -194,9 +383,14 @@ impl<'a> AgentToolLoop<'a> {
         }
     }
 
-    /// Names of the tools that the model can call.
+    /// Names of the tools that the model can call now (see
+    /// [`Tool::available`]).
     pub fn tool_names(&self) -> Vec<&str> {
-        self.tools.iter().map(|tool| tool.name()).collect()
+        self.tools
+            .iter()
+            .filter(|tool| tool.available())
+            .map(|tool| tool.name())
+            .collect()
     }
 
     /// Runs the agent with `params` from the action statement, the model
@@ -222,8 +416,13 @@ impl<'a> AgentToolLoop<'a> {
     /// `output_schema=`, the reply must match the schema (see
     /// [`schema::load`]).
     ///
+    /// With a loop block (see [`AgentToolLoop::loop_block`]), the options
+    /// of the block come before the options of the action, and the tools of
+    /// the block replace the default tools.
+    ///
     /// Fails if the configuration is invalid, the output schema cannot be
-    /// loaded, or a `summarizer` agent has no input.
+    /// loaded, `loop=` names no loop block, or a `summarizer` agent has no
+    /// input.
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
@@ -231,9 +430,42 @@ impl<'a> AgentToolLoop<'a> {
         input: &str,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
-        let config = AgentConfig::from_params(self.agent, params, profile, env)?;
+        self.started = Some((self.clock)());
+        let params = match &self.loop_block {
+            Some(block) => block.merge(params),
+            None => params.to_vec(),
+        };
+        let config = AgentConfig::from_params(self.agent, &params, profile, env)?;
         self.profile = Some(config.profile.clone());
+        if let Some(options) = &config.autonomous {
+            if let Some(name) = &options.loop_name
+                && self.loop_block.is_none()
+            {
+                return Err(format!("loop block `{name}` is not defined in the job"));
+            }
+            if let Some(tools) = self.loop_block.as_ref().and_then(LoopBlock::make_tools) {
+                self.tools = tools;
+            }
+            if let Some(name) = &options.judge_model {
+                let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
+                let api_key = agent_options::read_api_key(judge, env)?;
+                self.judge_client = Some(Box::new(openai::OpenAiClient::new(
+                    &judge.base_url,
+                    &judge.model,
+                    api_key,
+                )));
+            }
+            self.max_iterations = options.max_iterations;
+            self.max_time = Some(options.max_time);
+            self.success_check = options.success_check.clone();
+            self.success = options.success.clone();
+            self.guardrails = options.guardrails.clone();
+            self.guard = options.guard;
+            self.max_violations = options.max_violations;
+        }
         self.max_steps = config.max_steps;
+        self.token_budget = config.token_budget;
+        self.max_context = config.max_context;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
         self.output_schema = config
             .output_schema
@@ -241,10 +473,7 @@ impl<'a> AgentToolLoop<'a> {
             .map(|value| schema::load(value, self.schema_block.as_ref()))
             .transpose()?;
         let summary = config.summary();
-        self.write_debug(format!(
-            "=== {} configuration ===\n{summary}",
-            self.label()
-        ));
+        self.write_debug(format!("=== {} configuration ===\n{summary}", self.label()));
         let task = match &config.summarizer {
             Some(options) => options.task(&config.task, input)?,
             None => config.task.clone(),
@@ -263,7 +492,9 @@ impl<'a> AgentToolLoop<'a> {
     /// the reply has tool calls, the loop runs them in order and adds their
     /// results to the conversation. A failed tool call does not stop the
     /// loop: the model gets the error and can try again. The text of the
-    /// first reply without tool calls is the output.
+    /// first reply without tool calls is the output. If the whole text of a
+    /// reply is a tool call in JSON, the loop runs it as a tool call (see
+    /// [`openai::text_tool_calls`]).
     ///
     /// With an output schema (see [`AgentToolLoop::output_schema`]), the
     /// system prompt tells the model the schema, and the output is the JSON
@@ -271,9 +502,32 @@ impl<'a> AgentToolLoop<'a> {
     /// [`OutputSchema::check_reply`]). If such a reply does not match, the
     /// model gets the errors and can try again.
     ///
+    /// With a token budget (see [`AgentToolLoop::token_budget`]), the loop
+    /// counts the tokens of each reply, and stops before a request if the
+    /// run used the budget.
+    ///
+    /// With a context limit (see [`AgentToolLoop::max_context`]), the loop
+    /// summarizes the conversation before a request that is over the limit,
+    /// and sends the request with the summary instead (see [`context`]).
+    ///
+    /// With a success check (see [`AgentToolLoop::success_check`]) or
+    /// success criteria (see [`AgentToolLoop::success`]), a reply without
+    /// tool calls ends an iteration. If the check fails, the model gets the
+    /// reason, and the next iteration starts. The guardrails (see
+    /// [`AgentToolLoop::guardrails`]) are in the system prompt. With
+    /// [`Guard::Judge`], a judge examines each tool call before it runs. A
+    /// blocked call does not run, and the model gets the reason. The tokens
+    /// of the judges count in the token budget.
+    ///
     /// Fails if the task and the input are both empty, the client fails, or
-    /// the model has no final reply, or no reply that matches the schema,
-    /// after `max_steps` replies.
+    /// the model has no final reply, or no reply that passes the checks,
+    /// after `max_steps` replies or `max_iterations` iterations. With a
+    /// token budget, it also fails if a reply has no token count, or the run
+    /// used the budget before the final reply. It fails if the summary
+    /// request fails. With a time limit, it fails
+    /// if the run used the time before a request or a tool call. With
+    /// [`Guard::Judge`], it fails if the guard blocks `max_violations`
+    /// calls.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -283,16 +537,78 @@ impl<'a> AgentToolLoop<'a> {
         let prompt = user_prompt(task, input)
             .ok_or_else(|| format!("`{}` needs `task=` or an input", self.label()))?;
         let mut system = system_prompt(self.agent).to_string();
+        if let Some(command) = &self.success_check {
+            system = format!(
+                "{system}\n\nWhen you reply without tool calls, the success check \
+                 `{command}` runs. If it exits with status 0, the task is done. Else you get \
+                 its output, and you continue the work."
+            );
+        }
+        if let Some(criteria) = &self.success {
+            system = format!(
+                "{system}\n\nThe task is done when your work meets these success criteria:\n\
+                 {criteria}\nWhen you reply without tool calls, a judge examines your tool \
+                 calls, their results and your reply. If the work does not meet the criteria, \
+                 you get the reason, and you continue the work."
+            );
+        }
+        if let Some(guardrails) = &self.guardrails {
+            system = format!(
+                "{system}\n\nGuardrails. You must obey these rules in all your work:\n{guardrails}"
+            );
+        }
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
         }
-        let mut messages = vec![Message::System(system), Message::User(prompt)];
-        // The error of the last final reply that did not match the schema.
-        let mut schema_error: Option<String> = None;
+        let mut messages = vec![Message::System(system), Message::User(prompt.clone())];
+        let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget)
+            .with_max_violations(self.max_violations);
+        if let Some(max) = self.max_time {
+            let start = self.started.unwrap_or_else(|| (self.clock)());
+            budget = budget.with_time_limit(start, max);
+        }
+        let deadline_time = budget.deadline_time();
+        for tool in &mut self.tools {
+            tool.set_deadline_time(deadline_time);
+        }
+        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
+        if let Some(schema) = &self.output_schema {
+            checks.push(Box::new(SchemaCheck::new(schema.clone())));
+        }
+        if let Some(command) = &self.success_check {
+            checks.push(Box::new(
+                CommandCheck::new(command.clone()).with_deadline_time(deadline_time),
+            ));
+        }
+        if let Some(criteria) = &self.success {
+            checks.push(Box::new(SuccessJudge::new(task, criteria)));
+        }
+        // The guardrails that the guard enforces, if the guard is on.
+        let guarded = match self.guard {
+            Guard::Judge => self.guardrails.clone(),
+            Guard::Prompt => None,
+        };
+        // The index of the check that failed last, and its error.
+        let mut last_failure: Option<(usize, String)> = None;
+        let mut judge_client = self.judge_client.take();
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
-        for step in 1..=self.max_steps {
+        loop {
+            let now = (self.clock)();
+            let step = match budget.check_time(now).and_then(|()| budget.start_step()) {
+                Ok(step) => step,
+                Err(reason) => return Err(self.stop_error(&reason, &checks, last_failure)),
+            };
+            let at = self.position(&budget, step);
+            if let Some(max) = self.max_context
+                && messages.len() > 2
+                && context::estimate_tokens(&messages) > max
+            {
+                messages = self.compact(client, &prompt, &messages, &mut budget, &at)?;
+                // The summary is the only new message of the request.
+                sent = 2;
+            }
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
@@ -302,47 +618,134 @@ impl<'a> AgentToolLoop<'a> {
                 let format = self.output_schema.as_ref().map_or(String::new(), |schema| {
                     format!(", output_schema: {}", schema.name)
                 });
+                let time = budget.time_usage(now).map_or(String::new(), |(used, max)| {
+                    format!(", {}s of {}", used.as_secs(), format_duration(max))
+                });
                 self.write_debug(format!(
-                    "=== {} step {step}: request ({} messages, {} new, tools: {tools}{effort}{format}) ===\n{new}",
+                    "=== {} {at}: request ({} messages, {} new, tools: {tools}{effort}{format}{time}) ===\n{new}",
                     self.label(),
                     messages.len(),
                     messages.len() - sent,
                 ));
             }
             sent = messages.len();
-            let reply = client.chat(&messages, &self.tools)?;
+            let mut reply = client.chat(&messages, &self.tools)?;
+            if reply.tool_calls.is_empty()
+                && !self.tool_names().is_empty()
+                && let Some(calls) = reply
+                    .content
+                    .as_deref()
+                    .and_then(|text| openai::text_tool_calls(text, &format!("text-{step}")))
+            {
+                // A tool call in the text of the reply: the loop runs it as a
+                // real one, and sends it back to the model in `tool_calls`.
+                self.write_debug(format!(
+                    "=== {} {at}: the reply has {} tool calls in its text ===",
+                    self.label(),
+                    calls.len()
+                ));
+                reply.tool_calls = calls;
+                reply.content = None;
+            }
+            budget
+                .add_tokens(reply.tokens)
+                .map_err(|reason| reason.message(&self.label()))?;
             if self.debug.is_some() {
                 let json = pretty(std::slice::from_ref(&Message::Assistant(reply.clone())));
+                let tokens = reply
+                    .tokens
+                    .map_or(String::new(), |tokens| format!(", {tokens} tokens"));
+                let used = budget.token_usage().map_or(String::new(), |(used, limit)| {
+                    format!(", {used} of {limit} tokens used")
+                });
                 self.write_debug(format!(
-                    "=== {} step {step}: response ({} tool calls) ===\n{json}",
+                    "=== {} {at}: response ({} tool calls{tokens}{used}) ===\n{json}",
                     self.label(),
                     reply.tool_calls.len()
                 ));
             }
             if reply.tool_calls.is_empty() {
                 let text = reply.content.clone().unwrap_or_default();
-                let Some(schema) = &self.output_schema else {
-                    return Ok(text);
-                };
-                let error = match schema.check_reply(&text) {
-                    Ok(json) => return Ok(json),
-                    Err(error) => error,
+                let mut judge = Judge::new(match judge_client.as_deref_mut() {
+                    Some(judge_client) => judge_client,
+                    None => &mut *client,
+                });
+                let result = checks::run_checks(&mut checks, &text, &mut judge, &messages);
+                for tokens in judge.tokens {
+                    budget
+                        .add_tokens(tokens)
+                        .map_err(|reason| reason.message(&self.label()))?;
+                }
+                let Rejection {
+                    index,
+                    message,
+                    error,
+                } = match result {
+                    Ok(output) => return Ok(output),
+                    Err(rejection) => rejection,
                 };
                 self.write_debug(format!(
-                    "=== {} step {step}: reply does not match output schema `{}` ===\n{error}",
-                    self.label(), schema.name
+                    "=== {} {at}: {} ===\n{error}",
+                    self.label(),
+                    checks[index].rejection()
                 ));
+                let mut message = message;
+                if checks[index].ends_iteration() {
+                    match budget.next_iteration() {
+                        Ok(iteration) => {
+                            message = format!(
+                                "{message}\nThis is iteration {iteration} of {}.",
+                                self.max_iterations
+                            );
+                        }
+                        Err(reason) => {
+                            return Err(self.stop_error(&reason, &checks, Some((index, error))));
+                        }
+                    }
+                }
                 messages.push(Message::Assistant(reply));
-                messages.push(Message::User(format!(
-                    "Your reply is not valid: {error}\nReply again with only the JSON value."
-                )));
-                schema_error = Some(error);
+                messages.push(Message::User(message));
+                last_failure = Some((index, error));
                 continue;
             }
             let calls = reply.tool_calls.clone();
             messages.push(Message::Assistant(reply));
             let count = calls.len();
             for (index, call) in calls.into_iter().enumerate() {
+                if let Err(reason) = budget.check_time((self.clock)()) {
+                    return Err(self.stop_error(&reason, &checks, last_failure));
+                }
+                if let Some(guardrails) = &guarded {
+                    let mut judge = Judge::new(match judge_client.as_deref_mut() {
+                        Some(judge_client) => judge_client,
+                        None => &mut *client,
+                    });
+                    let blocked = judge::review(&mut judge, guardrails, &call);
+                    for tokens in judge.tokens {
+                        budget
+                            .add_tokens(tokens)
+                            .map_err(|reason| reason.message(&self.label()))?;
+                    }
+                    if let Some(reason) = blocked {
+                        self.write_debug(format!(
+                            "=== {} {at}: tool call {} of {count}: {} (id {}) blocked by the \
+                             guard ===\narguments:\n{}\nreason: {reason}",
+                            self.label(),
+                            index + 1,
+                            call.name,
+                            call.id,
+                            pretty_json(&call.arguments),
+                        ));
+                        budget
+                            .add_violation(&reason)
+                            .map_err(|stop| stop.message(&self.label()))?;
+                        messages.push(Message::Tool {
+                            call_id: call.id,
+                            content: format!("error: blocked by guardrail: {reason}"),
+                        });
+                        continue;
+                    }
+                }
                 let result = self.call_tool(&call);
                 if self.debug.is_some() {
                     let outcome = match &result {
@@ -350,7 +753,7 @@ impl<'a> AgentToolLoop<'a> {
                         Err(err) => format!("error: {err}"),
                     };
                     self.write_debug(format!(
-                        "=== {} step {step}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
+                        "=== {} {at}: tool call {} of {count}: {} (id {}) ===\narguments:\n{}\nresult: {outcome}",
                         self.label(),
                         index + 1,
                         call.name,
@@ -365,17 +768,81 @@ impl<'a> AgentToolLoop<'a> {
                 });
             }
         }
-        if let (Some(error), Some(schema)) = (schema_error, &self.output_schema) {
-            return Err(format!(
-                "`{}` did not reply with JSON that matches output schema `{}` in {} steps, \
-                 the last error: {error}",
-                self.label(), schema.name, self.max_steps
-            ));
+    }
+
+    /// The error of a run that stops for `reason`. If the run used all its
+    /// steps or iterations after a failed final check, the error names that
+    /// check and its last error. If the run used its tokens or its time
+    /// after a failed success check, the error adds the last error of the
+    /// check.
+    fn stop_error(
+        &self,
+        reason: &StopReason,
+        checks: &[Box<dyn FinalCheck>],
+        last_failure: Option<(usize, String)>,
+    ) -> String {
+        let label = self.label();
+        match (reason, last_failure) {
+            (StopReason::Steps { max }, Some((index, error))) => format!(
+                "`{label}` {} in {max} steps, the last error: {error}",
+                checks[index].failure()
+            ),
+            (StopReason::Iterations { max }, Some((index, error))) => format!(
+                "`{label}` {} in {max} iterations, the last error: {error}",
+                checks[index].failure()
+            ),
+            (StopReason::Tokens { .. } | StopReason::Time { .. }, Some((index, error)))
+                if checks[index].ends_iteration() =>
+            {
+                format!("{}, the last error: {error}", reason.message(&label))
+            }
+            (reason, _) => reason.message(&label),
         }
-        Err(format!(
-            "`{}` did not finish in {} steps",
-            self.label(), self.max_steps
-        ))
+    }
+
+    /// Asks the model for a summary of `messages` after the task `prompt`,
+    /// adds its tokens to `budget`, and returns the compacted conversation
+    /// (see [`context::compacted`]).
+    ///
+    /// Fails if the summary request fails, or the reply has no token count
+    /// and a token budget is set.
+    fn compact(
+        &mut self,
+        client: &mut dyn ChatClient,
+        prompt: &str,
+        messages: &[Message],
+        budget: &mut RunBudget,
+        at: &str,
+    ) -> Result<Vec<Message>, String> {
+        let request = context::summary_request(prompt, &messages[2..]);
+        let reply = client
+            .chat_without_tools(&request, None)
+            .map_err(|err| format!("`{}` could not summarize its context: {err}", self.label()))?;
+        budget
+            .add_tokens(reply.tokens)
+            .map_err(|reason| reason.message(&self.label()))?;
+        let summary = reply.content.unwrap_or_default();
+        let compacted = context::compacted(messages, &summary);
+        self.write_debug(format!(
+            "=== {} {at}: context compacted ({} messages, about {} tokens, to {} messages, \
+             about {} tokens) ===\n{summary}",
+            self.label(),
+            messages.len(),
+            context::estimate_tokens(messages),
+            compacted.len(),
+            context::estimate_tokens(&compacted),
+        ));
+        Ok(compacted)
+    }
+
+    /// The position of a step in debug headers: `step 3`, or
+    /// `iteration 2 step 3` if the run can have more than one iteration.
+    fn position(&self, budget: &RunBudget, step: u32) -> String {
+        if self.max_iterations > 1 {
+            format!("iteration {} step {step}", budget.iteration())
+        } else {
+            format!("step {step}")
+        }
     }
 
     /// Writes one block of debug output, if debug output is on. A failed
@@ -435,6 +902,12 @@ fn system_prompt(agent: AgentType) -> &'static str {
             "You are a coding agent that works in the current directory. Use the \
              tools to read, change and test code for the task. When you are done, \
              reply with a short summary of the changes, without tool calls."
+        }
+        AgentType::Autonomous => {
+            "You are an autonomous agent that works in the current directory. Nobody \
+             watches you while you work. Use the tools to do the task step by step. Read \
+             before you change, and test your changes. When you think that the task is \
+             done, reply with a short summary of the work, without tool calls."
         }
         AgentType::Summarizer => {
             "You are a summarizing agent. The user message has an instruction, an \

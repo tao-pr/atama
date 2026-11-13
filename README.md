@@ -54,6 +54,8 @@ Examples:
   `output_schema=`.
 - `jobs/sample_coder.md`: a `coder` agent that writes a Python program, and
   a `summarizer` agent that explains it.
+- `jobs/sample_autonomous.md`: an `autonomous` agent that works until a
+  check script accepts its report.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
@@ -120,12 +122,24 @@ Atama makes a graph of the tasks from their `begin_if` conditions.
 
 ## Agents
 
-An `agent:coder` or `agent:summarizer` action sends its task to a chat
-model. [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each
-agent. This section describes the parts of the job file that agents use.
+An `agent:<type>` action sends its task to a chat model. There are three
+agent types:
 
-If you use `agent:coder`, the model can run any command with your
-permissions. Use it only in a directory and with a model that you trust.
+- `coder` runs bash commands to do a task.
+- `summarizer` summarizes its input. It has no tools.
+- `autonomous` works in iterations until its success checks pass. A check
+  is a bash command, criteria for a judge model, or both. Limits on
+  iterations, steps, tokens and time stop the run. Guardrails tell the agent
+  what it must not do, and a judge can block a tool call that breaks them.
+
+[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
+```` ```loop:<name> ```` block can hold the options of an `autonomous`
+agent (see [Loop blocks](ACTIONS.md#loop-blocks)). This section describes
+the parts of the job file that agents use.
+
+If you use `agent:coder` or `agent:autonomous`, the model can run any
+command with your permissions. Use them only in a directory and with a
+model that you trust.
 
 ### Model profiles
 
@@ -133,7 +147,7 @@ A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -143,10 +157,28 @@ on one line of the `config` block:
   must set it.
 - `api_key=<ENV_VAR>`: the environment variable with the API key. Leave it
   out for a server without a key, such as Ollama.
+- `token_budget=<n>`: the most tokens that one run of an agent can use.
+  Leave it out for no limit. See "Token budget" below.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job
 does not start.
+
+### Token budget (optional)
+
+A token budget limits the tokens that one run of an agent uses. Set it on a
+model profile with `token_budget=<n>`, or on one action, as in
+`agent:coder model=local-qwen token_budget=50000`. The value of the action
+replaces the value of the profile.
+
+Atama adds up `usage.total_tokens` from each response of the server. Each
+request sends the whole conversation, so each step costs more than the step
+before it. Atama does not send a new request after the run used the budget,
+and the action fails. A run can go over the budget by the tokens of its
+last step. If that step gives the final reply, the action succeeds.
+
+If a budget is set and the server sends no `usage` in its response, the
+action fails.
 
 ### Output schemas (optional)
 

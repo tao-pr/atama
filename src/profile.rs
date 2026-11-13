@@ -6,6 +6,7 @@
 //! ```text
 //! local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
 //! openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
+//! small-budget: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1, token_budget=50000
 //! ```
 //!
 //! An agent action then selects a profile by its name, as in
@@ -29,13 +30,30 @@ pub struct ModelProfile {
     /// The name of the environment variable with the API key, from
     /// `api_key=<ENV_VAR>`. `None` if the server needs no key.
     pub api_key_env: Option<String>,
+    /// The most tokens that one run of an agent loop can use, from
+    /// `token_budget=<n>`. The `token_budget=` option of an agent action
+    /// replaces it. `None` sets no limit.
+    pub token_budget: Option<u64>,
 }
 
-/// Reads one profile line: `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>]`.
+/// Reads the value of `token_budget=`, a positive number of tokens.
+///
+/// Fails if `value` is not a positive whole number.
+pub fn parse_token_budget(value: &str) -> Result<u64, String> {
+    value
+        .parse()
+        .ok()
+        .filter(|tokens| *tokens > 0)
+        .ok_or_else(|| format!("`token_budget={value}` is not a positive number"))
+}
+
+/// Reads one profile line:
+/// `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`.
 ///
 /// Fails if the line has no `:`, the name is empty or has whitespace, a
 /// setting is not `key=value`, a key is unknown, empty or set twice, or
-/// `model` or `base_url` is missing.
+/// `model` or `base_url` is missing, or `token_budget` is not a positive
+/// number.
 impl FromStr for ModelProfile {
     type Err = String;
 
@@ -52,6 +70,7 @@ impl FromStr for ModelProfile {
         let mut model = None;
         let mut base_url = None;
         let mut api_key_env = None;
+        let mut token_budget = None;
         for setting in settings.split(',') {
             let setting = setting.trim();
             let Some((key, value)) = setting.split_once('=') else {
@@ -63,10 +82,11 @@ impl FromStr for ModelProfile {
                 "model" => &mut model,
                 "base_url" => &mut base_url,
                 "api_key" => &mut api_key_env,
+                "token_budget" => &mut token_budget,
                 other => {
                     return Err(format!(
                         "unknown setting `{other}` in profile `{name}`, expected `model=`, \
-                         `base_url=` or `api_key=`"
+                         `base_url=`, `api_key=` or `token_budget=`"
                     ));
                 }
             };
@@ -85,11 +105,17 @@ impl FromStr for ModelProfile {
             }
         }
         let missing = |key: &str| format!("profile `{name}` needs `{key}=`");
+        let token_budget = token_budget
+            .as_deref()
+            .map(parse_token_budget)
+            .transpose()
+            .map_err(|err| format!("{err} in profile `{name}`"))?;
         Ok(ModelProfile {
             name: name.to_string(),
             model: model.ok_or_else(|| missing("model"))?,
             base_url: base_url.ok_or_else(|| missing("base_url"))?,
             api_key_env,
+            token_budget,
         })
     }
 }
@@ -143,6 +169,14 @@ pub fn resolve(
         .iter()
         .find_map(|param| param.strip_prefix("model="))
         .ok_or_else(|| missing_model(agent))?;
+    find(name, profiles)
+}
+
+/// Finds the profile `name` in `profiles`, for `model=<name>` or
+/// `judge_model=<name>`.
+///
+/// Fails if `profiles` has no profile with that name.
+pub fn find(name: &str, profiles: &Profiles) -> Result<ModelProfile, String> {
     if let Some(profile) = profiles.get(name) {
         return Ok(profile.clone());
     }

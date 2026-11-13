@@ -1,6 +1,6 @@
 ```config
 local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
-local-qwen2: model=qwen2.5-coder:3b, base_url=http://localhost:11434/v1
+local-qwen2: model=qwen2.5-coder:3b, base_url=http://localhost:11434/v1, token_budget=60000
 ```
 
 # Code and explain
@@ -18,6 +18,9 @@ Prerequisites:
   `ollama pull hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M` and
   `ollama pull qwen2.5-coder:3b`.
 - `python3`, to run the program that the agent writes.
+
+The `local-qwen2` profile has `token_budget=60000`. Each agent run that
+uses this profile can use at most 60,000 tokens.
 
 The `coder` agent can run any command with your permissions. Run the job only
 in a directory that you trust.
@@ -53,8 +56,15 @@ of at most 10 lines to its own file with its `bash` tool, and runs it to
 test it. `thinking=false` makes the small models faster on a CPU. The task
 passes no output on.
 
+Each request sends the whole conversation again, so the tokens grow with
+each step. A token budget stops an agent that loops too long. The
+`local-spark2` agent sets `token_budget=40000` on its action. The
+`local-qwen2` agent has no `token_budget=`, so it uses the budget of its
+profile. If an agent uses its budget before its final reply, it fails.
+Then `if_fail: retry=0` fails the task without a retry.
+
 - actions-parallel:max=1
-  - agent:coder model=local-spark2 thinking=false max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
+  - agent:coder model=local-spark2 thinking=false max_steps=8 token_budget=40000 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
   - agent:coder model=local-qwen2 thinking=true max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
 - if_fail: retry=0
 
