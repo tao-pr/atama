@@ -1749,24 +1749,30 @@ fn rejects_an_invalid_judge_model() {
 #[test]
 fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
     let job = parse_job(include_str!("../jobs/sample_autonomous.md")).expect("job should parse");
-    let Actor::AgentTool { agent, params, .. } = &job.tasks[1].actions[0] else {
-        panic!("expected the coder, got {:?}", job.tasks[1].actions[0]);
+    assert!(matches!(job.tasks[1].actions[0], Actor::WebSearch { .. }));
+    let Actor::AgentTool { agent, params, .. } = &job.tasks[2].actions[0] else {
+        panic!("expected the coder, got {:?}", job.tasks[2].actions[0]);
     };
     assert_eq!(*agent, AgentType::Coder);
     assert!(
-        params.iter().any(|p| p.contains("check_fizzbuzz.py")),
+        params.iter().any(|p| p.contains("check_report.py")),
         "{params:?}"
     );
-    let Actor::AgentTool { agent, params, .. } = &job.tasks[2].actions[0] else {
-        panic!("expected the agent, got {:?}", job.tasks[2].actions[0]);
+    let Actor::AgentTool {
+        agent, loop_block, ..
+    } = &job.tasks[3].actions[0]
+    else {
+        panic!("expected the agent, got {:?}", job.tasks[3].actions[0]);
     };
     assert_eq!(*agent, AgentType::Autonomous);
+    let block = loop_block.as_ref().expect("the agent has its loop block");
     assert!(
-        params.contains(
-            &"success_check=python3 ./output/autonomous/check_fizzbuzz.py \
-              ./output/autonomous/fizzbuzz.txt"
+        block.params.contains(
+            &"success_check=python3 ./output/autonomous/check_report.py \
+              ./output/autonomous/report.json"
                 .to_string()
         ),
-        "{params:?}"
+        "{:?}",
+        block.params
     );
 }
