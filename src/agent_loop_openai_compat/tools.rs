@@ -4,8 +4,10 @@
 use serde_json::{Value, json};
 
 use super::Tool;
+use std::time::Instant;
+
 use crate::actor::list_files::DEFAULT_PATTERN;
-use crate::actor::{Actor, AgentType};
+use crate::actor::{Actor, AgentType, run_bash_until};
 
 /// Most characters of a tool result that the model gets. A longer result is
 /// cut, so that one command cannot fill the model's context.
@@ -18,7 +20,7 @@ pub const TOOL_NAMES: [&str; 4] = ["bash", "read_file", "write_file", "list_file
 /// that name. [`TOOL_NAMES`] has all names.
 pub fn tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
     let tool: Box<dyn Tool> = match name {
-        "bash" => Box::new(Bash),
+        "bash" => Box::new(Bash::default()),
         "read_file" => Box::new(ReadFile),
         "write_file" => Box::new(WriteFile),
         "list_files" => Box::new(ListFiles),
@@ -141,11 +143,19 @@ impl Tool for Limited {
     fn available(&self) -> bool {
         self.limit_error().is_none()
     }
+
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.tool.set_deadline(deadline);
+    }
 }
 
 /// `bash`: runs a command in bash in the current directory and returns its
-/// stdout.
-pub struct Bash;
+/// stdout. With a deadline, it stops the command and its child processes at
+/// the deadline (see [`Tool::set_deadline`]).
+#[derive(Default)]
+pub struct Bash {
+    deadline: Option<Instant>,
+}
 
 impl Tool for Bash {
     fn name(&self) -> &str {
@@ -166,12 +176,12 @@ impl Tool for Bash {
     }
 
     fn call(&mut self, arguments: &Value) -> Result<String, String> {
-        let output = Actor::BashScript {
-            cmd: string_argument(arguments, "command")?,
-            params: Vec::new(),
-        }
-        .act("")?;
+        let output = run_bash_until(&string_argument(arguments, "command")?, self.deadline)?;
         Ok(truncate(output))
+    }
+
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
     }
 }
 

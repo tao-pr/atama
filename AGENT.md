@@ -325,7 +325,35 @@ schema check runs first, and its failure does not end the iteration.
 
 `run_loop_with_env` starts the time when the action starts.
 `RunBudget::check_time` stops the run before a request or a tool call if the
-time is used. `AgentToolLoop::clock` replaces the clock in tests. The
+time is used. `AgentToolLoop::clock` replaces the clock in tests.
+
+The deadline of the run is its start plus `max_time`. `run_with` gives it
+to each tool with `Tool::set_deadline`, and to the success check with
+`CommandCheck::with_deadline`. The `bash` tool runs its command with
+`actor::run_bash_until`. At the deadline, `actor::run_process` kills the
+whole process group of the command with `SIGKILL`, so that the child
+processes stop too, and fails with "`<cmd>` stopped after <n>s, because the
+time limit of the run is used". Tests of the deadline are in
+`tests/timeout.rs`.
+
+## Signals
+
+`actor::run_process` runs every command in its own process group, and puts
+the group on the list of `src/signals.rs` (`signals::register`) while the
+command runs. `main` calls `signals::install`, which handles `SIGINT`,
+`SIGTERM` and `SIGHUP`:
+
+1. The signal handler sets the stopping flag and writes the signal number to a pipe.
+2. A watcher thread reads the pipe and calls `signals::terminate_groups`. It sends the same signal to each running group.
+3. After `GRACE` (2 seconds), it kills the groups that still run with `SIGKILL`.
+4. Atama stops with the same signal, so the exit status names it.
+
+After the signal, `signals::wait_if_stopping` makes a thread that is about
+to start a command, and `main` at the end of the job, wait for the watcher
+thread. So no new command or task starts. A command that started just
+before the signal is killed at once (`signals::kill_if_stopping`). The
+background commands of a bash script ignore `SIGINT`, so Ctrl-C kills them
+after `GRACE`. Tests are in `tests/signals.rs` and `tests/cli.rs`. The
 guardrails and the success check command go into the system prompt. The
 loop does not block a tool call that breaks a guardrail yet.
 

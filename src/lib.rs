@@ -10,6 +10,7 @@ pub mod passer;
 pub mod printer;
 pub mod profile;
 pub mod schema;
+pub mod signals;
 pub mod tavily;
 pub mod websearch;
 

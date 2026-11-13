@@ -10,6 +10,10 @@ jsonschema = { version = "0.60.2", default-features = false }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 ureq = "3.4.2"
 
+# Kills the process group of a command at the deadline of an agent run.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
 # tests/cli.rs opens a pseudo-terminal to test colored output.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2.190"

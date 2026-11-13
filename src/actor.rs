@@ -1,10 +1,11 @@
 //! Actors: the implementations that carry out a task's actions.
 
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
@@ -436,32 +437,20 @@ fn run_bash_sandbox(_cmd: &str, _params: &[String], _input: &str) -> Result<Stri
 ///
 /// Fails if the program cannot start, or the command exits with a non-zero
 /// status or prints output that is not UTF-8.
-fn run_command(
-    mut command: Command,
+fn run_command(command: Command, program: &str, cmd: &str, input: &str) -> Result<String, String> {
+    run_command_until(command, program, cmd, input, None)
+}
+
+/// Runs `command` like [`run_command`], until `deadline` (see
+/// [`run_process`]).
+fn run_command_until(
+    command: Command,
     program: &str,
     cmd: &str,
     input: &str,
+    deadline: Option<Instant>,
 ) -> Result<String, String> {
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("cannot start {program}: {err}"))?;
-
-    // Write stdin from another thread, so a command that prints a lot before
-    // it reads its input cannot block forever.
-    let mut stdin = child.stdin.take().expect("stdin is piped");
-    let input = input.to_owned();
-    let writer = thread::spawn(move || {
-        // A command that does not read stdin closes it early. That is not an error.
-        let _ = stdin.write_all(input.as_bytes());
-    });
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("cannot run `{cmd}`: {err}"))?;
-    let _ = writer.join();
-
+    let output = run_process(command, program, cmd, input, deadline)?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
@@ -472,6 +461,134 @@ fn run_command(
     }
     String::from_utf8(output.stdout)
         .map_err(|_| format!("`{cmd}` printed output that is not UTF-8"))
+}
+
+/// Runs `cmd` in bash like [`Actor::BashScript`], without params and
+/// input, until `deadline`. The `bash` tool of the agent loop uses it.
+///
+/// Fails as [`Actor::BashScript`] fails, or if the command still runs at
+/// `deadline` (see [`run_process`]).
+pub fn run_bash_until(cmd: &str, deadline: Option<Instant>) -> Result<String, String> {
+    let mut command = Command::new("bash");
+    command.arg("-c").arg(bash_script(cmd, &[])).arg("bash");
+    run_command_until(command, "bash", cmd, "", deadline)
+}
+
+/// Runs `command` with `input` on stdin, and returns its exit status,
+/// stdout and stderr. `program` names the program in the error if it
+/// cannot start, and `cmd` names the command if it stops at the deadline.
+///
+/// The command runs in its own process group, which is on the list of
+/// [`crate::signals`] while the command runs. So a termination signal to
+/// Atama reaches the command and its child processes. With a `deadline`, if
+/// the command still runs at `deadline`, Atama kills the whole group.
+///
+/// Fails if the program cannot start, or the command still runs at
+/// `deadline`.
+pub fn run_process(
+    mut command: Command,
+    program: &str,
+    cmd: &str,
+    input: &str,
+    deadline: Option<Instant>,
+) -> Result<Output, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    crate::signals::wait_if_stopping();
+    let start = Instant::now();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot start {program}: {err}"))?;
+    // The id of the process group is the id of the command.
+    let _registered = crate::signals::register(child.id() as i32);
+    crate::signals::kill_if_stopping(child.id() as i32);
+
+    // Write stdin and read stdout and stderr in other threads, so a command
+    // that prints a lot before it reads its input cannot block forever.
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let input = input.to_owned();
+    let writer = thread::spawn(move || {
+        // A command that does not read stdin closes it early. That is not an error.
+        let _ = stdin.write_all(input.as_bytes());
+    });
+    let stdout = read_all(child.stdout.take().expect("stdout is piped"));
+    let stderr = read_all(child.stderr.take().expect("stderr is piped"));
+
+    let status = match deadline {
+        None => child.wait(),
+        Some(deadline) => match wait_until(&mut child, deadline) {
+            Some(status) => status,
+            None => {
+                // The reader threads can still wait for a process that left
+                // the group, so they are not joined.
+                return Err(format!(
+                    "`{cmd}` stopped after {}s, because the time limit of the run is used",
+                    start.elapsed().as_secs()
+                ));
+            }
+        },
+    }
+    .map_err(|err| format!("cannot run `{cmd}`: {err}"))?;
+    let _ = writer.join();
+    Ok(Output {
+        status,
+        stdout: stdout.join().expect("the reader thread does not panic"),
+        stderr: stderr.join().expect("the reader thread does not panic"),
+    })
+}
+
+/// Reads all of `pipe` in another thread.
+fn read_all(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// Waits until `child` exits or `deadline` comes. Returns the result of the
+/// wait, or `None` if Atama killed the process group of `child` at
+/// `deadline`.
+fn wait_until(
+    child: &mut Child,
+    deadline: Instant,
+) -> Option<io::Result<std::process::ExitStatus>> {
+    loop {
+        if let Some(result) = child.try_wait().transpose() {
+            return Some(result);
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            kill_group(child);
+            let _ = child.wait();
+            return None;
+        }
+        thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
+/// Kills the process group of `child`, which [`run_process`] made with the
+/// process id of `child` as its id.
+#[cfg(unix)]
+fn kill_group(child: &mut Child) {
+    let group = child.id() as libc::pid_t;
+    // SAFETY: `kill` only sends a signal. A negative id sends it to the
+    // process group of `child`, which has only the command and its children.
+    unsafe {
+        libc::kill(-group, libc::SIGKILL);
+    }
+}
+
+/// Kills `child`. Other systems have no process groups of this type.
+#[cfg(not(unix))]
+fn kill_group(child: &mut Child) {
+    let _ = child.kill();
 }
 
 /// Saves the response body to a file, overwriting any file with the same

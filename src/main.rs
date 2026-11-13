@@ -26,6 +26,7 @@ struct Cli {
 }
 
 fn main() -> ExitCode {
+    atama::signals::install();
     let cli = Cli::parse();
     let path = &cli.job_config_file;
 
@@ -48,11 +49,15 @@ fn main() -> ExitCode {
     print_job(&job);
     println!();
 
-    if cli.dry_run {
+    let code = if cli.dry_run {
         execute(&job, DryRunner)
     } else {
         execute(&job, ActorRunner::default().debug(cli.debug))
-    }
+    };
+    // After a termination signal, the watcher thread stops Atama with the
+    // signal (see `atama::signals`).
+    atama::signals::wait_if_stopping();
+    code
 }
 
 /// Runs the job with `runner` and returns the exit code for its result.

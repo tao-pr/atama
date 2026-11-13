@@ -331,7 +331,7 @@ It takes these options:
 | --- | --- | --- |
 | `success_check="<command>"` | Yes | A bash command. Exit status 0 means that the task is done. The agent gets the exit status and the last 5,000 characters of stdout and stderr of a failed check. |
 | `max_iterations=<n>` | No | The most iterations, a number above 0. The default is 5. |
-| `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. Atama examines the time before each request and each tool call. |
+| `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. The time counts from the start of the action. Atama examines the time before each request and each tool call. A `bash` call or a success check that still runs at the limit stops, with all its child processes. |
 | `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. Atama does not block a tool call that breaks a rule. |
 
 If you use `agent:autonomous`, the model can run any command with your

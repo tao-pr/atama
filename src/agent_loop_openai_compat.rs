@@ -110,6 +110,10 @@ pub trait Tool {
     fn available(&self) -> bool {
         true
     }
+    /// Sets the deadline of the run. A tool that runs a command stops it
+    /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
+    /// The default does nothing.
+    fn set_deadline(&mut self, _deadline: Option<Instant>) {}
 }
 
 /// A chat model that can call tools.
@@ -410,15 +414,22 @@ impl<'a> AgentToolLoop<'a> {
         if let Some(schema) = &self.output_schema {
             checks.push(Box::new(SchemaCheck::new(schema.clone())));
         }
-        if let Some(command) = &self.success_check {
-            checks.push(Box::new(CommandCheck::new(command.clone())));
-        }
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
         let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget);
+        let mut deadline = None;
         if let Some(max) = self.max_time {
             let start = self.started.unwrap_or_else(|| (self.clock)());
             budget = budget.with_time_limit(start, max);
+            deadline = Some(start + max);
+        }
+        for tool in &mut self.tools {
+            tool.set_deadline(deadline);
+        }
+        if let Some(command) = &self.success_check {
+            checks.push(Box::new(
+                CommandCheck::new(command.clone()).with_deadline(deadline),
+            ));
         }
 
         // Number of messages that earlier requests already sent.

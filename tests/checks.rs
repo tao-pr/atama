@@ -189,5 +189,8 @@ fn command_check_fails_if_the_shell_cannot_start() {
     let CheckResult::Retry { error, .. } = check.check("done") else {
         panic!("the shell cannot start");
     };
-    assert!(error.starts_with("cannot start `/no/such/shell`: "), "{error}");
+    assert!(
+        error.starts_with("cannot start /no/such/shell: "),
+        "{error}"
+    );
 }

@@ -660,8 +660,8 @@ fn request_body_has_model_messages_and_tools() {
                 "type": "function",
                 "function": {
                     "name": "bash",
-                    "description": Bash.description(),
-                    "parameters": Bash.parameters(),
+                    "description": Bash::default().description(),
+                    "parameters": Bash::default().parameters(),
                 },
             }],
         })
@@ -932,7 +932,7 @@ fn run_loop_fails_on_invalid_configuration() {
 
 #[test]
 fn bash_tool_returns_stdout_or_the_error() {
-    let mut tool = Bash;
+    let mut tool = Bash::default();
     assert_eq!(tool.name(), "bash");
     assert_eq!(tool.parameters()["required"], json!(["command"]));
 
@@ -955,7 +955,10 @@ fn bash_tool_writes_a_file_with_a_heredoc() {
     let path = format!("target/bash-tool-heredoc-{}.py", std::process::id());
     let command = format!("cat > {path} <<'EOF'\nprint('hi')\nEOF");
 
-    assert_eq!(Bash.call(&json!({"command": command})), Ok(String::new()));
+    assert_eq!(
+        Bash::default().call(&json!({"command": command})),
+        Ok(String::new())
+    );
     let content = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     assert_eq!(content, "print('hi')\n");

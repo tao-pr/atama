@@ -5,7 +5,10 @@
 //! loop goes on. [`SchemaCheck`] makes sure that the reply matches an
 //! output schema.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Instant;
+
+use crate::actor::run_process;
 
 use crate::schema::OutputSchema;
 
@@ -123,6 +126,8 @@ pub struct CommandCheck {
     command: String,
     /// The program that runs the command: `bash`.
     shell: String,
+    /// The deadline of the run, if set.
+    deadline: Option<Instant>,
 }
 
 impl CommandCheck {
@@ -130,7 +135,16 @@ impl CommandCheck {
         CommandCheck {
             command,
             shell: "bash".to_string(),
+            deadline: None,
         }
+    }
+
+    /// Sets the deadline of the run. If the command still runs at the
+    /// deadline, Atama stops it and its child processes, and the check
+    /// fails (see [`run_process`]).
+    pub fn with_deadline(mut self, deadline: Option<Instant>) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     /// Replaces `bash` with another program. Tests use it.
@@ -141,12 +155,9 @@ impl CommandCheck {
 
     /// Runs the command. Fails with the exit status and the output.
     fn run(&self) -> Result<(), String> {
-        let output = Command::new(&self.shell)
-            .arg("-c")
-            .arg(&self.command)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|err| format!("cannot start `{}`: {err}", self.shell))?;
+        let mut command = Command::new(&self.shell);
+        command.arg("-c").arg(&self.command);
+        let output = run_process(command, &self.shell, &self.command, "", self.deadline)?;
         if output.status.success() {
             return Ok(());
         }

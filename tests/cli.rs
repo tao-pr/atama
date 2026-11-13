@@ -493,3 +493,100 @@ fn bash_sandbox_fails_if_the_working_directory_is_gone() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// Runs a job whose only action starts a child process that runs for 30
+/// seconds, and sends `signal` to Atama when the child runs. Returns the
+/// exit status of Atama, the time that Atama took to stop after the
+/// signal, and the id of the child process.
+#[cfg(unix)]
+fn signal_during_a_job(
+    name: &str,
+    signal: i32,
+) -> (std::process::ExitStatus, std::time::Duration, i32) {
+    use std::time::{Duration, Instant};
+
+    let (dir, job) = job_in_temp_dir(
+        name,
+        "# Signal\n\n## Wait\n\n- actions:\n  - bash bash {dir}/script.sh\n\n\
+         ## Next\n\n- begin_if: task(Wait) fail\n- actions:\n  - bash touch {dir}/next\n",
+    );
+    let pid_file = dir.join("child.pid");
+    fs::write(
+        dir.join("script.sh"),
+        format!("sleep 30 & echo $! > '{}'; wait\n", pid_file.display()),
+    )
+    .unwrap();
+    let mut atama = Command::new(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to run atama binary");
+    let start = Instant::now();
+    let child = loop {
+        if let Ok(pid) = fs::read_to_string(&pid_file)
+            && pid.ends_with('\n')
+        {
+            break pid.trim().parse::<i32>().unwrap();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the job did not start"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    // SAFETY: `kill` only sends a signal to the atama process of the test.
+    unsafe { libc::kill(atama.id() as i32, signal) };
+    let sent = Instant::now();
+    let status = loop {
+        if let Some(status) = atama.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            sent.elapsed() < Duration::from_secs(10),
+            "atama did not stop"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let took = sent.elapsed();
+    assert!(!dir.join("next").exists(), "the next task ran after the signal");
+    fs::remove_dir_all(dir).unwrap();
+    (status, took, child)
+}
+
+/// Whether the process `pid` still runs, after up to 3 seconds of waiting
+/// for it to stop.
+#[cfg(unix)]
+fn still_runs(pid: i32) -> bool {
+    for _ in 0..300 {
+        // SAFETY: signal 0 only asks whether the process exists.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_stops_atama_and_the_commands_that_it_runs() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let (status, took, child) = signal_during_a_job("sigterm", libc::SIGTERM);
+    assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
+    assert!(took < atama::signals::GRACE, "{took:?}");
+    assert!(!still_runs(child), "the child process {child} still runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn sigint_stops_atama_and_kills_commands_that_ignore_it() {
+    use std::os::unix::process::ExitStatusExt;
+
+    // A background command of a script ignores SIGINT, so Atama kills it
+    // after the grace time.
+    let (status, took, child) = signal_during_a_job("sigint", libc::SIGINT);
+    assert_eq!(status.signal(), Some(libc::SIGINT), "{status:?}");
+    assert!(took >= atama::signals::GRACE, "{took:?}");
+    assert!(!still_runs(child), "the child process {child} still runs");
+}
