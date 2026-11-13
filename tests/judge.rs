@@ -97,14 +97,14 @@ impl ChatClient for ScriptedClient {
         self.next()
     }
 
-    fn chat_with_format(
+    fn chat_without_tools(
         &mut self,
         messages: &[Message],
-        format: &OutputSchema,
+        format: Option<&OutputSchema>,
     ) -> Result<Reply, String> {
         self.requests.push(Request {
             messages: messages.to_vec(),
-            format: Some(format.name.clone()),
+            format: format.map(|format| format.name.clone()),
         });
         self.next()
     }
@@ -486,4 +486,36 @@ fn a_judge_reply_without_tokens_fails_a_run_with_a_budget() {
         .run_with(&mut client, "Fix it.", "")
         .unwrap_err();
     assert!(err.contains("did not send `usage.total_tokens`"), "{err}");
+}
+
+#[test]
+fn the_judges_use_the_judge_client_if_it_is_set() {
+    let (tool, tool_calls) = counter();
+    let mut agent = ScriptedClient::new(vec![
+        with_tokens(calls("c1", "bash"), 10),
+        with_tokens(text("done"), 10),
+    ]);
+    let judges = ScriptedClient::new(vec![
+        with_tokens(verdict(true, "fine"), 5),
+        with_tokens(verdict(false, "no tests"), 5),
+    ]);
+    let err = autonomous()
+        .max_iterations(1)
+        .token_budget(Some(1000))
+        .success(Some("All tests pass.".into()))
+        .guardrails(Some("Do not push.".into()))
+        .guard(Guard::Judge)
+        .judge_client(judges)
+        .with_tools(vec![tool])
+        .run_with(&mut agent, "Fix it.", "")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "`agent:autonomous` did not meet its success criteria in 1 iterations, the last \
+         error: no tests"
+    );
+    assert_eq!(tool_calls.get(), 1);
+    // The agent client got only the requests of the agent.
+    assert_eq!(agent.requests.len(), 2);
+    assert!(agent.judge_requests().is_empty());
 }

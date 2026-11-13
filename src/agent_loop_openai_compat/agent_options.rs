@@ -27,10 +27,11 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 15] = [
+const OPTION_KEYS: [&str; 18] = [
     "model",
     "max_steps",
     "token_budget",
+    "max_context",
     "task",
     "thinking",
     "output_schema",
@@ -43,6 +44,8 @@ const OPTION_KEYS: [&str; 15] = [
     "success",
     "guard",
     "max_violations",
+    "loop",
+    "judge_model",
 ];
 
 /// The configuration of one run, read from the action's params, its model
@@ -50,7 +53,7 @@ const OPTION_KEYS: [&str; 15] = [
 ///
 /// Each param is one option. Every agent type needs `model=<profile>`, the
 /// name of a [`ModelProfile`] of the job, and takes `task=<text>`,
-/// `max_steps=<n>`, `token_budget=<n>`, `thinking=<true|false>` and
+/// `max_steps=<n>`, `token_budget=<n>`, `max_context=<n>`, `thinking=<true|false>` and
 /// `output_schema=<name|path>` (see [`crate::schema`]). A `summarizer` agent also takes `expertise=<text>` and
 /// `max_output=<size>` (see [`SummarizerOptions`]). In the job file, a value
 /// can be in double quotes, so that it can have spaces, as in
@@ -70,6 +73,11 @@ pub struct AgentConfig {
     /// up the `usage.total_tokens` of each reply (see
     /// [`crate::AgentToolLoop::token_budget`]).
     pub token_budget: Option<u64>,
+    /// From `max_context=<n>`: the most tokens of the conversation, as the
+    /// loop estimates them, before the loop replaces the conversation with a
+    /// summary (see [`crate::agent_loop_openai_compat::context`]). `None`,
+    /// the default, never summarizes.
+    pub max_context: Option<u64>,
     /// The options of a `summarizer` agent. `None` for other agent types.
     pub summarizer: Option<SummarizerOptions>,
     /// The task, the instruction for the model.
@@ -129,6 +137,12 @@ pub struct AutonomousOptions {
     /// From `max_violations=<n>`: the most tool calls that the guard blocks
     /// before the run fails. The default is [`DEFAULT_MAX_VIOLATIONS`].
     pub max_violations: u32,
+    /// From `loop=<name>`: the name of the loop block of the action (see
+    /// [`crate::loop_block`]).
+    pub loop_name: Option<String>,
+    /// From `judge_model=<profile>`: the model profile of the judges, from
+    /// the ```` ```config ```` block. `None` uses the model of the agent.
+    pub judge_model: Option<String>,
 }
 
 /// The values of the options of an `autonomous` agent, if the params set
@@ -142,11 +156,13 @@ struct AutonomousValues {
     guardrails: Option<String>,
     guard: Option<String>,
     max_violations: Option<String>,
+    loop_name: Option<String>,
+    judge_model: Option<String>,
 }
 
 impl AutonomousValues {
     /// The key and the value of each option.
-    fn options(&self) -> [(&'static str, &Option<String>); 7] {
+    fn options(&self) -> [(&'static str, &Option<String>); 9] {
         [
             ("max_iterations", &self.max_iterations),
             ("max_time", &self.max_time),
@@ -155,6 +171,8 @@ impl AutonomousValues {
             ("guardrails", &self.guardrails),
             ("guard", &self.guard),
             ("max_violations", &self.max_violations),
+            ("loop", &self.loop_name),
+            ("judge_model", &self.judge_model),
         ]
     }
 }
@@ -181,6 +199,11 @@ impl AutonomousOptions {
         if guard == Guard::Judge && values.guardrails.is_none() {
             return Err("`guard=judge` needs `guardrails=<text>`".to_string());
         }
+        if values.judge_model.is_some() && values.success.is_none() && guard != Guard::Judge {
+            return Err(
+                "`judge_model=` needs a judge: `success=<criteria>` or `guard=judge`".to_string(),
+            );
+        }
         Ok(AutonomousOptions {
             max_iterations: match values.max_iterations {
                 None => DEFAULT_MAX_ITERATIONS,
@@ -198,8 +221,43 @@ impl AutonomousOptions {
                 None => DEFAULT_MAX_VIOLATIONS,
                 Some(value) => positive("max_violations", &value)?,
             },
+            loop_name: values.loop_name,
+            judge_model: values.judge_model,
         })
     }
+}
+
+/// `profile` if it is the profile `name`, for `model=<name>` or
+/// `judge_model=<name>`.
+///
+/// Fails if `profile` is `None` or another profile.
+pub fn named_profile<'p>(
+    name: &str,
+    profile: Option<&'p ModelProfile>,
+) -> Result<&'p ModelProfile, String> {
+    profile
+        .filter(|profile| profile.name == name)
+        .ok_or_else(|| format!("model profile `{name}` is not defined in the job"))
+}
+
+/// The API key of `profile` from the environment variable that its
+/// `api_key=` names, or `None` if the profile names no variable.
+///
+/// Fails if the variable is not set or empty.
+pub fn read_api_key(
+    profile: &ModelProfile,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(var) = &profile.api_key_env else {
+        return Ok(None);
+    };
+    let key = env(var).filter(|key| !key.is_empty()).ok_or_else(|| {
+        format!(
+            "model profile `{}` needs the API key in `{var}`, but `{var}` is not set",
+            profile.name
+        )
+    })?;
+    Ok(Some(key))
 }
 
 /// Reads a duration: a positive number and a unit, `s`, `m` or `h`, as in
@@ -379,6 +437,7 @@ struct Values {
     model: Option<String>,
     max_steps: Option<String>,
     token_budget: Option<String>,
+    max_context: Option<String>,
     task: Option<String>,
     thinking: Option<String>,
     output_schema: Option<String>,
@@ -404,6 +463,7 @@ impl Values {
                 "model" => &mut values.model,
                 "max_steps" => &mut values.max_steps,
                 "token_budget" => &mut values.token_budget,
+                "max_context" => &mut values.max_context,
                 "task" => &mut values.task,
                 "thinking" => &mut values.thinking,
                 "output_schema" => &mut values.output_schema,
@@ -416,6 +476,8 @@ impl Values {
                 "guardrails" => &mut values.autonomous.guardrails,
                 "guard" => &mut values.autonomous.guard,
                 "max_violations" => &mut values.autonomous.max_violations,
+                "loop" => &mut values.autonomous.loop_name,
+                "judge_model" => &mut values.autonomous.judge_model,
                 _ => {
                     return Err(format!(
                         "unknown option `{key}`, expected {}",
@@ -455,6 +517,7 @@ impl AgentConfig {
             model,
             max_steps,
             token_budget,
+            max_context,
             task,
             thinking,
             output_schema,
@@ -485,6 +548,9 @@ impl AgentConfig {
             None => DEFAULT_MAX_STEPS,
             Some(value) => positive("max_steps", &value)?,
         };
+        let max_context = max_context
+            .map(|value| positive("max_context", &value).map(u64::from))
+            .transpose()?;
         let token_budget = token_budget
             .as_deref()
             .map(crate::profile::parse_token_budget)
@@ -497,17 +563,8 @@ impl AgentConfig {
             })
             .transpose()?;
         let name = model.ok_or_else(|| crate::profile::missing_model(agent))?;
-        let profile = profile
-            .filter(|profile| profile.name == name)
-            .ok_or_else(|| format!("model profile `{name}` is not defined in the job"))?;
-        let api_key = match &profile.api_key_env {
-            None => None,
-            Some(var) => Some(env(var).filter(|key| !key.is_empty()).ok_or_else(|| {
-                format!(
-                    "model profile `{name}` needs the API key in `{var}`, but `{var}` is not set"
-                )
-            })?),
-        };
+        let profile = named_profile(&name, profile)?;
+        let api_key = read_api_key(profile, env)?;
         Ok(AgentConfig {
             profile: profile.name.clone(),
             base_url: profile.base_url.clone(),
@@ -515,6 +572,7 @@ impl AgentConfig {
             api_key,
             max_steps,
             token_budget: token_budget.or(profile.token_budget),
+            max_context,
             summarizer,
             task: task.unwrap_or_default(),
             thinking,
@@ -525,6 +583,20 @@ impl AgentConfig {
 }
 
 impl AgentConfig {
+    /// Makes sure that `params` are valid options of an `agent` action with
+    /// the model profile `profile`, as [`AgentConfig::from_params`] does,
+    /// but without the environment. The job parser uses it, so that an
+    /// invalid option stops the job before it starts. The API key is not
+    /// read, because the job can set it later.
+    pub fn check(
+        agent: AgentType,
+        params: &[String],
+        profile: Option<&ModelProfile>,
+    ) -> Result<(), String> {
+        let env = |_: &str| Some("not read".to_string());
+        Self::from_params(agent, params, profile, &env).map(|_| ())
+    }
+
     /// The configuration for debug output, one `name: value` line each. It
     /// shows only whether the API key is set, never the key itself, and
     /// `token_budget`, `thinking` and `output_schema` only if they are set. For a
@@ -541,6 +613,9 @@ impl AgentConfig {
         );
         if let Some(budget) = self.token_budget {
             summary.push_str(&format!("\ntoken_budget: {budget}"));
+        }
+        if let Some(max) = self.max_context {
+            summary.push_str(&format!("\nmax_context: {max}"));
         }
         if let Some(thinking) = self.thinking {
             summary.push_str(&format!("\nthinking: {thinking}"));
@@ -561,7 +636,7 @@ impl AgentConfig {
             let or_not_set = |value: &Option<String>| value.clone().unwrap_or("not set".into());
             summary.push_str(&format!(
                 "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nsuccess: {}\n\
-                 guardrails: {}\nguard: {}\nmax_violations: {}",
+                 guardrails: {}\nguard: {}\nmax_violations: {}\njudge_model: {}",
                 options.max_iterations,
                 format_duration(options.max_time),
                 or_not_set(&options.success_check),
@@ -569,6 +644,7 @@ impl AgentConfig {
                 or_not_set(&options.guardrails),
                 options.guard,
                 options.max_violations,
+                or_not_set(&options.judge_model),
             ));
         }
         summary

@@ -184,7 +184,7 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`guard=` and `max_violations=`. Other
+`guard=`, `max_violations=`, `loop=` and `judge_model=`. Other
 agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
@@ -352,9 +352,16 @@ the command check. `guard=judge` makes `run_with` call `judge::review`
 before each tool call. Both send a separate request with `judge::Judge`:
 a system prompt, one user message, no tools, and a reply that must match
 `judge::verdict_schema`, `{"pass": <bool>, "reason": <text>}`. The request
-goes through `ChatClient::chat_with_format`, so the judge uses the client
-and the model of the agent with its own `response_format`. `run_with` adds
-the tokens of each judge reply to the budget.
+goes through `ChatClient::chat_without_tools` with its own
+`response_format`. By default, the judges use the client and the model of
+the agent. With `judge_model=<profile>`, `parse_action` puts the profile
+that it names (`profile::find`) into `Actor::AgentTool::judge_profile`, in
+a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
+key of that profile (`agent_options::read_api_key`), and sets it as
+`AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
+client, and adds the tokens of each judge reply to the budget.
+`judge_model=` needs `success=` or `guard=judge`. The context summary uses
+the model of the agent.
 
 The success judge gets the task, the criteria, the tool calls and results
 of the conversation (`judge::evidence`, the last `MAX_EVIDENCE_CHARS`) and
@@ -364,6 +371,43 @@ arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
 fails. `guard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Context compaction
+
+`max_context=<n>` (`AgentConfig::max_context`, `AgentToolLoop::max_context`)
+works for every agent type. Without it, the loop never summarizes. Before
+each request, `run_with` estimates the tokens of the conversation with
+`context::estimate_tokens`: the characters of the JSON of the messages,
+divided by `CHARS_PER_TOKEN` (4). If the estimate is more than the limit,
+`AgentToolLoop::compact` sends `context::summary_request` with
+`ChatClient::chat_without_tools` and no format, adds the tokens of the
+reply to the budget, and replaces the conversation with
+`context::compacted`: the system prompt, the task, and one user message
+that starts with `SUMMARY_HEADER`. The request of the step then goes with
+the compacted conversation. A failed summary request fails the run.
+`judge::evidence` includes the summary, so the success judge sees the
+earlier work. Tests are in `tests/context.rs`.
+
+### Loop blocks
+
+`src/loop_block.rs` reads ```` ```loop:<name> ```` blocks. `parse_job`
+reads each block with `loop_block::parse_block` into a `LoopBlock`: its
+options as `key=value` params (`LoopBlock::params`) and its `tools:` as
+`ToolLimits`. A list of text becomes one value with a `- <item>` line for
+each item. `BLOCK_KEYS` are the keys that a block can set, besides `tools`.
+
+For an `autonomous` action, `parse_action` uses `loop_block::resolve` to
+put the block that `loop=<name>` names into `Actor::AgentTool::loop_block`.
+`AgentToolLoop::run_loop_with_env` reads `LoopBlock::merge`, the options of
+the block and then the options of the action, so that an option of the
+action replaces the option of the block. `LoopBlock::make_tools` makes the
+tools of `tools:`, each in a `Limited`, and they replace the default
+tools. Tests are in `tests/loop_block.rs`.
+
+`parse_action` also calls `AgentConfig::check` for each agent action, with
+the options of its loop block. It reads the options as
+`AgentConfig::from_params` does, but it does not read the API key. So an
+invalid option stops the job before it starts.
 
 ## Signals
 

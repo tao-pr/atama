@@ -10,6 +10,7 @@
 use serde_json::{Value, json};
 
 use super::checks::{CheckResult, FinalCheck, tail};
+use super::context::SUMMARY_HEADER;
 use super::{ChatClient, Message, ToolCall};
 use crate::schema::OutputSchema;
 
@@ -68,7 +69,7 @@ impl<'c> Judge<'c> {
             Message::System(format!("{system}\n\n{}", schema.instruction())),
             Message::User(question.to_string()),
         ];
-        let reply = self.client.chat_with_format(&messages, &schema)?;
+        let reply = self.client.chat_without_tools(&messages, Some(&schema))?;
         self.tokens.push(reply.tokens);
         let text = reply.content.unwrap_or_default();
         let json = schema
@@ -144,7 +145,8 @@ impl FinalCheck for SuccessJudge {
 }
 
 /// The tool calls and the results of `messages`, one per line, as
-/// `call <name>: <arguments>` and `result: <text>`. Keeps the last
+/// `call <name>: <arguments>` and `result: <text>`, and the summary of a
+/// compacted conversation (see [`super::context`]). Keeps the last
 /// [`MAX_EVIDENCE_CHARS`] characters.
 pub fn evidence(messages: &[Message]) -> String {
     let mut text = String::new();
@@ -156,6 +158,10 @@ pub fn evidence(messages: &[Message]) -> String {
                 }
             }
             Message::Tool { content, .. } => text.push_str(&format!("result: {content}\n")),
+            // The summary of a compacted conversation has the earlier work.
+            Message::User(summary) if summary.starts_with(SUMMARY_HEADER) => {
+                text.push_str(&format!("{summary}\n"));
+            }
             _ => {}
         }
     }

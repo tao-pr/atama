@@ -169,6 +169,14 @@ pub fn resolve(
         .iter()
         .find_map(|param| param.strip_prefix("model="))
         .ok_or_else(|| missing_model(agent))?;
+    find(name, profiles)
+}
+
+/// Finds the profile `name` in `profiles`, for `model=<name>` or
+/// `judge_model=<name>`.
+///
+/// Fails if `profiles` has no profile with that name.
+pub fn find(name: &str, profiles: &Profiles) -> Result<ModelProfile, String> {
     if let Some(profile) = profiles.get(name) {
         return Ok(profile.clone());
     }

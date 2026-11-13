@@ -906,24 +906,37 @@ fn run_loop_runs_an_autonomous_agent_with_its_options() {
 }
 
 #[test]
-fn chat_with_format_sends_the_format_and_no_tools() {
-    let (url, requests) = serve(vec![(200, text_response("{}"))]);
+fn chat_without_tools_sends_its_format_instead_of_the_output_schema() {
+    let (url, requests) = serve(vec![
+        (200, text_response("{}")),
+        (200, text_response("text")),
+    ]);
     let format = title_schema();
-    let mut client = OpenAiClient::new(&url, "model-1", None).with_output_schema(None);
+    let other = OutputSchema {
+        name: "other".into(),
+        schema: json!({"type": "object"}),
+    };
+    let mut client = OpenAiClient::new(&url, "model-1", None).with_output_schema(Some(other));
     let reply = client
-        .chat_with_format(&[Message::User("x".into())], &format)
+        .chat_without_tools(&[Message::User("x".into())], Some(&format))
         .unwrap();
     assert_eq!(reply.content.as_deref(), Some("{}"));
     let body = request_json(&requests.recv().unwrap());
     assert_eq!(body["response_format"], format.response_format());
     assert!(body.get("tools").is_none(), "{body}");
+
+    client
+        .chat_without_tools(&[Message::User("x".into())], None)
+        .unwrap();
+    let body = request_json(&requests.recv().unwrap());
+    assert!(body.get("response_format").is_none(), "{body}");
 }
 
 #[test]
-fn chat_with_format_of_another_client_sends_the_conversation_without_tools() {
+fn chat_without_tools_of_another_client_sends_the_messages_without_tools() {
     let mut client = ScriptedClient::new(vec![Ok(text("{}"))]);
     let reply = client
-        .chat_with_format(&[Message::User("x".into())], &title_schema())
+        .chat_without_tools(&[Message::User("x".into())], Some(&title_schema()))
         .unwrap();
     assert_eq!(reply, text("{}"));
     assert_eq!(client.tool_names, [Vec::<String>::new()]);
@@ -977,6 +990,160 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
             "success: It works.\nguardrails: Do not push.\nguard: judge\nmax_violations: 1"
         ),
         "{out}"
+    );
+}
+
+#[test]
+fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
+    let block = atama::loop_block::parse_block(
+        "fix",
+        &[
+            "max_iterations: 7",
+            "success_check: false",
+            "guardrails:",
+            "- Do not push.",
+            "tools:",
+            "- read_file max_calls=2",
+        ],
+    )
+    .unwrap();
+    let (url, requests) = serve(vec![(200, text_response("done"))]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .loop_block(Some(block))
+        .debug(&mut out)
+        .run_loop_with_env(
+            // The action replaces the success check of the block.
+            &params(&["model=m", "task=t", "loop=fix", "success_check=true"]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let body = request_json(&requests.recv().unwrap());
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["read_file"]);
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with("in all your work:\n- Do not push."),
+        "{system}"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("max_iterations: 7\n"), "{out}");
+    assert!(out.contains("success_check: true\n"), "{out}");
+}
+
+#[test]
+fn run_loop_fails_if_loop_names_no_block() {
+    let err = AgentToolLoop::new(AgentType::Autonomous)
+        .run_loop_with_env(
+            &params(&["model=m", "loop=fix", "success=x"]),
+            Some(&profile("http://x.test")),
+            "",
+            &no_env,
+        )
+        .unwrap_err();
+    assert_eq!(err, "loop block `fix` is not defined in the job");
+}
+
+#[test]
+fn run_loop_summarizes_a_context_over_max_context() {
+    let (url, requests) = serve(vec![
+        (
+            200,
+            tool_call_response("c1", "bash", json!({"command": "seq 1 500"})),
+        ),
+        (200, text_response("listed 500 numbers")),
+        (200, text_response("done")),
+    ]);
+    let output = AgentToolLoop::new(AgentType::Coder)
+        .run_loop_with_env(
+            &params(&["model=m", "task=t", "max_context=200"]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let bodies: Vec<Value> = (0..3)
+        .map(|_| request_json(&requests.recv().unwrap()))
+        .collect();
+    assert!(bodies[1].get("tools").is_none(), "{}", bodies[1]);
+    assert_eq!(bodies[2]["messages"].as_array().unwrap().len(), 3);
+    assert!(
+        bodies[2]["messages"][2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("listed 500 numbers")
+    );
+}
+
+#[test]
+fn run_loop_sends_the_judge_requests_to_the_judge_model() {
+    let (agent_url, agent_requests) = serve(vec![(200, text_response("done"))]);
+    let (judge_url, judge_requests) = serve(vec![(
+        200,
+        text_response(&json!({"pass": true, "reason": "ok"}).to_string()),
+    )]);
+    let judge = ModelProfile {
+        name: "small".into(),
+        model: "judge-1".into(),
+        base_url: judge_url,
+        api_key_env: Some("JUDGE_KEY".into()),
+        token_budget: None,
+    };
+    let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .judge_profile(Some(judge.clone()))
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success=It works.",
+                "judge_model=small",
+            ]),
+            Some(&profile(&agent_url)),
+            "",
+            &env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    assert_eq!(
+        request_json(&agent_requests.recv().unwrap())["model"],
+        "model-1"
+    );
+    let request = judge_requests.recv().unwrap();
+    assert!(request.contains("Bearer judge-secret"), "{request}");
+    let body = request_json(&request);
+    assert_eq!(body["model"], "judge-1");
+    assert_eq!(body["response_format"]["json_schema"]["name"], "verdict");
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("\njudge_model: small"), "{out}");
+
+    // Without the profile, or without its API key, the run fails.
+    let run = |judge: Option<ModelProfile>| {
+        AgentToolLoop::new(AgentType::Autonomous)
+            .judge_profile(judge)
+            .run_loop_with_env(
+                &params(&["model=m", "success=x", "judge_model=small"]),
+                Some(&profile("http://x.test")),
+                "",
+                &no_env,
+            )
+            .unwrap_err()
+    };
+    assert_eq!(run(None), "model profile `small` is not defined in the job");
+    assert_eq!(
+        run(Some(judge)),
+        "model profile `small` needs the API key in `JUDGE_KEY`, but `JUDGE_KEY` is not set"
     );
 }
 

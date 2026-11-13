@@ -43,12 +43,14 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::actor::AgentType;
+use crate::loop_block::LoopBlock;
 use crate::profile::ModelProfile;
 use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
 pub mod budget;
 pub mod checks;
+pub mod context;
 pub mod judge;
 pub mod openai;
 pub mod tools;
@@ -126,14 +128,15 @@ pub trait ChatClient {
     /// model's next reply.
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String>;
 
-    /// Sends the conversation without tools, and asks for a reply that
-    /// matches `format`. The judges of the loop use it (see
-    /// [`judge::Judge`]). The default sends the conversation with
-    /// [`ChatClient::chat`].
-    fn chat_with_format(
+    /// Sends a request aside from the conversation of the agent: without
+    /// tools and without the output schema of the agent. If `format` is set,
+    /// it asks for a reply that matches it. The judges (see
+    /// [`judge::Judge`]) and the summary of the context use it. The default
+    /// sends the messages with [`ChatClient::chat`].
+    fn chat_without_tools(
         &mut self,
         messages: &[Message],
-        _format: &OutputSchema,
+        _format: Option<&OutputSchema>,
     ) -> Result<Reply, String> {
         self.chat(messages, &[])
     }
@@ -167,12 +170,22 @@ pub struct AgentToolLoop<'a> {
     max_violations: u32,
     /// The most tokens that one run can use, if set.
     token_budget: Option<u64>,
+    /// The most estimated tokens of the conversation before the loop
+    /// summarizes it, if set (see [`context`]).
+    max_context: Option<u64>,
     /// The `reasoning_effort` that the client sends, for debug output only.
     reasoning_effort: Option<&'static str>,
     /// The schema block of the job that `output_schema=<name>` names.
     schema_block: Option<OutputSchema>,
     /// The schema that the final reply must match, if set.
     output_schema: Option<OutputSchema>,
+    /// The loop block of the job that `loop=<name>` names.
+    loop_block: Option<LoopBlock>,
+    /// The model profile of the job that `judge_model=<name>` names.
+    judge_profile: Option<ModelProfile>,
+    /// The client of the judges, if they do not use the client of the
+    /// agent (see [`AgentToolLoop::judge_client`]).
+    judge_client: Option<Box<dyn ChatClient + 'a>>,
     /// Gets the debug output, if set.
     debug: Option<Box<dyn Write + 'a>>,
     /// The name of the model profile of the action, if known. The debug
@@ -199,9 +212,13 @@ impl<'a> AgentToolLoop<'a> {
             guard: Guard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             token_budget: None,
+            max_context: None,
             reasoning_effort: None,
             schema_block: None,
             output_schema: None,
+            loop_block: None,
+            judge_profile: None,
+            judge_client: None,
             debug: None,
             profile: None,
         }
@@ -229,6 +246,31 @@ impl<'a> AgentToolLoop<'a> {
     /// `output_schema=` is that name (see [`schema::load`]).
     pub fn schema_block(mut self, block: Option<OutputSchema>) -> Self {
         self.schema_block = block;
+        self
+    }
+
+    /// Sets the loop block of the job that the `loop=<name>` of the action
+    /// names. [`AgentToolLoop::run_loop`] reads the options of the block
+    /// with the options of the action, and takes the tools of the block
+    /// (see [`LoopBlock::merge`] and [`LoopBlock::make_tools`]).
+    pub fn loop_block(mut self, block: Option<LoopBlock>) -> Self {
+        self.loop_block = block;
+        self
+    }
+
+    /// Sets the model profile of the job that the `judge_model=<name>` of
+    /// the action names. [`AgentToolLoop::run_loop`] makes the client of the
+    /// judges from it.
+    pub fn judge_profile(mut self, profile: Option<ModelProfile>) -> Self {
+        self.judge_profile = profile;
+        self
+    }
+
+    /// Sets the client of the judges: the success judge and the guard (see
+    /// [`judge`]). Without it, the judges use the client of the agent.
+    /// [`AgentToolLoop::run_loop`] sets it from `judge_model=`.
+    pub fn judge_client(mut self, client: impl ChatClient + 'a) -> Self {
+        self.judge_client = Some(Box::new(client));
         self
     }
 
@@ -315,6 +357,16 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets the most tokens of the conversation, as
+    /// [`context::estimate_tokens`] estimates them. Before a request with
+    /// more tokens, the loop replaces the conversation after the task with a
+    /// summary (see [`context`]). `None` never summarizes.
+    /// [`AgentToolLoop::run_loop`] sets it from `max_context=`.
+    pub fn max_context(mut self, max_context: Option<u64>) -> Self {
+        self.max_context = max_context;
+        self
+    }
+
     /// The type of agent that this loop runs.
     pub fn agent(&self) -> AgentType {
         self.agent
@@ -364,8 +416,13 @@ impl<'a> AgentToolLoop<'a> {
     /// `output_schema=`, the reply must match the schema (see
     /// [`schema::load`]).
     ///
+    /// With a loop block (see [`AgentToolLoop::loop_block`]), the options
+    /// of the block come before the options of the action, and the tools of
+    /// the block replace the default tools.
+    ///
     /// Fails if the configuration is invalid, the output schema cannot be
-    /// loaded, or a `summarizer` agent has no input.
+    /// loaded, `loop=` names no loop block, or a `summarizer` agent has no
+    /// input.
     pub fn run_loop_with_env(
         &mut self,
         params: &[String],
@@ -374,9 +431,30 @@ impl<'a> AgentToolLoop<'a> {
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
         self.started = Some((self.clock)());
-        let config = AgentConfig::from_params(self.agent, params, profile, env)?;
+        let params = match &self.loop_block {
+            Some(block) => block.merge(params),
+            None => params.to_vec(),
+        };
+        let config = AgentConfig::from_params(self.agent, &params, profile, env)?;
         self.profile = Some(config.profile.clone());
         if let Some(options) = &config.autonomous {
+            if let Some(name) = &options.loop_name
+                && self.loop_block.is_none()
+            {
+                return Err(format!("loop block `{name}` is not defined in the job"));
+            }
+            if let Some(tools) = self.loop_block.as_ref().and_then(LoopBlock::make_tools) {
+                self.tools = tools;
+            }
+            if let Some(name) = &options.judge_model {
+                let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
+                let api_key = agent_options::read_api_key(judge, env)?;
+                self.judge_client = Some(Box::new(openai::OpenAiClient::new(
+                    &judge.base_url,
+                    &judge.model,
+                    api_key,
+                )));
+            }
             self.max_iterations = options.max_iterations;
             self.max_time = Some(options.max_time);
             self.success_check = options.success_check.clone();
@@ -387,6 +465,7 @@ impl<'a> AgentToolLoop<'a> {
         }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
+        self.max_context = config.max_context;
         self.reasoning_effort = openai::reasoning_effort(config.thinking);
         self.output_schema = config
             .output_schema
@@ -425,6 +504,10 @@ impl<'a> AgentToolLoop<'a> {
     /// counts the tokens of each reply, and stops before a request if the
     /// run used the budget.
     ///
+    /// With a context limit (see [`AgentToolLoop::max_context`]), the loop
+    /// summarizes the conversation before a request that is over the limit,
+    /// and sends the request with the summary instead (see [`context`]).
+    ///
     /// With a success check (see [`AgentToolLoop::success_check`]) or
     /// success criteria (see [`AgentToolLoop::success`]), a reply without
     /// tool calls ends an iteration. If the check fails, the model gets the
@@ -438,7 +521,8 @@ impl<'a> AgentToolLoop<'a> {
     /// the model has no final reply, or no reply that passes the checks,
     /// after `max_steps` replies or `max_iterations` iterations. With a
     /// token budget, it also fails if a reply has no token count, or the run
-    /// used the budget before the final reply. With a time limit, it fails
+    /// used the budget before the final reply. It fails if the summary
+    /// request fails. With a time limit, it fails
     /// if the run used the time before a request or a tool call. With
     /// [`Guard::Judge`], it fails if the guard blocks `max_violations`
     /// calls.
@@ -474,7 +558,7 @@ impl<'a> AgentToolLoop<'a> {
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
         }
-        let mut messages = vec![Message::System(system), Message::User(prompt)];
+        let mut messages = vec![Message::System(system), Message::User(prompt.clone())];
         let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget)
             .with_max_violations(self.max_violations);
         if let Some(max) = self.max_time {
@@ -504,6 +588,7 @@ impl<'a> AgentToolLoop<'a> {
         };
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
+        let mut judge_client = self.judge_client.take();
 
         // Number of messages that earlier requests already sent.
         let mut sent = 0;
@@ -514,6 +599,14 @@ impl<'a> AgentToolLoop<'a> {
                 Err(reason) => return Err(self.stop_error(&reason, &checks, last_failure)),
             };
             let at = self.position(&budget, step);
+            if let Some(max) = self.max_context
+                && messages.len() > 2
+                && context::estimate_tokens(&messages) > max
+            {
+                messages = self.compact(client, &prompt, &messages, &mut budget, &at)?;
+                // The summary is the only new message of the request.
+                sent = 2;
+            }
             if self.debug.is_some() {
                 let tools = self.tool_names().join(", ");
                 let new = pretty(&messages[sent..]);
@@ -554,7 +647,10 @@ impl<'a> AgentToolLoop<'a> {
             }
             if reply.tool_calls.is_empty() {
                 let text = reply.content.clone().unwrap_or_default();
-                let mut judge = Judge::new(client);
+                let mut judge = Judge::new(match judge_client.as_deref_mut() {
+                    Some(judge_client) => judge_client,
+                    None => &mut *client,
+                });
                 let result = checks::run_checks(&mut checks, &text, &mut judge, &messages);
                 for tokens in judge.tokens {
                     budget
@@ -601,7 +697,10 @@ impl<'a> AgentToolLoop<'a> {
                     return Err(self.stop_error(&reason, &checks, last_failure));
                 }
                 if let Some(guardrails) = &guarded {
-                    let mut judge = Judge::new(client);
+                    let mut judge = Judge::new(match judge_client.as_deref_mut() {
+                        Some(judge_client) => judge_client,
+                        None => &mut *client,
+                    });
                     let blocked = judge::review(&mut judge, guardrails, &call);
                     for tokens in judge.tokens {
                         budget
@@ -680,6 +779,41 @@ impl<'a> AgentToolLoop<'a> {
             }
             (reason, _) => reason.message(&label),
         }
+    }
+
+    /// Asks the model for a summary of `messages` after the task `prompt`,
+    /// adds its tokens to `budget`, and returns the compacted conversation
+    /// (see [`context::compacted`]).
+    ///
+    /// Fails if the summary request fails, or the reply has no token count
+    /// and a token budget is set.
+    fn compact(
+        &mut self,
+        client: &mut dyn ChatClient,
+        prompt: &str,
+        messages: &[Message],
+        budget: &mut RunBudget,
+        at: &str,
+    ) -> Result<Vec<Message>, String> {
+        let request = context::summary_request(prompt, &messages[2..]);
+        let reply = client
+            .chat_without_tools(&request, None)
+            .map_err(|err| format!("`{}` could not summarize its context: {err}", self.label()))?;
+        budget
+            .add_tokens(reply.tokens)
+            .map_err(|reason| reason.message(&self.label()))?;
+        let summary = reply.content.unwrap_or_default();
+        let compacted = context::compacted(messages, &summary);
+        self.write_debug(format!(
+            "=== {} {at}: context compacted ({} messages, about {} tokens, to {} messages, \
+             about {} tokens) ===\n{summary}",
+            self.label(),
+            messages.len(),
+            context::estimate_tokens(messages),
+            compacted.len(),
+            context::estimate_tokens(&compacted),
+        ));
+        Ok(compacted)
     }
 
     /// The position of a step in debug headers: `step 3`, or

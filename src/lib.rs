@@ -5,6 +5,7 @@ pub mod agent_loop_openai_compat;
 pub mod executor;
 mod http;
 pub mod job;
+pub mod loop_block;
 pub mod parser;
 pub mod passer;
 pub mod printer;

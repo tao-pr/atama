@@ -255,6 +255,7 @@ Options of every agent:
 | `task="<text>"` | No | The instruction. The input of the action goes below it. The action fails if it has no task and no input. |
 | `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10, and 50 for `autonomous`. |
 | `token_budget=<n>` | No | The most tokens in one run, a number above 0. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
+| `max_context=<n>` | No | The most tokens of the conversation, a number above 0. Before a request that is over it, Atama asks the model for a summary of the work so far, and sends the request with the system prompt, the task and the summary only. The summary costs tokens of the budget. Atama estimates 4 characters for one token. Without this option, Atama never summarizes. |
 | `thinking=<true\|false>` | No | `false` sends `"reasoning_effort": "none"`, which turns off the thinking of the model on Ollama. Other servers can reject it. `true` is the same as no option. |
 | `output_schema=<name\|path>` | No | Makes the output a JSON value that matches a schema. See "Output schemas" in [README.md](README.md). |
 
@@ -346,9 +347,13 @@ It takes these options:
 | `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. |
 | `guard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
+| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `guard=judge`. |
 
-The judge and the guard use the model profile of the agent. Their tokens
-count in the token budget. With `guard=judge`, each tool call costs one
+The judge and the guard use the model profile of `judge_model=`, else the
+model profile of the agent. For example, a small local model can judge the
+work of a large one. The API key of the judge profile comes from its own
+`api_key=` variable. The tokens of the judge and the guard count in the
+token budget of the action. With `guard=judge`, each tool call costs one
 more request to the model.
 
 If you use `agent:autonomous`, the model can run any command with your
@@ -360,6 +365,58 @@ and with a model that you trust.
   - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m guardrails="Do not change files in tests/."
   - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." guard=judge
 ```
+
+#### Loop blocks
+
+If the criteria or the guardrails have more than one line, or you want to
+select the tools, put the options into a loop block. A loop block is a
+```` ```loop:<name> ```` block before the `# <name>` heading of the job. The
+action selects it with `loop=<name>`:
+
+````markdown
+```loop:fix-tests
+max_time: 20m
+success_check: cargo test --quiet
+success: All tests pass, and no test was deleted or ignored.
+guard: judge
+guardrails:
+  - Do not change files in tests/.
+  - Do not run git push or git reset.
+tools:
+  - read_file
+  - list_files
+  - write_file max_calls=20
+  - bash max_calls=40 max_failures=5
+```
+
+# Fix the tests
+
+## Fix
+
+- actions:
+  - agent:autonomous model=local-qwen loop=fix-tests task="Make all tests pass."
+````
+
+Each line is `<key>: <value>`. A key with no value starts a list, and each
+item of the list is a `- <item>` line after it. The keys are the options
+`task`, `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
+`max_time`, `success_check`, `success`, `guardrails`, `guard` and
+`max_violations`, `judge_model`, and `tools`. A list of text, such as `guardrails:`, gives
+the agent one `- <item>` line for each item.
+
+An option on the action line replaces the same option of the block. The
+action needs `model=` on its line.
+
+`tools:` selects the tools of the agent from `bash`, `read_file`,
+`write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most
+calls in one run (default 50), and `max_failures=<n>`, the most failed
+calls (default 10). Without `tools:`, the agent gets all four tools with the
+default limits.
+
+Atama reads the block and the options of every agent action before the job
+starts. An unknown key, an unknown tool, an invalid option, or an
+`autonomous` action without `success=` or `success_check=` stops the job
+with the line of the error.
 
 ## `read_file`
 

@@ -59,14 +59,14 @@ impl ChatClient for OpenAiClient {
         self.send(body)
     }
 
-    /// Sends the conversation without tools, with the `response_format` of
-    /// `format` instead of the output schema of the client.
-    fn chat_with_format(
+    /// Sends the messages without tools, with the `response_format` of
+    /// `format` if it is set, instead of the output schema of the client.
+    fn chat_without_tools(
         &mut self,
         messages: &[Message],
-        format: &OutputSchema,
+        format: Option<&OutputSchema>,
     ) -> Result<Reply, String> {
-        let body = request_body(&self.model, messages, &[], self.thinking, Some(format));
+        let body = request_body(&self.model, messages, &[], self.thinking, format);
         self.send(body)
     }
 }

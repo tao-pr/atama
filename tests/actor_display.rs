@@ -104,6 +104,8 @@ fn writes_agent_tool_with_its_type_and_params() {
             params: vec!["a".into(), "b".into()],
             profile: None,
             output_schema: None,
+            loop_block: None,
+            judge_profile: None,
         };
         assert_eq!(actor.to_string(), format!("agent:{name} a b"));
     }

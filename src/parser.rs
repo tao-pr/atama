@@ -46,7 +46,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
+use crate::agent_loop_openai_compat::agent_options::AgentConfig;
 use crate::job::{Event, Hook, Job, Task, Trigger};
+use crate::loop_block::{self, LoopBlocks};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
 use crate::schema::{self, Schemas};
@@ -78,6 +80,16 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// A task plus the line numbers needed to report validation errors.
+/// The kind of an open fenced block before the `# <job name>` heading.
+enum Block {
+    /// ```` ```config ````: the model profiles.
+    Config,
+    /// ```` ```json:<name> ````: an output schema.
+    Schema(String),
+    /// ```` ```loop:<name> ````: a loop block.
+    Loop(String),
+}
+
 struct ParsedTask {
     task: Task,
     description: Vec<String>,
@@ -97,31 +109,55 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut in_code_block = false;
     let mut profiles = Profiles::new();
     let mut schemas = Schemas::new();
-    // The open ```config or ```json:<name> block: the line number of its
-    // fence, its schema name for a schema block, and the lines after the
-    // fence.
-    let mut open_block: Option<(usize, Option<&str>, Vec<&str>)> = None;
+    let mut loops = LoopBlocks::new();
+    // The open ```config, ```json:<name> or ```loop:<name> block: the line
+    // number of its fence, its kind, and the lines after the fence.
+    let mut open_block: Option<(usize, Block, Vec<&str>)> = None;
     let mut has_config = false;
 
     for (index, raw_line) in input.lines().enumerate() {
         let line_no = index + 1;
         let line = raw_line.trim_end();
 
-        if let Some((start, schema_name, lines)) = open_block.as_mut() {
+        if let Some((start, kind, lines)) = open_block.as_mut() {
             if !line.trim_start().starts_with("```") {
                 lines.push(line);
                 continue;
             }
             let start = *start;
             let at = |(index, message)| ParseError::new(start + 1 + index, message);
-            match schema_name {
-                None => profiles = profile::parse_profiles(lines.iter().copied()).map_err(at)?,
-                Some(name) => {
+            match kind {
+                Block::Config => {
+                    profiles = profile::parse_profiles(lines.iter().copied()).map_err(at)?
+                }
+                Block::Schema(name) => {
                     let parsed = schema::parse_block(name, &lines.join("\n")).map_err(at)?;
                     schemas.insert(name.to_string(), parsed);
                 }
+                Block::Loop(name) => {
+                    let parsed = loop_block::parse_block(name, lines).map_err(at)?;
+                    loops.insert(name.to_string(), parsed);
+                }
             }
             open_block = None;
+            continue;
+        }
+        if let Some(loop_name) = loop_block::block_name(line).filter(|_| !in_code_block) {
+            if name.is_some() {
+                return Err(ParseError::new(
+                    line_no,
+                    "the ```loop:<name> block must come before the `# <job name>` heading",
+                ));
+            }
+            loop_block::check_name(loop_name)
+                .map_err(|message| ParseError::new(line_no, message))?;
+            if loops.contains_key(loop_name) {
+                return Err(ParseError::new(
+                    line_no,
+                    format!("loop block `{loop_name}` is defined twice"),
+                ));
+            }
+            open_block = Some((line_no, Block::Loop(loop_name.to_string()), Vec::new()));
             continue;
         }
         if let Some(schema_name) = schema::block_name(line).filter(|_| !in_code_block) {
@@ -138,7 +174,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     format!("schema `{schema_name}` is defined twice"),
                 ));
             }
-            open_block = Some((line_no, Some(schema_name), Vec::new()));
+            open_block = Some((line_no, Block::Schema(schema_name.to_string()), Vec::new()));
             continue;
         }
         if line.trim() == "```config" && !in_code_block {
@@ -152,7 +188,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 return Err(ParseError::new(line_no, "more than one ```config block"));
             }
             has_config = true;
-            open_block = Some((line_no, None, Vec::new()));
+            open_block = Some((line_no, Block::Config, Vec::new()));
             continue;
         }
 
@@ -235,6 +271,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     line_no,
                     &profiles,
                     &schemas,
+                    &loops,
                 )?);
                 continue;
             }
@@ -280,7 +317,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         current
                             .task
                             .actions
-                            .push(parse_action(value, line_no, &profiles, &schemas)?);
+                            .push(parse_action(value, line_no, &profiles, &schemas, &loops)?);
                     }
                     in_actions = true;
                 }
@@ -310,8 +347,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         current.description.push(line.to_string());
     }
 
-    if let Some((start, schema_name, _)) = open_block {
-        let block = schema_name.map_or("```config".to_string(), |name| format!("```json:{name}"));
+    if let Some((start, kind, _)) = open_block {
+        let block = match kind {
+            Block::Config => "```config".to_string(),
+            Block::Schema(name) => format!("```json:{name}"),
+            Block::Loop(name) => format!("```loop:{name}"),
+        };
         return Err(ParseError::new(
             start,
             format!("the {block} block has no closing ```"),
@@ -340,12 +381,17 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 }
 
 /// Parses an action. An agent action also gets the model profile that its
-/// `model=` names, and the schema block that its `output_schema=` names.
+/// `model=` names, the schema block that its `output_schema=` names, the
+/// loop block that its `loop=` names, and the model profile that its
+/// `judge_model=` names. Then the parser makes sure that the
+/// options of the agent action, with the options of its loop block, are
+/// valid (see [`AgentConfig::check`]).
 fn parse_action(
     value: &str,
     line: usize,
     profiles: &Profiles,
     schemas: &Schemas,
+    loops: &LoopBlocks,
 ) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
     // The agent of a `foreach` action needs its profile too.
@@ -358,11 +404,30 @@ fn parse_action(
         params,
         profile,
         output_schema,
+        loop_block,
+        judge_profile,
     } = agent_actor
     {
         let error = |message| ParseError::new(line, message);
         *profile = Some(profile::resolve(*agent, params, profiles).map_err(error)?);
         *output_schema = schema::resolve(params, schemas).map_err(error)?;
+        // Only an `autonomous` agent takes `loop=`. For another agent,
+        // `AgentConfig::check` names the option.
+        if *agent == AgentType::Autonomous {
+            *loop_block = loop_block::resolve(params, loops).map_err(error)?;
+        }
+        let merged = match loop_block {
+            Some(block) => block.merge(params),
+            None => params.clone(),
+        };
+        // `judge_model=` can come from the loop block. For another agent,
+        // `AgentConfig::check` names the option.
+        if *agent == AgentType::Autonomous
+            && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
+        {
+            *judge_profile = Some(Box::new(profile::find(name, profiles).map_err(error)?));
+        }
+        AgentConfig::check(*agent, &merged, profile.as_ref()).map_err(error)?;
     }
     Ok(actor)
 }
@@ -595,6 +660,8 @@ impl FromStr for Actor {
                     params: split_quoted(rest)?,
                     profile: None,
                     output_schema: None,
+                    loop_block: None,
+                    judge_profile: None,
                 }),
                 None => Err(format!(
                     "unknown action `{other}`, expected `bash`, `bash-sandbox`, `api_call`, `download`, \
