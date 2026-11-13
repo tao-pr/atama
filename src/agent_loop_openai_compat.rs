@@ -49,12 +49,16 @@ use crate::schema::{self, OutputSchema};
 pub mod agent_options;
 pub mod budget;
 pub mod checks;
+pub mod judge;
 pub mod openai;
 pub mod tools;
 
-use agent_options::{AgentConfig, DEFAULT_MAX_STEPS, format_duration};
+use agent_options::{
+    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, Guard, format_duration,
+};
 use budget::{RunBudget, StopReason};
 use checks::{CommandCheck, FinalCheck, Rejection, SchemaCheck};
+use judge::{Judge, SuccessJudge};
 
 /// One message of the conversation with the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +125,18 @@ pub trait ChatClient {
     /// Sends the conversation and the available tools, and returns the
     /// model's next reply.
     fn chat(&mut self, messages: &[Message], tools: &[Box<dyn Tool>]) -> Result<Reply, String>;
+
+    /// Sends the conversation without tools, and asks for a reply that
+    /// matches `format`. The judges of the loop use it (see
+    /// [`judge::Judge`]). The default sends the conversation with
+    /// [`ChatClient::chat`].
+    fn chat_with_format(
+        &mut self,
+        messages: &[Message],
+        _format: &OutputSchema,
+    ) -> Result<Reply, String> {
+        self.chat(messages, &[])
+    }
 }
 
 /// Runs one agent of a given type until it finishes its work.
@@ -140,8 +156,15 @@ pub struct AgentToolLoop<'a> {
     /// The bash command of the success check, if set (see
     /// [`checks::CommandCheck`]).
     success_check: Option<String>,
+    /// The success criteria that a judge examines, if set (see
+    /// [`judge::SuccessJudge`]).
+    success: Option<String>,
     /// The guardrails for the system prompt, if set.
     guardrails: Option<String>,
+    /// How the loop enforces the guardrails.
+    guard: Guard,
+    /// The most tool calls that the guard blocks before the run fails.
+    max_violations: u32,
     /// The most tokens that one run can use, if set.
     token_budget: Option<u64>,
     /// The `reasoning_effort` that the client sends, for debug output only.
@@ -171,7 +194,10 @@ impl<'a> AgentToolLoop<'a> {
             started: None,
             clock: Box::new(Instant::now),
             success_check: None,
+            success: None,
             guardrails: None,
+            guard: Guard::Prompt,
+            max_violations: DEFAULT_MAX_VIOLATIONS,
             token_budget: None,
             reasoning_effort: None,
             schema_block: None,
@@ -247,6 +273,28 @@ impl<'a> AgentToolLoop<'a> {
     /// iteration (see [`checks::CommandCheck`]).
     pub fn success_check(mut self, command: Option<String>) -> Self {
         self.success_check = command;
+        self
+    }
+
+    /// Sets the success criteria. On each reply without tool calls, a judge
+    /// decides whether the work meets them, and a failed check starts the
+    /// next iteration (see [`judge::SuccessJudge`]).
+    pub fn success(mut self, criteria: Option<String>) -> Self {
+        self.success = criteria;
+        self
+    }
+
+    /// Sets how the loop enforces the guardrails. With [`Guard::Judge`], a
+    /// judge examines each tool call before it runs, and the loop blocks a
+    /// call that breaks a guardrail (see [`judge::review`]).
+    pub fn guard(mut self, guard: Guard) -> Self {
+        self.guard = guard;
+        self
+    }
+
+    /// Sets the most tool calls that the guard blocks before the run fails.
+    pub fn max_violations(mut self, max_violations: u32) -> Self {
+        self.max_violations = max_violations;
         self
     }
 
@@ -331,8 +379,11 @@ impl<'a> AgentToolLoop<'a> {
         if let Some(options) = &config.autonomous {
             self.max_iterations = options.max_iterations;
             self.max_time = Some(options.max_time);
-            self.success_check = Some(options.success_check.clone());
+            self.success_check = options.success_check.clone();
+            self.success = options.success.clone();
             self.guardrails = options.guardrails.clone();
+            self.guard = options.guard;
+            self.max_violations = options.max_violations;
         }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
@@ -374,17 +425,23 @@ impl<'a> AgentToolLoop<'a> {
     /// counts the tokens of each reply, and stops before a request if the
     /// run used the budget.
     ///
-    /// With a success check (see [`AgentToolLoop::success_check`]), a reply
-    /// without tool calls ends an iteration. If the check fails, the model
-    /// gets the reason, and the next iteration starts. The guardrails (see
-    /// [`AgentToolLoop::guardrails`]) are in the system prompt.
+    /// With a success check (see [`AgentToolLoop::success_check`]) or
+    /// success criteria (see [`AgentToolLoop::success`]), a reply without
+    /// tool calls ends an iteration. If the check fails, the model gets the
+    /// reason, and the next iteration starts. The guardrails (see
+    /// [`AgentToolLoop::guardrails`]) are in the system prompt. With
+    /// [`Guard::Judge`], a judge examines each tool call before it runs. A
+    /// blocked call does not run, and the model gets the reason. The tokens
+    /// of the judges count in the token budget.
     ///
     /// Fails if the task and the input are both empty, the client fails, or
     /// the model has no final reply, or no reply that passes the checks,
     /// after `max_steps` replies or `max_iterations` iterations. With a
     /// token budget, it also fails if a reply has no token count, or the run
     /// used the budget before the final reply. With a time limit, it fails
-    /// if the run used the time before a request or a tool call.
+    /// if the run used the time before a request or a tool call. With
+    /// [`Guard::Judge`], it fails if the guard blocks `max_violations`
+    /// calls.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -401,6 +458,14 @@ impl<'a> AgentToolLoop<'a> {
                  its output, and you continue the work."
             );
         }
+        if let Some(criteria) = &self.success {
+            system = format!(
+                "{system}\n\nThe task is done when your work meets these success criteria:\n\
+                 {criteria}\nWhen you reply without tool calls, a judge examines your tool \
+                 calls, their results and your reply. If the work does not meet the criteria, \
+                 you get the reason, and you continue the work."
+            );
+        }
         if let Some(guardrails) = &self.guardrails {
             system = format!(
                 "{system}\n\nGuardrails. You must obey these rules in all your work:\n{guardrails}"
@@ -410,7 +475,8 @@ impl<'a> AgentToolLoop<'a> {
             system = format!("{system}\n\n{}", schema.instruction());
         }
         let mut messages = vec![Message::System(system), Message::User(prompt)];
-        let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget);
+        let mut budget = RunBudget::new(self.max_iterations, self.max_steps, self.token_budget)
+            .with_max_violations(self.max_violations);
         if let Some(max) = self.max_time {
             let start = self.started.unwrap_or_else(|| (self.clock)());
             budget = budget.with_time_limit(start, max);
@@ -428,6 +494,14 @@ impl<'a> AgentToolLoop<'a> {
                 CommandCheck::new(command.clone()).with_deadline(deadline),
             ));
         }
+        if let Some(criteria) = &self.success {
+            checks.push(Box::new(SuccessJudge::new(task, criteria)));
+        }
+        // The guardrails that the guard enforces, if the guard is on.
+        let guarded = match self.guard {
+            Guard::Judge => self.guardrails.clone(),
+            Guard::Prompt => None,
+        };
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
 
@@ -480,11 +554,18 @@ impl<'a> AgentToolLoop<'a> {
             }
             if reply.tool_calls.is_empty() {
                 let text = reply.content.clone().unwrap_or_default();
+                let mut judge = Judge::new(client);
+                let result = checks::run_checks(&mut checks, &text, &mut judge, &messages);
+                for tokens in judge.tokens {
+                    budget
+                        .add_tokens(tokens)
+                        .map_err(|reason| reason.message(&self.label()))?;
+                }
                 let Rejection {
                     index,
                     message,
                     error,
-                } = match checks::run_checks(&mut checks, &text) {
+                } = match result {
                     Ok(output) => return Ok(output),
                     Err(rejection) => rejection,
                 };
@@ -518,6 +599,34 @@ impl<'a> AgentToolLoop<'a> {
             for (index, call) in calls.into_iter().enumerate() {
                 if let Err(reason) = budget.check_time((self.clock)()) {
                     return Err(self.stop_error(&reason, &checks, last_failure));
+                }
+                if let Some(guardrails) = &guarded {
+                    let mut judge = Judge::new(client);
+                    let blocked = judge::review(&mut judge, guardrails, &call);
+                    for tokens in judge.tokens {
+                        budget
+                            .add_tokens(tokens)
+                            .map_err(|reason| reason.message(&self.label()))?;
+                    }
+                    if let Some(reason) = blocked {
+                        self.write_debug(format!(
+                            "=== {} {at}: tool call {} of {count}: {} (id {}) blocked by the \
+                             guard ===\narguments:\n{}\nreason: {reason}",
+                            self.label(),
+                            index + 1,
+                            call.name,
+                            call.id,
+                            pretty_json(&call.arguments),
+                        ));
+                        budget
+                            .add_violation(&reason)
+                            .map_err(|stop| stop.message(&self.label()))?;
+                        messages.push(Message::Tool {
+                            call_id: call.id,
+                            content: format!("error: blocked by guardrail: {reason}"),
+                        });
+                        continue;
+                    }
                 }
                 let result = self.call_tool(&call);
                 if self.debug.is_some() {

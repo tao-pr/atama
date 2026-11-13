@@ -8,6 +8,8 @@
 use std::process::Command;
 use std::time::Instant;
 
+use super::Message;
+use super::judge::Judge;
 use crate::actor::run_process;
 
 use crate::schema::OutputSchema;
@@ -31,8 +33,10 @@ pub enum CheckResult {
 
 /// A rule that a reply without tool calls must pass.
 pub trait FinalCheck {
-    /// Examines `reply`, the text of a reply without tool calls.
-    fn check(&mut self, reply: &str) -> CheckResult;
+    /// Examines `reply`, the text of a reply without tool calls. A check
+    /// that asks a model uses `judge`. `messages` is the conversation so
+    /// far, without the reply.
+    fn check(&mut self, reply: &str, judge: &mut Judge, messages: &[Message]) -> CheckResult;
     /// Says what failed, for the debug header of a failed check, as in
     /// "reply does not match output schema `article`".
     fn rejection(&self) -> String;
@@ -64,10 +68,15 @@ pub struct Rejection {
 /// `reply`.
 ///
 /// Fails at the first check that gives [`CheckResult::Retry`].
-pub fn run_checks(checks: &mut [Box<dyn FinalCheck>], reply: &str) -> Result<String, Rejection> {
+pub fn run_checks(
+    checks: &mut [Box<dyn FinalCheck>],
+    reply: &str,
+    judge: &mut Judge,
+    messages: &[Message],
+) -> Result<String, Rejection> {
     let mut output = reply.to_string();
     for (index, check) in checks.iter_mut().enumerate() {
-        match check.check(&output) {
+        match check.check(&output, judge, messages) {
             CheckResult::Done(next) => output = next,
             CheckResult::Retry { message, error } => {
                 return Err(Rejection {
@@ -94,7 +103,7 @@ impl SchemaCheck {
 }
 
 impl FinalCheck for SchemaCheck {
-    fn check(&mut self, reply: &str) -> CheckResult {
+    fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         match self.schema.check_reply(reply) {
             Ok(json) => CheckResult::Done(json),
             Err(error) => CheckResult::Retry {
@@ -166,7 +175,7 @@ impl CommandCheck {
 }
 
 impl FinalCheck for CommandCheck {
-    fn check(&mut self, reply: &str) -> CheckResult {
+    fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         match self.run() {
             Ok(()) => CheckResult::Done(reply.to_string()),
             Err(error) => CheckResult::Retry {

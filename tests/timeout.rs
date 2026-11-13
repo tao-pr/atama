@@ -12,6 +12,7 @@ use serde_json::json;
 use atama::AgentToolLoop;
 use atama::actor::{AgentType, run_bash, run_process};
 use atama::agent_loop_openai_compat::checks::{CheckResult, CommandCheck, FinalCheck};
+use atama::agent_loop_openai_compat::judge::Judge;
 use atama::agent_loop_openai_compat::tools::{Bash, Limited};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};
 
@@ -126,7 +127,12 @@ fn the_bash_tool_stops_its_command_at_the_deadline() {
 #[test]
 fn the_success_check_stops_at_the_deadline() {
     let mut check = CommandCheck::new("sleep 10".into()).with_deadline(in_ms(300));
-    let CheckResult::Retry { error, .. } = check.check("done") else {
+    let mut client = ScriptedClient {
+        replies: VecDeque::new(),
+        conversations: Vec::new(),
+    };
+    let mut judge = Judge::new(&mut client);
+    let CheckResult::Retry { error, .. } = check.check("done", &mut judge, &[]) else {
         panic!("the check stops at the deadline");
     };
     assert_eq!(

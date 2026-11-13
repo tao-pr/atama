@@ -146,3 +146,28 @@ fn the_time_error_names_the_limit() {
         "`agent:autonomous` did not finish in its time limit of 20m"
     );
 }
+
+#[test]
+fn counts_blocked_calls_until_the_violation_limit() {
+    let mut budget = RunBudget::new(1, 10, None).with_max_violations(2);
+    assert_eq!(budget.add_violation("first"), Ok(()));
+    assert_eq!(
+        budget.add_violation("second"),
+        Err(StopReason::Violations {
+            max: 2,
+            reason: "second".into()
+        })
+    );
+    let mut budget = RunBudget::new(1, 10, None);
+    for _ in 0..100 {
+        assert_eq!(budget.add_violation("any"), Ok(()));
+    }
+    assert_eq!(
+        StopReason::Violations {
+            max: 2,
+            reason: "it pushes".into()
+        }
+        .message("agent:autonomous"),
+        "`agent:autonomous` made 2 tool calls that break its guardrails, the last reason: it pushes"
+    );
+}

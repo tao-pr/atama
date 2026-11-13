@@ -10,7 +10,30 @@ use atama::agent_loop_openai_compat::checks::{
     CheckResult, CommandCheck, FinalCheck, MAX_CHECK_CHARS, Rejection, SchemaCheck, run_checks,
     tail,
 };
+use atama::agent_loop_openai_compat::judge::Judge;
+use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool};
 use atama::schema::OutputSchema;
+
+/// A client that fails, for checks that do not ask a model.
+struct NoModel;
+
+impl ChatClient for NoModel {
+    fn chat(&mut self, _: &[Message], _: &[Box<dyn Tool>]) -> Result<Reply, String> {
+        Err("no model in this test".into())
+    }
+}
+
+/// Runs `check` on `reply` without a model and without messages.
+fn check_reply(check: &mut dyn FinalCheck, reply: &str) -> CheckResult {
+    let mut client = NoModel;
+    check.check(reply, &mut Judge::new(&mut client), &[])
+}
+
+/// Runs `checks` on `reply` without a model and without messages.
+fn run(checks: &mut [Box<dyn FinalCheck>], reply: &str) -> Result<String, Rejection> {
+    let mut client = NoModel;
+    run_checks(checks, reply, &mut Judge::new(&mut client), &[])
+}
 
 fn title_schema() -> OutputSchema {
     OutputSchema {
@@ -30,7 +53,7 @@ struct Fixed {
 }
 
 impl FinalCheck for Fixed {
-    fn check(&mut self, reply: &str) -> CheckResult {
+    fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         self.seen.borrow_mut().push(reply.to_string());
         self.result.clone()
     }
@@ -62,7 +85,7 @@ fn retry(message: &str, error: &str) -> CheckResult {
 
 #[test]
 fn without_checks_the_output_is_the_reply() {
-    assert_eq!(run_checks(&mut [], "reply"), Ok("reply".to_string()));
+    assert_eq!(run(&mut [], "reply"), Ok("reply".to_string()));
 }
 
 #[test]
@@ -70,7 +93,7 @@ fn each_check_gets_the_output_of_the_check_before_it() {
     let (first, first_seen) = fixed(CheckResult::Done("one".into()));
     let (second, second_seen) = fixed(CheckResult::Done("two".into()));
     let mut checks = vec![first, second];
-    assert_eq!(run_checks(&mut checks, "reply"), Ok("two".to_string()));
+    assert_eq!(run(&mut checks, "reply"), Ok("two".to_string()));
     assert_eq!(*first_seen.borrow(), ["reply"]);
     assert_eq!(*second_seen.borrow(), ["one"]);
 }
@@ -82,7 +105,7 @@ fn the_first_failed_check_stops_the_list() {
     let (third, third_seen) = fixed(CheckResult::Done("three".into()));
     let mut checks = vec![first, second, third];
     assert_eq!(
-        run_checks(&mut checks, "reply"),
+        run(&mut checks, "reply"),
         Err(Rejection {
             index: 1,
             message: "try again".into(),
@@ -98,7 +121,7 @@ fn the_first_failed_check_stops_the_list() {
 fn schema_check_gives_the_json_of_a_matching_reply() {
     let mut check = SchemaCheck::new(title_schema());
     assert_eq!(
-        check.check("{\"title\": \"T\"}"),
+        check_reply(&mut check, "{\"title\": \"T\"}"),
         CheckResult::Done("{\"title\": \"T\"}".into())
     );
 }
@@ -106,7 +129,7 @@ fn schema_check_gives_the_json_of_a_matching_reply() {
 #[test]
 fn schema_check_asks_the_model_again_for_a_reply_that_does_not_match() {
     let mut check = SchemaCheck::new(title_schema());
-    let CheckResult::Retry { message, error } = check.check("{\"title\": 1}") else {
+    let CheckResult::Retry { message, error } = check_reply(&mut check, "{\"title\": 1}") else {
         panic!("the reply does not match the schema");
     };
     assert!(
@@ -130,7 +153,10 @@ fn schema_check_asks_the_model_again_for_a_reply_that_does_not_match() {
 #[test]
 fn command_check_passes_on_exit_status_0_and_keeps_the_reply() {
     let mut check = CommandCheck::new("true".into());
-    assert_eq!(check.check("done"), CheckResult::Done("done".into()));
+    assert_eq!(
+        check_reply(&mut check, "done"),
+        CheckResult::Done("done".into())
+    );
     assert!(check.ends_iteration());
     assert!(!SchemaCheck::new(title_schema()).ends_iteration());
 }
@@ -138,7 +164,7 @@ fn command_check_passes_on_exit_status_0_and_keeps_the_reply() {
 #[test]
 fn command_check_gives_the_status_stdout_and_stderr_of_a_failed_command() {
     let mut check = CommandCheck::new("echo '1 passed'; echo '2 failed' >&2; exit 3".into());
-    let CheckResult::Retry { message, error } = check.check("done") else {
+    let CheckResult::Retry { message, error } = check_reply(&mut check, "done") else {
         panic!("the command fails");
     };
     assert_eq!(error, "exit status: 3\n1 passed\n2 failed");
@@ -164,7 +190,7 @@ fn command_check_keeps_the_end_of_a_long_output() {
     let mut check = CommandCheck::new(format!(
         "printf 'a%.0s' $(seq 1 {MAX_CHECK_CHARS}); echo; echo last line; exit 1"
     ));
-    let CheckResult::Retry { error, .. } = check.check("done") else {
+    let CheckResult::Retry { error, .. } = check_reply(&mut check, "done") else {
         panic!("the command fails");
     };
     assert!(

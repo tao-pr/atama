@@ -17,6 +17,9 @@ pub struct RunBudget {
     token_budget: Option<u64>,
     /// The start of the run and its most wall clock time, if set.
     time_limit: Option<(Instant, Duration)>,
+    /// The most tool calls that the guard can block, if set.
+    max_violations: Option<u32>,
+    violations: u32,
     iterations: u32,
     steps: u32,
     tokens: u64,
@@ -35,6 +38,8 @@ pub enum StopReason {
     Iterations { max: u32 },
     /// The run used its time limit.
     Time { max: Duration },
+    /// The guard blocked the most tool calls that the run can have.
+    Violations { max: u32, reason: String },
 }
 
 impl RunBudget {
@@ -46,6 +51,8 @@ impl RunBudget {
             max_steps,
             token_budget,
             time_limit: None,
+            max_violations: None,
+            violations: 0,
             iterations: 1,
             steps: 0,
             tokens: 0,
@@ -56,6 +63,26 @@ impl RunBudget {
     pub fn with_time_limit(mut self, start: Instant, max: Duration) -> Self {
         self.time_limit = Some((start, max));
         self
+    }
+
+    /// Sets the most tool calls that the guard can block.
+    pub fn with_max_violations(mut self, max: u32) -> Self {
+        self.max_violations = Some(max);
+        self
+    }
+
+    /// Counts a tool call that the guard blocked for `reason`.
+    ///
+    /// Fails if the run reached its limit of blocked calls.
+    pub fn add_violation(&mut self, reason: &str) -> Result<(), StopReason> {
+        self.violations += 1;
+        match self.max_violations {
+            Some(max) if self.violations >= max => Err(StopReason::Violations {
+                max,
+                reason: reason.to_string(),
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Fails if the run used its time limit at `now`.
@@ -163,6 +190,10 @@ impl StopReason {
             StopReason::Time { max } => format!(
                 "`{label}` did not finish in its time limit of {}",
                 format_duration(*max)
+            ),
+            StopReason::Violations { max, reason } => format!(
+                "`{label}` made {max} tool calls that break its guardrails, the last reason: \
+                 {reason}"
             ),
         }
     }

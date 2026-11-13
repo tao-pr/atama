@@ -906,6 +906,81 @@ fn run_loop_runs_an_autonomous_agent_with_its_options() {
 }
 
 #[test]
+fn chat_with_format_sends_the_format_and_no_tools() {
+    let (url, requests) = serve(vec![(200, text_response("{}"))]);
+    let format = title_schema();
+    let mut client = OpenAiClient::new(&url, "model-1", None).with_output_schema(None);
+    let reply = client
+        .chat_with_format(&[Message::User("x".into())], &format)
+        .unwrap();
+    assert_eq!(reply.content.as_deref(), Some("{}"));
+    let body = request_json(&requests.recv().unwrap());
+    assert_eq!(body["response_format"], format.response_format());
+    assert!(body.get("tools").is_none(), "{body}");
+}
+
+#[test]
+fn chat_with_format_of_another_client_sends_the_conversation_without_tools() {
+    let mut client = ScriptedClient::new(vec![Ok(text("{}"))]);
+    let reply = client
+        .chat_with_format(&[Message::User("x".into())], &title_schema())
+        .unwrap();
+    assert_eq!(reply, text("{}"));
+    assert_eq!(client.tool_names, [Vec::<String>::new()]);
+}
+
+#[test]
+fn run_loop_runs_the_judges_of_an_autonomous_agent() {
+    let verdict = |pass: bool| text_response(&json!({"pass": pass, "reason": "r"}).to_string());
+    let (url, requests) = serve(vec![
+        (
+            200,
+            tool_call_response("c1", "bash", json!({"command": "true"})),
+        ),
+        (200, verdict(true)),
+        (200, text_response("done")),
+        (200, verdict(true)),
+    ]);
+    let mut out = Vec::new();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .debug(&mut out)
+        .run_loop_with_env(
+            &params(&[
+                "model=m",
+                "task=t",
+                "success=It works.",
+                "guardrails=Do not push.",
+                "guard=judge",
+                "max_violations=1",
+            ]),
+            Some(&profile(&url)),
+            "",
+            &no_env,
+        )
+        .unwrap();
+    assert_eq!(output, "done");
+    let bodies: Vec<Value> = (0..4)
+        .map(|_| request_json(&requests.recv().unwrap()))
+        .collect();
+    assert!(bodies[0]["tools"].is_array());
+    assert_eq!(
+        bodies[1]["response_format"]["json_schema"]["name"],
+        "verdict"
+    );
+    assert_eq!(
+        bodies[3]["response_format"]["json_schema"]["name"],
+        "verdict"
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(
+            "success: It works.\nguardrails: Do not push.\nguard: judge\nmax_violations: 1"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
 fn run_loop_sends_thinking_false_to_the_server() {
     let (url, requests) = serve(vec![(200, text_response("hi")), (200, text_response("hi"))]);
     let run = |words: &[&str]| {

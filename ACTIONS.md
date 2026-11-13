@@ -305,10 +305,19 @@ The size of `max_output=` is one of these:
 ### `agent:autonomous`
 
 An `autonomous` agent works on its task in iterations until its success
-check passes. An iteration is one attempt at the whole task. It ends when
+checks pass. An iteration is one attempt at the whole task. It ends when
 the agent replies without tool calls, which means "I am done". Then the
-success check runs. If the check fails, the agent gets the output of the
-check, and the next iteration starts.
+success checks run. If a check fails, the agent gets the reason, and the
+next iteration starts.
+
+There are two success checks. You must give one of them, and you can give
+both:
+
+- `success_check=` is a bash command. Exit status 0 means that the task is done.
+- `success=` is success criteria in natural language. A separate request to the model of the agent, the judge, decides whether the work meets them. The judge gets the task, the criteria, the tool calls of the agent with their results, and its last reply.
+
+If you give both, the command runs first, and the judge runs only if the
+command passes.
 
 A step is one request to the model and its one reply. For example, the
 agent reads a file, edits it, runs the tests and says that it is done. That
@@ -318,8 +327,9 @@ whole run.
 
 The run stops at the first of these events:
 
-- The success check passes. The action succeeds, and the output is the last reply.
-- The run used all its iterations, steps, tokens or time. The action fails, and the error has the last error of the success check.
+- The success checks pass. The action succeeds, and the output is the last reply.
+- The run used all its iterations, steps, tokens or time. The action fails, and the error has the last error of the success checks.
+- The guard blocked `max_violations` tool calls. The action fails.
 
 The agent has the tools `bash`, `read_file`, `write_file` and `list_files`.
 Each tool has a limit of 50 calls and 10 failed calls in one run. A call
@@ -329,10 +339,17 @@ It takes these options:
 
 | Parameter | Required | Description |
 | --- | --- | --- |
-| `success_check="<command>"` | Yes | A bash command. Exit status 0 means that the task is done. The agent gets the exit status and the last 5,000 characters of stdout and stderr of a failed check. |
+| `success_check="<command>"` | One of the two | A bash command. Exit status 0 means that the task is done. The agent gets the exit status and the last 5,000 characters of stdout and stderr of a failed check. |
+| `success="<criteria>"` | One of the two | Success criteria in natural language, which the judge examines. The agent gets the reason of a failed check. |
 | `max_iterations=<n>` | No | The most iterations, a number above 0. The default is 5. |
 | `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. The time counts from the start of the action. Atama examines the time before each request and each tool call. A `bash` call or a success check that still runs at the limit stops, with all its child processes. |
-| `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. Atama does not block a tool call that breaks a rule. |
+| `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. |
+| `guard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
+| `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
+
+The judge and the guard use the model profile of the agent. Their tokens
+count in the token budget. With `guard=judge`, each tool call costs one
+more request to the model.
 
 If you use `agent:autonomous`, the model can run any command with your
 permissions, and nobody approves each command. Use it only in a directory
@@ -341,6 +358,7 @@ and with a model that you trust.
 ```markdown
 - actions:
   - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m guardrails="Do not change files in tests/."
+  - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." guard=judge
 ```
 
 ## `read_file`

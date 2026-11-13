@@ -18,13 +18,16 @@ pub const DEFAULT_AUTONOMOUS_MAX_STEPS: u32 = 50;
 pub const DEFAULT_MAX_ITERATIONS: u32 = 5;
 /// Most wall clock time of one run of an `autonomous` agent.
 pub const DEFAULT_MAX_TIME: Duration = Duration::from_secs(30 * 60);
+/// Most tool calls that the guard of an `autonomous` agent blocks in one
+/// run, before the run fails.
+pub const DEFAULT_MAX_VIOLATIONS: u32 = 3;
 /// Expertise of a `summarizer` agent if the action has no `expertise=`.
 pub const DEFAULT_EXPERTISE: &str = "general";
 /// Instruction of a `summarizer` agent if the action has no `task=`.
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 12] = [
+const OPTION_KEYS: [&str; 15] = [
     "model",
     "max_steps",
     "token_budget",
@@ -37,6 +40,9 @@ const OPTION_KEYS: [&str; 12] = [
     "max_time",
     "success_check",
     "guardrails",
+    "success",
+    "guard",
+    "max_violations",
 ];
 
 /// The configuration of one run, read from the action's params, its model
@@ -80,8 +86,28 @@ pub struct AgentConfig {
     pub autonomous: Option<AutonomousOptions>,
 }
 
-/// The options of an `autonomous` agent: its limits, its success check and
-/// its guardrails.
+/// How an `autonomous` agent enforces its guardrails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Guard {
+    /// `guard=prompt`: the guardrails are only in the system prompt.
+    #[default]
+    Prompt,
+    /// `guard=judge`: a model request examines each tool call before it
+    /// runs, and blocks a call that breaks a guardrail.
+    Judge,
+}
+
+impl std::fmt::Display for Guard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Guard::Prompt => "prompt",
+            Guard::Judge => "judge",
+        })
+    }
+}
+
+/// The options of an `autonomous` agent: its limits, its success criteria
+/// and its guardrails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutonomousOptions {
     /// From `max_iterations=<n>`. The default is [`DEFAULT_MAX_ITERATIONS`].
@@ -91,39 +117,87 @@ pub struct AutonomousOptions {
     pub max_time: Duration,
     /// From `success_check=<command>`: a bash command. Exit status 0 means
     /// that the task is done.
-    pub success_check: String,
+    pub success_check: Option<String>,
+    /// From `success=<text>`: success criteria in natural language, which
+    /// a model judges.
+    pub success: Option<String>,
     /// From `guardrails=<text>`: rules that the agent must obey, in natural
     /// language. The loop puts them into the system prompt.
     pub guardrails: Option<String>,
+    /// From `guard=<prompt|judge>`. The default is [`Guard::Prompt`].
+    pub guard: Guard,
+    /// From `max_violations=<n>`: the most tool calls that the guard blocks
+    /// before the run fails. The default is [`DEFAULT_MAX_VIOLATIONS`].
+    pub max_violations: u32,
+}
+
+/// The values of the options of an `autonomous` agent, if the params set
+/// them.
+#[derive(Default)]
+struct AutonomousValues {
+    max_iterations: Option<String>,
+    max_time: Option<String>,
+    success_check: Option<String>,
+    success: Option<String>,
+    guardrails: Option<String>,
+    guard: Option<String>,
+    max_violations: Option<String>,
+}
+
+impl AutonomousValues {
+    /// The key and the value of each option.
+    fn options(&self) -> [(&'static str, &Option<String>); 7] {
+        [
+            ("max_iterations", &self.max_iterations),
+            ("max_time", &self.max_time),
+            ("success_check", &self.success_check),
+            ("success", &self.success),
+            ("guardrails", &self.guardrails),
+            ("guard", &self.guard),
+            ("max_violations", &self.max_violations),
+        ]
+    }
 }
 
 impl AutonomousOptions {
-    /// Reads the options from the values of `max_iterations=`,
-    /// `max_time=`, `success_check=` and `guardrails=`.
+    /// Reads the options from their values.
     ///
-    /// Fails if a value is invalid, or there is no `success_check=`.
-    fn from_values(
-        max_iterations: Option<String>,
-        max_time: Option<String>,
-        success_check: Option<String>,
-        guardrails: Option<String>,
-    ) -> Result<Self, String> {
-        let success_check = success_check.ok_or_else(|| {
-            "`agent:autonomous` needs `success_check=<command>`, a bash command that exits \
-             with status 0 when the task is done"
-                .to_string()
-        })?;
+    /// Fails if a value is invalid, the values have neither `success=` nor
+    /// `success_check=`, or `guard=judge` has no `guardrails=`.
+    fn from_values(values: AutonomousValues) -> Result<Self, String> {
+        if values.success.is_none() && values.success_check.is_none() {
+            return Err(
+                "`agent:autonomous` needs `success=<criteria>`, success criteria that a model \
+                 judges, or `success_check=<command>`, a bash command that exits with status 0 \
+                 when the task is done"
+                    .to_string(),
+            );
+        }
+        let guard = match values.guard.as_deref() {
+            None | Some("prompt") => Guard::Prompt,
+            Some("judge") => Guard::Judge,
+            Some(other) => return Err(format!("`guard={other}` is not `prompt` or `judge`")),
+        };
+        if guard == Guard::Judge && values.guardrails.is_none() {
+            return Err("`guard=judge` needs `guardrails=<text>`".to_string());
+        }
         Ok(AutonomousOptions {
-            max_iterations: match max_iterations {
+            max_iterations: match values.max_iterations {
                 None => DEFAULT_MAX_ITERATIONS,
                 Some(value) => positive("max_iterations", &value)?,
             },
-            max_time: match max_time {
+            max_time: match values.max_time {
                 None => DEFAULT_MAX_TIME,
                 Some(value) => parse_duration(&value)?,
             },
-            success_check,
-            guardrails,
+            success_check: values.success_check,
+            success: values.success,
+            guardrails: values.guardrails,
+            guard,
+            max_violations: match values.max_violations {
+                None => DEFAULT_MAX_VIOLATIONS,
+                Some(value) => positive("max_violations", &value)?,
+            },
         })
     }
 }
@@ -310,10 +384,7 @@ struct Values {
     output_schema: Option<String>,
     expertise: Option<String>,
     max_output: Option<String>,
-    max_iterations: Option<String>,
-    max_time: Option<String>,
-    success_check: Option<String>,
-    guardrails: Option<String>,
+    autonomous: AutonomousValues,
 }
 
 impl Values {
@@ -338,10 +409,13 @@ impl Values {
                 "output_schema" => &mut values.output_schema,
                 "expertise" => &mut values.expertise,
                 "max_output" => &mut values.max_output,
-                "max_iterations" => &mut values.max_iterations,
-                "max_time" => &mut values.max_time,
-                "success_check" => &mut values.success_check,
-                "guardrails" => &mut values.guardrails,
+                "max_iterations" => &mut values.autonomous.max_iterations,
+                "max_time" => &mut values.autonomous.max_time,
+                "success_check" => &mut values.autonomous.success_check,
+                "success" => &mut values.autonomous.success,
+                "guardrails" => &mut values.autonomous.guardrails,
+                "guard" => &mut values.autonomous.guard,
+                "max_violations" => &mut values.autonomous.max_violations,
                 _ => {
                     return Err(format!(
                         "unknown option `{key}`, expected {}",
@@ -386,10 +460,7 @@ impl AgentConfig {
             output_schema,
             expertise,
             max_output,
-            max_iterations,
-            max_time,
-            success_check,
-            guardrails,
+            autonomous,
         } = Values::read(params)?;
 
         // The options of one agent type only control that agent, so another
@@ -401,23 +472,13 @@ impl AgentConfig {
             )?;
         }
         if agent != AgentType::Autonomous {
-            only_for(
-                AgentType::Autonomous,
-                &[
-                    ("max_iterations", &max_iterations),
-                    ("max_time", &max_time),
-                    ("success_check", &success_check),
-                    ("guardrails", &guardrails),
-                ],
-            )?;
+            only_for(AgentType::Autonomous, &autonomous.options())?;
         }
         let summarizer = (agent == AgentType::Summarizer)
             .then(|| SummarizerOptions::from_values(expertise, max_output))
             .transpose()?;
         let autonomous = (agent == AgentType::Autonomous)
-            .then(|| {
-                AutonomousOptions::from_values(max_iterations, max_time, success_check, guardrails)
-            })
+            .then(|| AutonomousOptions::from_values(autonomous))
             .transpose()?;
         let max_steps = match max_steps {
             None if agent == AgentType::Autonomous => DEFAULT_AUTONOMOUS_MAX_STEPS,
@@ -497,12 +558,17 @@ impl AgentConfig {
             ));
         }
         if let Some(options) = &self.autonomous {
+            let or_not_set = |value: &Option<String>| value.clone().unwrap_or("not set".into());
             summary.push_str(&format!(
-                "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nguardrails: {}",
+                "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nsuccess: {}\n\
+                 guardrails: {}\nguard: {}\nmax_violations: {}",
                 options.max_iterations,
                 format_duration(options.max_time),
-                options.success_check,
-                options.guardrails.as_deref().unwrap_or("not set"),
+                or_not_set(&options.success_check),
+                or_not_set(&options.success),
+                or_not_set(&options.guardrails),
+                options.guard,
+                options.max_violations,
             ));
         }
         summary

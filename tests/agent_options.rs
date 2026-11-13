@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use atama::agent_loop_openai_compat::agent_options::{
     AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_SUMMARIZER_PROMPT,
-    MaxOutput, SummarizerOptions, format_duration, parse_duration,
+    DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS,
+    DEFAULT_SUMMARIZER_PROMPT, Guard, MaxOutput, SummarizerOptions, format_duration,
+    parse_duration,
 };
 use atama::profile::ModelProfile;
 
@@ -171,7 +172,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`",
+             `guardrails=`, `success=`, `guard=`, `max_violations=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -384,7 +385,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`"
+             `guardrails=`, `success=`, `guard=`, `max_violations=`"
                 .into(),
         ),
         (
@@ -476,8 +477,11 @@ fn autonomous_reads_its_options_with_defaults() {
         Some(AutonomousOptions {
             max_iterations: DEFAULT_MAX_ITERATIONS,
             max_time: DEFAULT_MAX_TIME,
-            success_check: "cargo test".into(),
+            success_check: Some("cargo test".into()),
+            success: None,
             guardrails: None,
+            guard: Guard::Prompt,
+            max_violations: DEFAULT_MAX_VIOLATIONS,
         })
     );
     assert!(config.summarizer.is_none());
@@ -489,6 +493,9 @@ fn autonomous_reads_its_options_with_defaults() {
         "max_time=90s",
         "max_steps=7",
         "guardrails=Do not push.",
+        "success=All tests pass.",
+        "guard=judge",
+        "max_violations=2",
     ])
     .unwrap();
     assert_eq!(config.max_steps, 7);
@@ -497,20 +504,27 @@ fn autonomous_reads_its_options_with_defaults() {
         Some(AutonomousOptions {
             max_iterations: 2,
             max_time: Duration::from_secs(90),
-            success_check: "true".into(),
+            success_check: Some("true".into()),
+            success: Some("All tests pass.".into()),
             guardrails: Some("Do not push.".into()),
+            guard: Guard::Judge,
+            max_violations: 2,
         })
     );
     assert_eq!(
         config.summary(),
         "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
-         max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nguardrails: Do not push."
+         max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nsuccess: All tests pass.\n\
+         guardrails: Do not push.\nguard: judge\nmax_violations: 2"
     );
-    let config = autonomous(&["model=m", "success_check=true"]).unwrap();
+    let config = autonomous(&["model=m", "success=done", "guard=prompt"]).unwrap();
     assert!(
-        config
-            .summary()
-            .ends_with("\nmax_time: 30m\nsuccess_check: true\nguardrails: not set")
+        config.summary().ends_with(
+            "\nmax_time: 30m\nsuccess_check: not set\nsuccess: done\nguardrails: not set\n\
+             guard: prompt\nmax_violations: 3"
+        ),
+        "{}",
+        config.summary()
     );
 }
 
@@ -519,8 +533,21 @@ fn autonomous_rejects_invalid_options() {
     let cases = [
         (
             vec!["model=m"],
-            "`agent:autonomous` needs `success_check=<command>`, a bash command that exits \
-             with status 0 when the task is done",
+            "`agent:autonomous` needs `success=<criteria>`, success criteria that a model \
+             judges, or `success_check=<command>`, a bash command that exits with status 0 \
+             when the task is done",
+        ),
+        (
+            vec!["model=m", "success=x", "guard=strict"],
+            "`guard=strict` is not `prompt` or `judge`",
+        ),
+        (
+            vec!["model=m", "success=x", "guard=judge"],
+            "`guard=judge` needs `guardrails=<text>`",
+        ),
+        (
+            vec!["model=m", "success=x", "max_violations=0"],
+            "`max_violations=0` is not a positive number",
         ),
         (
             vec!["model=m", "success_check=true", "max_iterations=0"],
@@ -552,7 +579,10 @@ fn other_agents_reject_the_options_of_autonomous() {
             "max_iterations=2",
             "max_time=1m",
             "success_check=true",
+            "success=x",
             "guardrails=x",
+            "guard=judge",
+            "max_violations=1",
         ] {
             let key = option.split_once('=').unwrap().0;
             let err = AgentConfig::from_params(

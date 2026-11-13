@@ -183,7 +183,8 @@ Each param of an agent action is an option. Every agent needs
 `thinking=` and `output_schema=`, and a
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
-`success_check=`, `max_iterations=`, `max_time=` and `guardrails=`. Other
+`success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
+`guard=` and `max_violations=`. Other
 agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
@@ -308,10 +309,12 @@ expertise as skills later.
 
 ### The `autonomous` agent
 
-An `autonomous` agent works in iterations until its success check passes.
-It takes `success_check=<command>` (required), `max_iterations=<n>`
-(default `DEFAULT_MAX_ITERATIONS`, 5), `max_time=<duration>` (default
-`DEFAULT_MAX_TIME`, 30 minutes) and `guardrails=<text>`. Its default
+An `autonomous` agent works in iterations until its success checks pass.
+It needs `success_check=<command>` or `success=<criteria>`, or both. It
+takes `max_iterations=<n>` (default `DEFAULT_MAX_ITERATIONS`, 5),
+`max_time=<duration>` (default `DEFAULT_MAX_TIME`, 30 minutes),
+`guardrails=<text>`, `guard=<prompt|judge>` (default `prompt`) and
+`max_violations=<n>` (default `DEFAULT_MAX_VIOLATIONS`, 3). Its default
 `max_steps` is `DEFAULT_AUTONOMOUS_MAX_STEPS` (50). `AgentConfig::from_params`
 reads these options into `AutonomousOptions` only for `autonomous`. Other
 agent types fail on them (`only_for`). `parse_duration` reads `90s`, `20m`
@@ -336,6 +339,32 @@ processes stop too, and fails with "`<cmd>` stopped after <n>s, because the
 time limit of the run is used". Tests of the deadline are in
 `tests/timeout.rs`.
 
+The debug headers of a run with more than one iteration name the
+iteration, as in `iteration 2 step 3`. With a time limit, the request
+header shows the used time, as in `41s of 30m`. Tests of the agent are in
+`tests/autonomous.rs`. The plan of the next phases is in
+`PLAN-autonomous-loop.md`.
+
+### Judges of the `autonomous` agent
+
+`success=<criteria>` adds `judge::SuccessJudge` to the final checks, after
+the command check. `guard=judge` makes `run_with` call `judge::review`
+before each tool call. Both send a separate request with `judge::Judge`:
+a system prompt, one user message, no tools, and a reply that must match
+`judge::verdict_schema`, `{"pass": <bool>, "reason": <text>}`. The request
+goes through `ChatClient::chat_with_format`, so the judge uses the client
+and the model of the agent with its own `response_format`. `run_with` adds
+the tokens of each judge reply to the budget.
+
+The success judge gets the task, the criteria, the tool calls and results
+of the conversation (`judge::evidence`, the last `MAX_EVIDENCE_CHARS`) and
+the final reply. If the judge fails or its reply is not valid, the check
+fails with the error. The guard gets the guardrails, the tool name and the
+arguments. A blocked call does not run, the model gets "blocked by
+guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
+that fails blocks the call. After `max_violations` blocked calls, the run
+fails. `guard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
 ## Signals
 
 `actor::run_process` runs every command in its own process group, and puts
@@ -356,15 +385,7 @@ before the signal also gets the signal, because each pass of
 background commands of a bash script ignore `SIGINT`, so Ctrl-C kills them
 after `GRACE`. Tests are in `tests/signals.rs` and `tests/cli.rs`. In a
 coverage build (`cfg(coverage)`), the watcher thread writes the coverage
-data before Atama stops, so that the coverage of these tests counts. The
-guardrails and the success check command go into the system prompt. The
-loop does not block a tool call that breaks a guardrail yet.
-
-The debug headers of a run with more than one iteration name the
-iteration, as in `iteration 2 step 3`. With a time limit, the request
-header shows the used time, as in `41s of 30m`. Tests of the agent are in
-`tests/autonomous.rs`. The plan of the next phases is in
-`PLAN-autonomous-loop.md`.
+data before Atama stops, so that the coverage of these tests counts.
 
 ### Token budget
 

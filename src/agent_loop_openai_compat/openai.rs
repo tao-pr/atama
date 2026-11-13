@@ -56,6 +56,24 @@ impl ChatClient for OpenAiClient {
             self.thinking,
             self.output_schema.as_ref(),
         );
+        self.send(body)
+    }
+
+    /// Sends the conversation without tools, with the `response_format` of
+    /// `format` instead of the output schema of the client.
+    fn chat_with_format(
+        &mut self,
+        messages: &[Message],
+        format: &OutputSchema,
+    ) -> Result<Reply, String> {
+        let body = request_body(&self.model, messages, &[], self.thinking, Some(format));
+        self.send(body)
+    }
+}
+
+impl OpenAiClient {
+    /// Sends `body` to the server, and reads the reply.
+    fn send(&mut self, body: Value) -> Result<Reply, String> {
         let mut request = self.agent.post(&self.url);
         if let Some(key) = &self.api_key {
             request = request.header("Authorization", format!("Bearer {key}"));
