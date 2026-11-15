@@ -22,7 +22,7 @@ local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://l
   "properties": {
     "provider": {
       "type": "string",
-      "enum": ["openai", "huggingface", "anthropic", "grok", "gemini"],
+      "enum": ["openai", "huggingface", "anthropic", "grok", "gemini", "nemotron", "deepseek", "kimi", "mistral"],
       "description": "The provider of the input."
     },
     "models": {
@@ -62,12 +62,41 @@ local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://l
 }
 ```
 
+```json:gguf
+{
+  "type": "object",
+  "properties": {
+    "gguf_models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ollama_name": {
+            "type": "string",
+            "description": "The name for `ollama pull`, as in `hf.co/<user>/<repo>-GGUF:Q4_K_M` or `qwen3:1.7b`."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL of the GGUF model page."
+          }
+        },
+        "required": ["ollama_name", "url"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["gguf_models"],
+  "additionalProperties": false
+}
+```
+
 # Auto Model Research
 
-Research the frontier models of OpenAI, Hugging Face, Anthropic, Grok and
-Gemini, and small GGUF models for Ollama on a CPU. The research is about
-tool calls, structured input and output, and text analysis. Needs Ollama
-with `local-spark2`, `TAVILY_API_KEY` and `jq`.
+Research the frontier models of OpenAI, Hugging Face, Anthropic, Grok,
+Gemini, Nemotron, DeepSeek, Kimi and Mistral, and small GGUF models for
+Ollama on a CPU. The research is about tool calls, structured input and
+output, and text analysis. Needs Ollama with `local-spark2`,
+`TAVILY_API_KEY` and `jq`.
 
 ```bash
 cargo run -- jobs/auto_model_research.md
@@ -86,7 +115,7 @@ Make an empty output directory.
 One model provider on each line. The names are also file names.
 
 - actions:
-  - bash printf %s\n openai huggingface anthropic grok gemini
+  - bash printf %s\n openai huggingface anthropic grok gemini nemotron deepseek kimi mistral
   - write_file ./output/model_research/providers.txt
 
 ## Generate Web Search Queries
@@ -119,7 +148,7 @@ line.
   - write_file ./output/model_research/search.jsonl
 - if_fail: retry=1
 
-## Extract Models
+## Extract Model Data into {provider}-models.json
 
 `local-spark2` reads the models of each provider. `jq` sets the provider
 again by its order, and each provider goes to `models-<provider>.json`.
@@ -137,3 +166,45 @@ again by its order, and each provider goes to `models-<provider>.json`.
       that the result does not give.
   - bash jq -c -n --rawfile p ./output/model_research/providers.txt [($p|split("\n")),[inputs]]|transpose[]|select(.[1])|.[1]+{provider:.[0]}
   - bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-
+
+## Search Small GGUF Models for Ollama
+
+Empty `gguf.jsonl`, and read the provider and the name of each model from
+the `models-*.json` files. `local-spark2` writes one query for each model,
+and Tavily searches it. `local-spark2` then reads the GGUF names for Ollama
+from each result. `jq` adds the provider and the model by their order, and
+appends one line for each model to `gguf.jsonl`.
+
+- actions:
+  - bash truncate -s 0 ./output/model_research/gguf.jsonl
+  - list_files dir=./output/model_research pattern=models-*.json
+  - foreach read_file
+  - bash jq -c {provider,model:.models[].name}
+  - write_file ./output/model_research/models.jsonl
+  - foreach agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - output_schema=search_query
+    - task=The input is a JSON object with a model provider and a model
+      name. Write one web search query that finds a GGUF version of this
+      model that Ollama can pull and run on a CPU, as on Hugging Face or in
+      the Ollama library.
+  - bash jq -r .query
+  - write_file ./output/model_research/gguf_queries.txt
+  - foreach tavily_search max_results=5 include_answer=basic
+  - bash jq -c -n --slurpfile m ./output/model_research/models.jsonl [$m,[inputs]]|transpose[]|select(.[1])|.[0]+{query:.[1].query,answer:.[1].answer,results:[.[1].results[]|{title,url,content}]}
+  - write_file ./output/model_research/gguf_search.jsonl
+  - foreach agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - output_schema=gguf
+    - task=The input is the web search result of one model. List each GGUF
+      version of the model in the result that Ollama can pull. For a model
+      on Hugging Face, the name is hf.co/<user>/<repo>:<quantization>, as in
+      hf.co/unsloth/Qwen3-1.7B-GGUF:Q4_K_M. For a model in the Ollama
+      library, the name is <model>:<tag>, as in qwen3:1.7b. Give the URL of
+      the page of each one. If the result has no GGUF version, give an empty
+      list.
+  - bash jq -c -n --slurpfile m ./output/model_research/models.jsonl [$m,[inputs]]|transpose[]|select(.[1])|.[0]+.[1]
+  - bash tee -a ./output/model_research/gguf.jsonl
+- if_fail: retry=1

@@ -465,7 +465,8 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
             "Providers",
             "Generate Web Search Queries",
             "Running websearch",
-            "Extract Models"
+            "Extract Model Data into {provider}-models.json",
+            "Search Small GGUF Models for Ollama"
         ]
     );
     for (task, schema) in [(2, "search_query"), (4, "models")] {
@@ -509,6 +510,45 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
         actions(4).last().unwrap(),
         "bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-"
     );
+    // The GGUF task empties gguf.jsonl first, and appends to it last.
+    let gguf = actions(5);
+    assert_eq!(
+        gguf.first().unwrap(),
+        "bash truncate -s 0 ./output/model_research/gguf.jsonl"
+    );
+    assert_eq!(
+        gguf[1],
+        "list_files dir=./output/model_research pattern=models-*.json"
+    );
+    assert_eq!(
+        gguf[8],
+        "foreach tavily_search max_results=5 include_answer=basic"
+    );
+    assert_eq!(
+        gguf.last().unwrap(),
+        "bash tee -a ./output/model_research/gguf.jsonl"
+    );
+    let schemas: Vec<String> = [5, 11]
+        .iter()
+        .map(|&index| match &job.tasks[5].actions[index] {
+            Actor::ForEach(inner) => match inner.as_ref() {
+                Actor::AgentTool {
+                    profile,
+                    output_schema,
+                    ..
+                } => {
+                    assert_eq!(
+                        profile.as_ref().map(|p| p.name.as_str()),
+                        Some("local-spark2")
+                    );
+                    output_schema.as_ref().unwrap().name.clone()
+                }
+                other => panic!("expected an agent, got {other:?}"),
+            },
+            other => panic!("expected foreach, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(schemas, ["search_query", "gguf"]);
 }
 
 #[test]
