@@ -34,6 +34,10 @@ local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://l
             "type": "string",
             "description": "The name of the model."
           },
+          "short_description": {
+            "type": "string",
+            "description": "A short description of the model (2-3 sentences)."
+          },
           "params" : {
             "type": "integer",
             "description": "The number of parameters of the model."
@@ -53,7 +57,7 @@ local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://l
             }
           }
         },
-        "required": ["name", "url", "capabilities"]
+        "required": ["name", "url", "short_description", "params", "release_date", "capabilities"]
       }
     }
   },
@@ -148,7 +152,7 @@ line.
   - write_file ./output/model_research/search.jsonl
 - if_fail: retry=1
 
-## Extract Model Data into {provider}-models.json
+## Extract Model Data into models-*.json
 
 `local-spark2` reads the models of each provider. `jq` sets the provider
 again by its order, and each provider goes to `models-<provider>.json`.
