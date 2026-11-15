@@ -109,7 +109,9 @@ The tasks are generally executed in sequence unless the `begin_if` hook instruct
 `- skip_if: exist(<file>)` is optional (`Task::skip_if`, `SkipIf`). If the
 file exists, `Executor::run_pass` does not run the task. The task succeeds
 with the content of the file as its output, and no hook runs. If the file
-cannot be read, the task fails. Tests are in `tests/executor.rs`.
+cannot be read, the task fails. `- skip_if: exists-nonempty(<file>)`
+(`SkipIf::ExistsNonEmpty`) also needs a file of one byte or more.
+`SkipIf::is_met` reads the condition. Tests are in `tests/executor.rs`.
 
 ### Hook conditions
 

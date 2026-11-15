@@ -60,6 +60,35 @@ pub enum SkipIf {
     /// `exist(<path>)`: if the file exists, the task does not run. The
     /// content of the file is the output of the task, and the task succeeds.
     Exist(String),
+    /// `exists-nonempty(<path>)`: as [`SkipIf::Exist`], but the file must
+    /// also not be empty, that is, have one byte or more.
+    ExistsNonEmpty(String),
+}
+
+impl SkipIf {
+    /// The path of the file that the condition looks at.
+    pub fn path(&self) -> &str {
+        match self {
+            SkipIf::Exist(path) | SkipIf::ExistsNonEmpty(path) => path,
+        }
+    }
+
+    /// Whether the condition is met, so that the task does not run.
+    pub fn is_met(&self) -> bool {
+        let path = std::path::Path::new(self.path());
+        match self {
+            SkipIf::Exist(_) => path.exists(),
+            SkipIf::ExistsNonEmpty(_) => path.metadata().is_ok_and(|meta| meta.len() > 0),
+        }
+    }
+
+    /// The condition in words, as in `a.txt exists`.
+    pub fn describe(&self) -> String {
+        match self {
+            SkipIf::Exist(path) => format!("{path} exists"),
+            SkipIf::ExistsNonEmpty(path) => format!("{path} exists and is not empty"),
+        }
+    }
 }
 
 /// The task event a trigger waits for.

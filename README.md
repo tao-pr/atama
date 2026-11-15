@@ -139,6 +139,7 @@ Atama makes a graph of the tasks from their `begin_if` conditions.
 
 `skip_if: exist(<file>)` is optional. If the file exists, the task does not
 run. The task succeeds, and the content of the file is its output.
+`skip_if: exists-nonempty(<file>)` also needs the file to not be empty.
 
 ## Agents
 

@@ -994,3 +994,37 @@ fn skip_if_exist_fails_the_task_if_the_file_cannot_be_read() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn skip_if_exists_nonempty_skips_the_task_only_for_a_nonempty_file() {
+    let dir = skip_dir("nonempty");
+    let empty = dir.join("empty.txt");
+    let full = dir.join("full.txt");
+    std::fs::write(&empty, "").unwrap();
+    std::fs::write(&full, "from file\n").unwrap();
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        &format!(
+            "# Job\n## A\n- skip_if: exists-nonempty({})\n- actions: bash a1\n\
+             ## B\n- skip_if: exists-nonempty({})\n- actions: bash b1\n\
+             ## C\n- skip_if: exists-nonempty({})\n- actions: bash c1\n\
+             ## D\n- actions: bash d1\n",
+            empty.display(),
+            dir.join("missing.txt").display(),
+            full.display()
+        ),
+        &mut runner,
+    );
+
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert_eq!(runner.calls, ["a1", "b1", "d1"]);
+    assert_eq!(runner.inputs, ["", "a1 ", "from file\n"]);
+    assert!(
+        log.contains(&format!(
+            "[C] skipped ({} exists and is not empty), its content is the output",
+            full.display()
+        )),
+        "log was:\n{log}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

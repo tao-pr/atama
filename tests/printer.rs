@@ -125,3 +125,14 @@ fn shows_the_skip_if_condition() {
         "Job: Job\n  - A: mock (skip if a.txt exists)\n"
     );
 }
+
+#[test]
+fn shows_the_exists_nonempty_condition() {
+    let job = parse_job("# Job\n## A\n- skip_if: exists-nonempty(a.txt)\n- actions: mock\n")
+        .expect("job should parse");
+
+    assert_eq!(
+        format_job(&job, false),
+        "Job: Job\n  - A: mock (skip if a.txt exists and is not empty)\n"
+    );
+}

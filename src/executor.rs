@@ -3,8 +3,10 @@
 //! Tasks run one at a time in the order they appear in the job. Before each
 //! task its `begin_if` condition is checked against the tasks that already ran;
 //! if it is not met the task is skipped. If the file of its
-//! `skip_if: exist(<file>)` condition exists, the task does not run: it
-//! succeeds with the content of the file as its output, and no hook runs.
+//! `skip_if: exist(<file>)` condition exists, or the file of its
+//! `skip_if: exists-nonempty(<file>)` condition is not empty, the task does
+//! not run. It succeeds with the content of the file as its output, and no
+//! hook runs.
 //! After a task finishes, its `if_succeed` or `if_fail` hook runs.
 //!
 //! Each action gets the output of the action before it as its input. The
@@ -22,7 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use crate::actor::Actor;
-use crate::job::{Event, Hook, Job, SkipIf, Task, Trigger};
+use crate::job::{Event, Hook, Job, Task, Trigger};
 use crate::printer::{FAIL, format_hook, paint};
 
 /// How many times a `restart` hook may restart a job before it gives up.
@@ -317,14 +319,14 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
                 continue;
             }
 
-            if let Some(SkipIf::Exist(path)) = &task.skip_if
-                && std::path::Path::new(path).exists()
-            {
+            if let Some(condition) = task.skip_if.as_ref().filter(|c| c.is_met()) {
+                let path = condition.path();
                 match std::fs::read_to_string(path) {
                     Ok(content) => {
                         let line = format!(
-                            "[{}] skipped ({path} exists), its content is the output",
-                            task.id
+                            "[{}] skipped ({}), its content is the output",
+                            task.id,
+                            condition.describe()
                         );
                         self.log(line)?;
                         last_output = content;

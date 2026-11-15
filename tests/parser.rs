@@ -2068,6 +2068,17 @@ fn parses_the_skip_if_field() {
 }
 
 #[test]
+fn parses_the_exists_nonempty_condition() {
+    let job = parse_job("# Job\n## A\n- skip_if: exists-nonempty(a.txt)\n- actions: mock\n")
+        .expect("job should parse");
+
+    assert_eq!(
+        job.tasks[0].skip_if,
+        Some(SkipIf::ExistsNonEmpty("a.txt".into()))
+    );
+}
+
+#[test]
 fn rejects_invalid_skip_if_fields() {
     let cases = [
         ("- skip_if:\n", "`skip_if` has no value"),
@@ -2077,12 +2088,17 @@ fn rejects_invalid_skip_if_fields() {
         ),
         ("- skip_if: exist()\n", "`exist()` needs a file name"),
         (
+            "- skip_if: exists-nonempty( )\n",
+            "`exists-nonempty()` needs a file name",
+        ),
+        (
             "- skip_if: exist(a\n",
             "missing `)` in `skip_if` condition `exist(a`",
         ),
         (
             "- skip_if: missing(a)\n",
-            "unknown `skip_if` condition `missing`",
+            "unknown `skip_if` condition `missing`, expected `exist(<file>)` or \
+             `exists-nonempty(<file>)`",
         ),
         ("- skip_if: a.txt\n", "unknown `skip_if` condition `a.txt`"),
     ];

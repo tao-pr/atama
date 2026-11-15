@@ -1064,22 +1064,32 @@ impl FromStr for Hook {
 impl FromStr for SkipIf {
     type Err = String;
 
-    /// Reads `exist(<path>)`. The path is trimmed and must not be empty.
+    /// Reads `exist(<path>)` or `exists-nonempty(<path>)`. The path is trimmed and must not be empty.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
-        let (name, rest) = s.split_once('(').ok_or_else(|| {
-            format!("unknown `skip_if` condition `{s}`, expected `exist(<file>)`")
-        })?;
+        let (name, rest) = s
+            .split_once('(')
+            .ok_or_else(|| format!("unknown `skip_if` condition `{s}`, {SKIP_IF_FORMS}"))?;
         let arg = rest
             .strip_suffix(')')
             .ok_or_else(|| format!("missing `)` in `skip_if` condition `{s}`"))?
             .trim();
-        match name.trim() {
-            "exist" if arg.is_empty() => Err("`exist()` needs a file name".to_string()),
-            "exist" => Ok(SkipIf::Exist(arg.to_string())),
-            other => Err(format!(
-                "unknown `skip_if` condition `{other}`, expected `exist(<file>)`"
-            )),
+        let name = name.trim();
+        let condition: fn(String) -> SkipIf = match name {
+            "exist" => SkipIf::Exist,
+            "exists-nonempty" => SkipIf::ExistsNonEmpty,
+            other => {
+                return Err(format!(
+                    "unknown `skip_if` condition `{other}`, {SKIP_IF_FORMS}"
+                ));
+            }
+        };
+        if arg.is_empty() {
+            return Err(format!("`{name}()` needs a file name"));
         }
+        Ok(condition(arg.to_string()))
     }
 }
+
+/// The end of the error message for an unknown `skip_if` condition.
+const SKIP_IF_FORMS: &str = "expected `exist(<file>)` or `exists-nonempty(<file>)`";

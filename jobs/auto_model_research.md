@@ -188,6 +188,7 @@ and Tavily searches it. `openai-luna` then reads the GGUF names for Ollama
 from each result. `jq` adds the provider and the model by their order, and
 appends one line for each model to `gguf.jsonl`.
 
+- skip_if: exists-nonempty(./output/model_research/gguf.jsonl)
 - actions:
   - bash truncate -s 0 ./output/model_research/gguf.jsonl
   - list_files dir=./output/model_research pattern=models-*.json
