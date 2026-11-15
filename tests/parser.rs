@@ -1775,4 +1775,11 @@ fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
         "{:?}",
         block.params
     );
+    assert!(
+        block
+            .params
+            .contains(&"protect=- ./output/autonomous/check_report.py".to_string()),
+        "{:?}",
+        block.params
+    );
 }

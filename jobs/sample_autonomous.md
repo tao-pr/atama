@@ -13,8 +13,9 @@ task:
   - Download the JSON of each product into ./output/autonomous/data/.
   - Write ./output/autonomous/build_report.py, which reads the downloaded files and writes the report. Run it.
   - Report format, as JSON. Top level keys generated (today, YYYY-MM-DD) and products. products maps each product to a list of cycles, in the order of the source. Each cycle has the keys cycle, latest, eol (the date of the source, or false) and days_left (the days from today to eol, or null if eol is false).
+protect:
+  - ./output/autonomous/check_report.py
 guardrails:
-  - Do not change or delete ./output/autonomous/check_report.py.
   - Write files only in ./output/autonomous/.
 ```
 
@@ -23,9 +24,10 @@ guardrails:
 Which release cycles of Python, Node.js and PostgreSQL are still supported?
 A `coder` agent writes a checker that knows the answer. Then an
 `autonomous` agent searches, downloads and parses the data, and writes a
-Python script, until the checker accepts its report. Needs `python3`,
-`CLAUDE_API_KEY` and `TAVILY_API_KEY`. The agents run commands with your
-permissions. Every file goes into `./output/autonomous/`.
+Python script, until the checker accepts its report. The agent cannot
+change the checker, because `protect:` blocks each write to it. Needs
+macOS, `python3`, `CLAUDE_API_KEY` and `TAVILY_API_KEY`. The agents run
+commands with your permissions. Every file goes into `./output/autonomous/`.
 
 ```bash
 cargo run -- jobs/sample_autonomous.md
