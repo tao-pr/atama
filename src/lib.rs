@@ -2,14 +2,15 @@
 
 pub mod actor;
 pub mod agent_loop_openai_compat;
+pub mod budget_block;
 pub mod executor;
 mod http;
 pub mod job;
-pub mod loop_block;
 pub mod parser;
 pub mod passer;
 pub mod printer;
 pub mod profile;
+pub mod protect;
 pub mod schema;
 pub mod signals;
 pub mod tavily;
@@ -20,7 +21,7 @@ pub use agent_loop_openai_compat::AgentToolLoop;
 pub use executor::{
     ActionRunner, ActorRunner, DryRunner, Executor, JobOutcome, JobReport, TaskReport, TaskStatus,
 };
-pub use job::{Event, Hook, Job, Task, Trigger};
+pub use job::{Event, Hook, Job, SkipIf, Task, Trigger};
 pub use parser::{ParseError, parse_job};
 pub use passer::Passer;
 pub use printer::{

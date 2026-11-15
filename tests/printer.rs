@@ -50,8 +50,8 @@ fn colors_task_titles_and_hooks() {
 fn highlights_the_agent_type_of_agent_actions() {
     let job = parse_job(
         "```config\np: model=m, base_url=http://x.test\n```\n\
-         # Job\n## Research\n- actions:\n  - agent:summarizer model=p expertise=law\n  \
-         - foreach agent:coder model=p\n  - bash ls\n",
+         # Job\n## Research\n- actions:\n  - agent:summarizer\n    - model=p\n    - expertise=law\n  \
+         - foreach agent:coder\n    - model=p\n  - bash ls\n",
     )
     .expect("job should parse");
 
@@ -112,5 +112,27 @@ fn shows_the_max_of_parallel_tasks() {
     assert_eq!(
         format_job(&job, false),
         "Job: Job\n  - A: (parallel, max 1) bash a; bash b\n"
+    );
+}
+
+#[test]
+fn shows_the_skip_if_condition() {
+    let job = parse_job("# Job\n## A\n- skip_if: exist(a.txt)\n- actions: mock\n")
+        .expect("job should parse");
+
+    assert_eq!(
+        format_job(&job, false),
+        "Job: Job\n  - A: mock (skip if a.txt exists)\n"
+    );
+}
+
+#[test]
+fn shows_the_exists_nonempty_condition() {
+    let job = parse_job("# Job\n## A\n- skip_if: exists-nonempty(a.txt)\n- actions: mock\n")
+        .expect("job should parse");
+
+    assert_eq!(
+        format_job(&job, false),
+        "Job: Job\n  - A: mock (skip if a.txt exists and is not empty)\n"
     );
 }

@@ -7,10 +7,11 @@
 //! local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
 //! openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
 //! small-budget: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1, token_budget=50000
+//! openai-luna: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY, thinking=false
 //! ```
 //!
-//! An agent action then selects a profile by its name, as in
-//! `agent:coder model=local-qwen`. The job file never holds an API key:
+//! An agent action then selects a profile by its name, with the option
+//! `- model=local-qwen` in its list. The job file never holds an API key:
 //! `api_key=` is the name of the environment variable that holds the key.
 
 use std::collections::BTreeMap;
@@ -34,26 +35,56 @@ pub struct ModelProfile {
     /// `token_budget=<n>`. The `token_budget=` option of an agent action
     /// replaces it. `None` sets no limit.
     pub token_budget: Option<u64>,
+    /// From `thinking=<true|false>`. The `thinking=` option of an agent
+    /// action replaces it. `Some(false)` sends `"reasoning_effort": "none"`,
+    /// for example for a model that takes tools only without reasoning.
+    /// `None` sends nothing, and the server uses its default.
+    pub thinking: Option<bool>,
 }
 
-/// Reads the value of `token_budget=`, a positive number of tokens.
+/// Reads the value of `thinking=`, `true` or `false`.
 ///
-/// Fails if `value` is not a positive whole number.
+/// Fails on any other value.
+pub fn parse_thinking(value: &str) -> Result<bool, String> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("`thinking={value}` is not `true` or `false`")),
+    }
+}
+
+/// Reads the value of `token_budget=`, a positive number of tokens. An
+/// `_` between two digits separates groups of digits, as in `100_000`.
+///
+/// Fails if `value` is not a positive whole number, or an `_` is not
+/// between two digits.
 pub fn parse_token_budget(value: &str) -> Result<u64, String> {
+    let error = || format!("`token_budget={value}` is not a positive number");
+    let bytes = value.as_bytes();
+    let separators_ok = bytes.iter().enumerate().all(|(index, byte)| {
+        *byte != b'_'
+            || (index > 0
+                && bytes[index - 1].is_ascii_digit()
+                && bytes.get(index + 1).is_some_and(u8::is_ascii_digit))
+    });
+    if !separators_ok {
+        return Err(error());
+    }
     value
+        .replace('_', "")
         .parse()
         .ok()
         .filter(|tokens| *tokens > 0)
-        .ok_or_else(|| format!("`token_budget={value}` is not a positive number"))
+        .ok_or_else(error)
 }
 
 /// Reads one profile line:
-/// `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`.
+/// `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]`.
 ///
 /// Fails if the line has no `:`, the name is empty or has whitespace, a
 /// setting is not `key=value`, a key is unknown, empty or set twice, or
-/// `model` or `base_url` is missing, or `token_budget` is not a positive
-/// number.
+/// `model` or `base_url` is missing, `token_budget` is not a positive
+/// number, or `thinking` is not `true` or `false`.
 impl FromStr for ModelProfile {
     type Err = String;
 
@@ -71,6 +102,7 @@ impl FromStr for ModelProfile {
         let mut base_url = None;
         let mut api_key_env = None;
         let mut token_budget = None;
+        let mut thinking = None;
         for setting in settings.split(',') {
             let setting = setting.trim();
             let Some((key, value)) = setting.split_once('=') else {
@@ -83,10 +115,11 @@ impl FromStr for ModelProfile {
                 "base_url" => &mut base_url,
                 "api_key" => &mut api_key_env,
                 "token_budget" => &mut token_budget,
+                "thinking" => &mut thinking,
                 other => {
                     return Err(format!(
                         "unknown setting `{other}` in profile `{name}`, expected `model=`, \
-                         `base_url=`, `api_key=` or `token_budget=`"
+                         `base_url=`, `api_key=`, `token_budget=` or `thinking=`"
                     ));
                 }
             };
@@ -110,12 +143,18 @@ impl FromStr for ModelProfile {
             .map(parse_token_budget)
             .transpose()
             .map_err(|err| format!("{err} in profile `{name}`"))?;
+        let thinking = thinking
+            .as_deref()
+            .map(parse_thinking)
+            .transpose()
+            .map_err(|err| format!("{err} in profile `{name}`"))?;
         Ok(ModelProfile {
             name: name.to_string(),
             model: model.ok_or_else(|| missing("model"))?,
             base_url: base_url.ok_or_else(|| missing("base_url"))?,
             api_key_env,
             token_budget,
+            thinking,
         })
     }
 }

@@ -2,8 +2,12 @@
 //!
 //! Tasks run one at a time in the order they appear in the job. Before each
 //! task its `begin_if` condition is checked against the tasks that already ran;
-//! if it is not met the task is skipped. After a task finishes, its
-//! `if_succeed` or `if_fail` hook runs.
+//! if it is not met the task is skipped. If the file of its
+//! `skip_if: exist(<file>)` condition exists, or the file of its
+//! `skip_if: exists-nonempty(<file>)` condition is not empty, the task does
+//! not run. It succeeds with the content of the file as its output, and no
+//! hook runs.
+//! After a task finishes, its `if_succeed` or `if_fail` hook runs.
 //!
 //! Each action gets the output of the action before it as its input. The
 //! first action of a task gets the output of the last task that succeeded.
@@ -312,6 +316,28 @@ impl<'a, R: ActionRunner, W: Write> Executor<'a, R, W> {
             if !should_begin(&task.begin_if, index, reports) {
                 self.log(format_args!("[{}] skipped (begin_if not met)", task.id))?;
                 reports[index].status = TaskStatus::Skipped;
+                continue;
+            }
+
+            if let Some(condition) = task.skip_if.as_ref().filter(|c| c.is_met()) {
+                let path = condition.path();
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        let line = format!(
+                            "[{}] skipped ({}), its content is the output",
+                            task.id,
+                            condition.describe()
+                        );
+                        self.log(line)?;
+                        last_output = content;
+                        reports[index].status = TaskStatus::Succeeded;
+                    }
+                    Err(error) => {
+                        let line = format!("[{}] failed: cannot read `{path}`: {error}", task.id);
+                        self.log(paint(self.color, FAIL, &line))?;
+                        reports[index].status = TaskStatus::Failed;
+                    }
+                }
                 continue;
             }
 

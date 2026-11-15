@@ -909,3 +909,122 @@ fn the_executor_gives_the_max_of_each_parallel_task_to_the_runner() {
     // D has `actions`, so the executor does not call `run_parallel` for it.
     assert_eq!(runner.maxes, [None, Some(1), Some(3)]);
 }
+
+/// A new empty directory for the files of one `skip_if` test.
+fn skip_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("atama-skip-if-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn skip_if_exist_skips_the_task_and_passes_the_file_on() {
+    let dir = skip_dir("exists");
+    let file = dir.join("a.txt");
+    std::fs::write(&file, "from file\n").unwrap();
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        &format!(
+            "# Job\n## A\n- skip_if: exist({})\n- actions: bash a1\n- if_succeed: die\n\
+             ## B\n- actions: bash b1\n",
+            file.display()
+        ),
+        &mut runner,
+    );
+
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert_eq!(
+        statuses(&report),
+        [TaskStatus::Succeeded, TaskStatus::Succeeded]
+    );
+    assert_eq!(report.tasks[0].attempts, 0);
+    assert_eq!(runner.calls, ["b1"]);
+    assert_eq!(runner.inputs, ["from file\n"]);
+    assert!(
+        log.contains(&format!(
+            "[A] skipped ({} exists), its content is the output",
+            file.display()
+        )),
+        "log was:\n{log}"
+    );
+    assert!(!log.contains("hook: die"), "log was:\n{log}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn skip_if_exist_runs_the_task_without_the_file() {
+    let dir = skip_dir("missing");
+    let mut runner = ScriptedRunner::default();
+    let (report, _) = run(
+        &format!(
+            "# Job\n## A\n- skip_if: exist({})\n- actions: bash a1\n## B\n- actions: bash b1\n",
+            dir.join("a.txt").display()
+        ),
+        &mut runner,
+    );
+
+    assert!(report.succeeded());
+    assert_eq!(runner.calls, ["a1", "b1"]);
+    assert_eq!(runner.inputs, ["", "a1 "]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn skip_if_exist_fails_the_task_if_the_file_cannot_be_read() {
+    let dir = skip_dir("unreadable");
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        &format!(
+            "# Job\n## A\n- skip_if: exist({})\n- actions: bash a1\n\
+             ## B\n- begin_if: prev task fail\n- actions: bash b1\n",
+            dir.display()
+        ),
+        &mut runner,
+    );
+
+    assert_eq!(
+        statuses(&report),
+        [TaskStatus::Failed, TaskStatus::Succeeded]
+    );
+    assert_eq!(runner.calls, ["b1"]);
+    assert!(
+        log.contains(&format!("[A] failed: cannot read `{}`", dir.display())),
+        "log was:\n{log}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn skip_if_exists_nonempty_skips_the_task_only_for_a_nonempty_file() {
+    let dir = skip_dir("nonempty");
+    let empty = dir.join("empty.txt");
+    let full = dir.join("full.txt");
+    std::fs::write(&empty, "").unwrap();
+    std::fs::write(&full, "from file\n").unwrap();
+    let mut runner = ScriptedRunner::default();
+    let (report, log) = run(
+        &format!(
+            "# Job\n## A\n- skip_if: exists-nonempty({})\n- actions: bash a1\n\
+             ## B\n- skip_if: exists-nonempty({})\n- actions: bash b1\n\
+             ## C\n- skip_if: exists-nonempty({})\n- actions: bash c1\n\
+             ## D\n- actions: bash d1\n",
+            empty.display(),
+            dir.join("missing.txt").display(),
+            full.display()
+        ),
+        &mut runner,
+    );
+
+    assert!(report.succeeded(), "log was:\n{log}");
+    assert_eq!(runner.calls, ["a1", "b1", "d1"]);
+    assert_eq!(runner.inputs, ["", "a1 ", "from file\n"]);
+    assert!(
+        log.contains(&format!(
+            "[C] skipped ({} exists and is not empty), its content is the output",
+            full.display()
+        )),
+        "log was:\n{log}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -8,8 +8,9 @@
 //!   an output schema for agent actions (see [`crate::schema`]).
 //! - `# <name>` names the job; text after it is the job description.
 //! - `## <id>` starts a task; its heading text is the task id.
-//! - Top-level `- begin_if:`, `- actions:`, `- actions-parallel:`,
-//!   `- if_fail:` and `- if_succeed:` bullets in a task are fields.
+//! - Top-level `- begin_if:`, `- skip_if:`, `- actions:`,
+//!   `- actions-parallel:`, `- if_fail:` and `- if_succeed:` bullets in a
+//!   task are fields.
 //!   `- actions-parallel:max=<n>` limits how many actions run at the same
 //!   time. Indented
 //!   bullets under `- actions:` or `- actions-parallel:` are the actions. Any other text is part of the task description.
@@ -35,10 +36,25 @@
 //!     is any other action, as in `foreach bash wc -c`.
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
-//!   - `agent:<type> model=<profile> [params...]` is [`Actor::AgentTool`].
-//!     The type is `coder` or `summarizer`. The profile must be in the
+//!   - `agent:<type>` is [`Actor::AgentTool`]. The type is `coder`,
+//!     `summarizer` or `autonomous`. The options of the agent are not on
+//!     the line of the action. They are a list under it, one
+//!     `- <key>=<value>` bullet for each option, indented more than the
+//!     action. A value can be in double quotes. An indented line without a
+//!     bullet continues the value of the option above it, after a space:
+//!
+//!     ```markdown
+//!     - actions:
+//!       - agent:coder
+//!         - model=local-qwen
+//!         - max_steps=15
+//!         - task=Fix the failing test.
+//!     ```
+//!
+//!     `model=<profile>` is necessary, and the profile must be in the
 //!     ```` ```config ```` block. If `output_schema=` has a name, not a
-//!     path, the job must have a schema block with that name.
+//!     path, the job must have a schema block with that name. A
+//!     `foreach agent:<type>` action has the list in the same way.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
@@ -47,8 +63,8 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
 use crate::agent_loop_openai_compat::agent_options::AgentConfig;
-use crate::job::{Event, Hook, Job, Task, Trigger};
-use crate::loop_block::{self, LoopBlocks};
+use crate::budget_block::{self, BudgetBlocks};
+use crate::job::{Event, Hook, Job, SkipIf, Task, Trigger};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
 use crate::schema::{self, Schemas};
@@ -86,8 +102,22 @@ enum Block {
     Config,
     /// ```` ```json:<name> ````: an output schema.
     Schema(String),
-    /// ```` ```loop:<name> ````: a loop block.
-    Loop(String),
+    /// ```` ```budget:<name> ````: a budget block.
+    Budget(String),
+}
+
+/// An action of a task that the parser read, but did not parse yet,
+/// because the list of its options can follow on the next lines.
+struct PendingAction {
+    /// The text of the action bullet, without the bullet marker.
+    text: String,
+    /// The line number of the action bullet.
+    line: usize,
+    /// The indentation of the action bullet. A bullet with more
+    /// indentation is an option of the action.
+    indent: usize,
+    /// The line number and the text of each option bullet.
+    options: Vec<(usize, String)>,
 }
 
 struct ParsedTask {
@@ -106,11 +136,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut job_description: Vec<String> = Vec::new();
     let mut tasks: Vec<ParsedTask> = Vec::new();
     let mut in_actions = false;
+    let mut pending: Option<PendingAction> = None;
     let mut in_code_block = false;
     let mut profiles = Profiles::new();
     let mut schemas = Schemas::new();
-    let mut loops = LoopBlocks::new();
-    // The open ```config, ```json:<name> or ```loop:<name> block: the line
+    let mut budgets = BudgetBlocks::new();
+    // The open ```config, ```json:<name> or ```budget:<name> block: the line
     // number of its fence, its kind, and the lines after the fence.
     let mut open_block: Option<(usize, Block, Vec<&str>)> = None;
     let mut has_config = false;
@@ -134,30 +165,30 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     let parsed = schema::parse_block(name, &lines.join("\n")).map_err(at)?;
                     schemas.insert(name.to_string(), parsed);
                 }
-                Block::Loop(name) => {
-                    let parsed = loop_block::parse_block(name, lines).map_err(at)?;
-                    loops.insert(name.to_string(), parsed);
+                Block::Budget(name) => {
+                    let parsed = budget_block::parse_block(name, lines).map_err(at)?;
+                    budgets.insert(name.to_string(), parsed);
                 }
             }
             open_block = None;
             continue;
         }
-        if let Some(loop_name) = loop_block::block_name(line).filter(|_| !in_code_block) {
+        if let Some(budget_name) = budget_block::block_name(line).filter(|_| !in_code_block) {
             if name.is_some() {
                 return Err(ParseError::new(
                     line_no,
-                    "the ```loop:<name> block must come before the `# <job name>` heading",
+                    "the ```budget:<name> block must come before the `# <job name>` heading",
                 ));
             }
-            loop_block::check_name(loop_name)
+            budget_block::check_name(budget_name)
                 .map_err(|message| ParseError::new(line_no, message))?;
-            if loops.contains_key(loop_name) {
+            if budgets.contains_key(budget_name) {
                 return Err(ParseError::new(
                     line_no,
-                    format!("loop block `{loop_name}` is defined twice"),
+                    format!("budget block `{budget_name}` is defined twice"),
                 ));
             }
-            open_block = Some((line_no, Block::Loop(loop_name.to_string()), Vec::new()));
+            open_block = Some((line_no, Block::Budget(budget_name.to_string()), Vec::new()));
             continue;
         }
         if let Some(schema_name) = schema::block_name(line).filter(|_| !in_code_block) {
@@ -198,6 +229,15 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 
         if !in_code_block {
             if let Some(id) = heading(line, "##") {
+                if let Some(current) = tasks.last_mut() {
+                    flush(
+                        &mut pending,
+                        &mut current.task,
+                        &profiles,
+                        &schemas,
+                        &budgets,
+                    )?;
+                }
                 if name.is_none() {
                     return Err(ParseError::new(
                         line_no,
@@ -212,6 +252,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         id: id.to_string(),
                         description: String::new(),
                         begin_if: Trigger::default(),
+                        skip_if: None,
                         actions: Vec::new(),
                         parallel: false,
                         max_parallel: None,
@@ -258,26 +299,63 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         };
 
         if in_code_block || line.trim_start().starts_with("```") {
+            flush(
+                &mut pending,
+                &mut current.task,
+                &profiles,
+                &schemas,
+                &budgets,
+            )?;
             in_actions = false;
             current.description.push(line.to_string());
             continue;
         }
 
         if in_actions {
-            let is_indented = line.starts_with(' ') || line.starts_with('\t');
-            if let Some(action) = bullet_text(line.trim_start()).filter(|_| is_indented) {
-                current.task.actions.push(parse_action(
-                    action.trim(),
-                    line_no,
+            let indent = indentation(line);
+            let deeper = pending
+                .as_ref()
+                .is_some_and(|action| indent > action.indent);
+            if let Some(item) = bullet_text(line.trim_start()).filter(|_| indent > 0) {
+                if let Some(action) = pending.as_mut().filter(|_| deeper) {
+                    action.options.push((line_no, item.trim().to_string()));
+                    continue;
+                }
+                flush(
+                    &mut pending,
+                    &mut current.task,
                     &profiles,
                     &schemas,
-                    &loops,
-                )?);
+                    &budgets,
+                )?;
+                pending = Some(PendingAction {
+                    text: item.trim().to_string(),
+                    line: line_no,
+                    indent,
+                    options: Vec::new(),
+                });
                 continue;
             }
             if line.trim().is_empty() {
                 continue;
             }
+            // An indented line without a bullet continues the last option.
+            if let Some((_, option)) = pending
+                .as_mut()
+                .filter(|_| deeper)
+                .and_then(|action| action.options.last_mut())
+            {
+                option.push(' ');
+                option.push_str(line.trim());
+                continue;
+            }
+            flush(
+                &mut pending,
+                &mut current.task,
+                &profiles,
+                &schemas,
+                &budgets,
+            )?;
             in_actions = false;
         }
 
@@ -314,10 +392,14 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     }
                     current.task.max_parallel = max;
                     if !value.is_empty() {
-                        current
-                            .task
-                            .actions
-                            .push(parse_action(value, line_no, &profiles, &schemas, &loops)?);
+                        current.task.actions.push(parse_action(
+                            value,
+                            line_no,
+                            &[],
+                            &profiles,
+                            &schemas,
+                            &budgets,
+                        )?);
                     }
                     in_actions = true;
                 }
@@ -327,6 +409,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     }
                     current.task.begin_if = parse_value(value, line_no, key)?;
                     current.begin_if_line = Some(line_no);
+                }
+                "skip_if" => {
+                    if current.task.skip_if.is_some() {
+                        return Err(ParseError::new(line_no, "duplicate `skip_if` field"));
+                    }
+                    current.task.skip_if = Some(parse_value(value, line_no, key)?);
                 }
                 "if_fail" | "if_succeed" => {
                     let slot = if key == "if_fail" {
@@ -347,11 +435,20 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         current.description.push(line.to_string());
     }
 
+    if let Some(current) = tasks.last_mut() {
+        flush(
+            &mut pending,
+            &mut current.task,
+            &profiles,
+            &schemas,
+            &budgets,
+        )?;
+    }
     if let Some((start, kind, _)) = open_block {
         let block = match kind {
             Block::Config => "```config".to_string(),
             Block::Schema(name) => format!("```json:{name}"),
-            Block::Loop(name) => format!("```loop:{name}"),
+            Block::Budget(name) => format!("```budget:{name}"),
         };
         return Err(ParseError::new(
             start,
@@ -380,18 +477,45 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     })
 }
 
-/// Parses an action. An agent action also gets the model profile that its
+/// Parses the pending action, if there is one, and adds it to the actions
+/// of `task`.
+fn flush(
+    pending: &mut Option<PendingAction>,
+    task: &mut Task,
+    profiles: &Profiles,
+    schemas: &Schemas,
+    budgets: &BudgetBlocks,
+) -> Result<(), ParseError> {
+    if let Some(action) = pending.take() {
+        task.actions.push(parse_action(
+            &action.text,
+            action.line,
+            &action.options,
+            profiles,
+            schemas,
+            budgets,
+        )?);
+    }
+    Ok(())
+}
+
+/// Parses an action and the list of its options. Only an agent action
+/// takes options, and only from the list, not from the line of the action.
+/// Each item of `options` is its line number and its text.
+///
+/// An agent action also gets the model profile that its
 /// `model=` names, the schema block that its `output_schema=` names, the
-/// loop block that its `loop=` names, and the model profile that its
+/// budget block that its `budget=` names, and the model profile that its
 /// `judge_model=` names. Then the parser makes sure that the
-/// options of the agent action, with the options of its loop block, are
+/// options of the agent action, with the options of its budget block, are
 /// valid (see [`AgentConfig::check`]).
 fn parse_action(
     value: &str,
     line: usize,
+    options: &[(usize, String)],
     profiles: &Profiles,
     schemas: &Schemas,
-    loops: &LoopBlocks,
+    budgets: &BudgetBlocks,
 ) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
     // The agent of a `foreach` action needs its profile too.
@@ -399,28 +523,57 @@ fn parse_action(
         Actor::ForEach(inner) => inner.as_mut(),
         other => other,
     };
+    match agent_actor {
+        Actor::AgentTool { agent, params, .. } => {
+            if !params.is_empty() {
+                return Err(ParseError::new(
+                    line,
+                    format!(
+                        "put the options of `agent:{agent}` in a list under the action, one \
+                         `- <key>=<value>` bullet on each line, as in `- model=<profile>`"
+                    ),
+                ));
+            }
+            *params = options
+                .iter()
+                .map(|(line, text)| unquote_option(text).map_err(|m| ParseError::new(*line, m)))
+                .collect::<Result<_, _>>()?;
+        }
+        _ => {
+            if let Some((option_line, text)) = options.first() {
+                return Err(ParseError::new(
+                    *option_line,
+                    format!(
+                        "`{text}` is indented under an action that takes no list of options, \
+                         only `agent:<type>` takes one. To add an action, indent its bullet as \
+                         much as the other actions"
+                    ),
+                ));
+            }
+        }
+    }
     if let Actor::AgentTool {
         agent,
         params,
         profile,
         output_schema,
-        loop_block,
+        budget_block,
         judge_profile,
     } = agent_actor
     {
         let error = |message| ParseError::new(line, message);
         *profile = Some(profile::resolve(*agent, params, profiles).map_err(error)?);
         *output_schema = schema::resolve(params, schemas).map_err(error)?;
-        // Only an `autonomous` agent takes `loop=`. For another agent,
+        // Only an `autonomous` agent takes `budget=`. For another agent,
         // `AgentConfig::check` names the option.
         if *agent == AgentType::Autonomous {
-            *loop_block = loop_block::resolve(params, loops).map_err(error)?;
+            *budget_block = budget_block::resolve(params, budgets).map_err(error)?;
         }
-        let merged = match loop_block {
+        let merged = match budget_block {
             Some(block) => block.merge(params),
             None => params.clone(),
         };
-        // `judge_model=` can come from the loop block. For another agent,
+        // `judge_model=` can come from the budget block. For another agent,
         // `AgentConfig::check` names the option.
         if *agent == AgentType::Autonomous
             && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
@@ -471,6 +624,15 @@ fn validate(tasks: &[ParsedTask]) -> Result<(), ParseError> {
     Ok(())
 }
 
+/// The indentation of a line in columns. A tab is 4 columns, as in
+/// Markdown, and any other whitespace character is 1 column.
+fn indentation(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
+}
+
 /// Returns the text after a `- ` or `* ` bullet marker.
 fn bullet_text(line: &str) -> Option<&str> {
     line.strip_prefix("- ").or_else(|| line.strip_prefix("* "))
@@ -482,7 +644,7 @@ fn field(item: &str) -> Option<(&str, &str)> {
     let key = key.trim();
     matches!(
         key,
-        "begin_if" | "actions" | "actions-parallel" | "if_fail" | "if_succeed"
+        "begin_if" | "skip_if" | "actions" | "actions-parallel" | "if_fail" | "if_succeed"
     )
     .then_some((key, value))
 }
@@ -660,7 +822,7 @@ impl FromStr for Actor {
                     params: split_quoted(rest)?,
                     profile: None,
                     output_schema: None,
-                    loop_block: None,
+                    budget_block: None,
                     judge_profile: None,
                 }),
                 None => Err(format!(
@@ -670,6 +832,28 @@ impl FromStr for Actor {
                 )),
             },
         }
+    }
+}
+
+/// Reads one item of the list of options of an agent action. If the value
+/// after `=` is all in double quotes, the quotes go away, with the same rules
+/// as in [`split_quoted`]. `max_output="40%"` becomes `max_output=40%`. Any
+/// other text does not change, so a value can have spaces without quotes.
+///
+/// Fails if the value has text after its closing quote.
+fn unquote_option(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    let Some((key, value)) = text.split_once('=') else {
+        return Ok(text.to_string());
+    };
+    if !(value.len() >= 2 && value.starts_with('"') && value.ends_with('"')) {
+        return Ok(text.to_string());
+    }
+    match split_quoted(value)?.as_slice() {
+        [value] => Ok(format!("{key}={value}")),
+        _ => Err(format!(
+            "the value of `{key}` has text after its closing quote, in `{text}`"
+        )),
     }
 }
 
@@ -876,3 +1060,36 @@ impl FromStr for Hook {
         Err(format!("unknown hook `{s}`"))
     }
 }
+
+impl FromStr for SkipIf {
+    type Err = String;
+
+    /// Reads `exist(<path>)` or `exists-nonempty(<path>)`. The path is trimmed and must not be empty.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (name, rest) = s
+            .split_once('(')
+            .ok_or_else(|| format!("unknown `skip_if` condition `{s}`, {SKIP_IF_FORMS}"))?;
+        let arg = rest
+            .strip_suffix(')')
+            .ok_or_else(|| format!("missing `)` in `skip_if` condition `{s}`"))?
+            .trim();
+        let name = name.trim();
+        let condition: fn(String) -> SkipIf = match name {
+            "exist" => SkipIf::Exist,
+            "exists-nonempty" => SkipIf::ExistsNonEmpty,
+            other => {
+                return Err(format!(
+                    "unknown `skip_if` condition `{other}`, {SKIP_IF_FORMS}"
+                ));
+            }
+        };
+        if arg.is_empty() {
+            return Err(format!("`{name}()` needs a file name"));
+        }
+        Ok(condition(arg.to_string()))
+    }
+}
+
+/// The end of the error message for an unknown `skip_if` condition.
+const SKIP_IF_FORMS: &str = "expected `exist(<file>)` or `exists-nonempty(<file>)`";

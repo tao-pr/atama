@@ -1,6 +1,6 @@
 //! The judges of an `autonomous` agent: model requests that decide whether
 //! the work meets the success criteria (`success=`), and whether a tool
-//! call breaks a guardrail (`guard=judge`).
+//! call breaks a guardrail (`toolGuard=judge`).
 //!
 //! A judge request is separate from the conversation of the agent. It has
 //! a system prompt, one user message and no tools, and the reply must match
@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use super::checks::{CheckResult, FinalCheck, tail};
+use super::checks::{CheckResult, FinalLoopCheck, tail};
 use super::context::SUMMARY_HEADER;
 use super::{ChatClient, Message, ToolCall};
 use crate::schema::OutputSchema;
@@ -106,7 +106,7 @@ impl SuccessJudge {
     }
 }
 
-impl FinalCheck for SuccessJudge {
+impl FinalLoopCheck for SuccessJudge {
     fn check(&mut self, reply: &str, judge: &mut Judge, messages: &[Message]) -> CheckResult {
         let question = format!(
             "Task:\n{}\n\nSuccess criteria:\n{}\n\nThe tool calls of the agent and their \

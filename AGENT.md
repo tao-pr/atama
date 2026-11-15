@@ -50,7 +50,9 @@ description
 - actions:
   - action1
   - action2
-  - action3
+  - agent:<type>
+    - model=<profile name>
+    - <key>=<value>
 - if_fail: <hook action>
 - if_succeed: <hook action>
 
@@ -72,7 +74,9 @@ description
 ````
 
 The optional `config` block defines model profiles for agent actions (see
-"Model, debug output and tests" below).
+"Model, debug output and tests" below). The options of an agent action are a
+list under the action, one `- <key>=<value>` bullet for each option (see
+"Options of an agent action" below).
 
 ### Parallel actions
 
@@ -100,6 +104,15 @@ The tasks are generally executed in sequence unless the `begin_if` hook instruct
 - task(id) succeed or fail
 - task(id) begin 
 
+### Skip conditions
+
+`- skip_if: exist(<file>)` is optional (`Task::skip_if`, `SkipIf`). If the
+file exists, `Executor::run_pass` does not run the task. The task succeeds
+with the content of the file as its output, and no hook runs. If the file
+cannot be read, the task fails. `- skip_if: exists-nonempty(<file>)`
+(`SkipIf::ExistsNonEmpty`) also needs a file of one byte or more.
+`SkipIf::is_met` reads the condition. Tests are in `tests/executor.rs`.
+
 ### Hook conditions
 
 Hooks are executed when the task fails or succeeds (or other criteria are met).
@@ -120,9 +133,11 @@ with the begin hook.
 ## Actors
 
 An actor is the code that carries out one action of a task. The `Actor` enum
-is in `src/actor.rs`. The parser makes one actor from each action line. The
-first word of the line selects the variant. `src/actor/display.rs` writes an
-actor back as an action line.
+is in `src/actor.rs`. The parser makes one actor from each action bullet.
+The first word of the bullet selects the variant. An agent action also takes
+the option bullets under it. `src/actor/display.rs` writes an actor back as
+one line, with the options of an agent on the same line, for the log and
+the `--dry-run` summary.
 
 Each actor gets the output of the previous action as its input, and returns
 its own output. The main actor types are:
@@ -131,7 +146,7 @@ its own output. The main actor types are:
 - `BashSandbox` (`bash-sandbox <cmd> [args...]`) runs a command in bash inside `sandbox-exec`, on macOS only. The profile, `src/actor/bash_sandbox.sb`, denies the network, `sudo`, `su` and `login`, and files outside the working directory, except the system directories that programs need. `run_bash_sandbox` in `src/actor.rs` sets `PATH` to `SANDBOX_PATH` and stops if the user is root.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
-- `AgentTool` (`agent:<type> ...`) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
+- `AgentTool` (`agent:<type>`, with its options in a list under it) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -163,7 +178,7 @@ The code of the loop is in six files:
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
 - `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
 - `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
-- `src/agent_loop_openai_compat/checks.rs` has the `FinalCheck` trait and `SchemaCheck`.
+- `src/agent_loop_openai_compat/checks.rs` has the `FinalLoopCheck` trait and `SchemaCheck`.
 
 A step is one request to the model and its one reply. An iteration is one
 attempt at the whole task. It ends when the agent replies without tool
@@ -184,17 +199,42 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`guard=`, `max_violations=`, `loop=` and `judge_model=`. Other
-agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
-as in
-`task="Fix the failing test."`. The parser (`split_quoted` in
-`src/parser.rs`) splits the params of an `agent:` line at whitespace, but
-not inside quotes, and removes the quotes. Inside quotes, `\"` is a quote and
-`\\` is a backslash. Then `Values::read` in `agent_options.rs` reads each
-param for `AgentConfig::from_params`. It fails on a word without `=` and on
-an unknown key. `src/actor/display.rs` puts the quotes back when it writes
-an agent action as a line. The `websearch` action uses `split_quoted` in
-the same way.
+`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. Other
+agent types fail on the options of another type (`only_for`).
+
+The options of an agent action are not on the line of the action. They are
+a list under it, one `- <key>=<value>` bullet on each line, indented more
+than the action:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Fix the failing test.
+      Then run the tests again.
+```
+
+`parse_job` in `src/parser.rs` keeps the action in a `PendingAction` until
+the next action, field or task, and adds each deeper bullet to its options.
+`indentation` counts a tab as 4 columns. An indented line without a bullet
+continues the last option, after a space. `flush` then calls `parse_action`
+with the options. An option on the line of the action is a parse error.
+An action on the line of the `- actions:` field takes no list, so an agent
+action must be in its own bullet.
+A list under an action that is not `agent:<type>` or
+`foreach agent:<type>` is also a parse error. A value needs no quotes. If
+the whole value is in double quotes, `unquote_option` removes them with
+`split_quoted`. Inside quotes, `\"` is a quote and `\\` is a backslash.
+`str::parse` alone still reads the options from one line, for tests.
+Tests of the list are in `tests/parser.rs`. Its `listed` helper writes a
+one-line agent action of a test as a list, for `parse_job`.
+
+`Values::read` in `agent_options.rs` reads each param for
+`AgentConfig::from_params`. It fails on a word without `=` and on an
+unknown key. `src/actor/display.rs` writes an agent action as one line for
+the log, with quotes around a value with spaces. The `websearch` action
+uses `split_quoted` for its options on the line of the action.
 
 ### Steps of one agent run
 
@@ -317,7 +357,7 @@ An `autonomous` agent works in iterations until its success checks pass.
 It needs `success_check=<command>` or `success=<criteria>`, or both. It
 takes `max_iterations=<n>` (default `DEFAULT_MAX_ITERATIONS`, 5),
 `max_time=<duration>` (default `DEFAULT_MAX_TIME`, 30 minutes),
-`guardrails=<text>`, `guard=<prompt|judge>` (default `prompt`) and
+`guardrails=<text>`, `toolGuard=<prompt|judge>` (default `prompt`) and
 `max_violations=<n>` (default `DEFAULT_MAX_VIOLATIONS`, 3). Its default
 `max_steps` is `DEFAULT_AUTONOMOUS_MAX_STEPS` (50). `AgentConfig::from_params`
 reads these options into `AutonomousOptions` only for `autonomous`. Other
@@ -325,7 +365,7 @@ agent types fail on them (`only_for`). `parse_duration` reads `90s`, `20m`
 or `1h`, and `format_duration` writes it back.
 
 `checks::CommandCheck` runs the success check with `bash -c`. It is a
-`FinalCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
+`FinalLoopCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
 `RunBudget::next_iteration`, and gives the model the exit status and the
 end of stdout and stderr (`checks::tail`, `MAX_CHECK_CHARS`). The output
 schema check runs first, and its failure does not end the iteration.
@@ -346,13 +386,12 @@ time limit of the run is used". Tests of the deadline are in
 The debug headers of a run with more than one iteration name the
 iteration, as in `iteration 2 step 3`. With a time limit, the request
 header shows the used time, as in `41s of 30m`. Tests of the agent are in
-`tests/autonomous.rs`. The plan of the next phases is in
-`PLAN-autonomous-loop.md`.
+`tests/autonomous.rs`.
 
 ### Judges of the `autonomous` agent
 
 `success=<criteria>` adds `judge::SuccessJudge` to the final checks, after
-the command check. `guard=judge` makes `run_with` call `judge::review`
+the command check. `toolGuard=judge` makes `run_with` call `judge::review`
 before each tool call. Both send a separate request with `judge::Judge`:
 a system prompt, one user message, no tools, and a reply that must match
 `judge::verdict_schema`, `{"pass": <bool>, "reason": <text>}`. The request
@@ -364,7 +403,7 @@ a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
 key of that profile (`agent_options::read_api_key`), and sets it as
 `AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
 client, and adds the tokens of each judge reply to the budget.
-`judge_model=` needs `success=` or `guard=judge`. The context summary uses
+`judge_model=` needs `success=` or `toolGuard=judge`. The context summary uses
 the model of the agent.
 
 The success judge gets the task, the criteria, the tool calls and results
@@ -374,7 +413,43 @@ fails with the error. The guard gets the guardrails, the tool name and the
 arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
-fails. `guard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Protected paths
+
+`protect=<patterns>` names the paths that the tools of an `autonomous`
+agent cannot write. The code is in `src/protect.rs`. Commas or new lines
+separate the patterns. `protect=` is an option of the action, not of a
+budget block.
+`parse_patterns` and `check_pattern` read them when the job is parsed.
+
+A pattern is a glob, relative to the working directory or absolute. `*`
+and `?` match in one part of the path, also a name that starts with `.`.
+`**` as a whole part matches any number of parts. A class, as in `[a-z]`
+or `[!x]`, can have only letters, digits, `-`, `_` and `.`. A pattern also
+protects the paths below the path that it matches.
+
+`run_loop_with_env` makes a `Protect` with `Protect::new`. It resolves each
+pattern against the working directory. The fixed part of the pattern, before
+its first glob, becomes a real path without symbolic links. Each pattern
+becomes one regular expression. `run_with` gives the `Protect` to each tool
+with `Tool::set_protect`, and adds `Protect::instruction` to the system
+prompt. Two tools use it:
+
+- `write_file` calls `Protect::check_write` before it writes. The check
+  resolves the real path of the target, so a symbolic link or a `..` does
+  not get past it.
+- `bash` runs its command with `actor::run_bash_in_sandbox`, inside
+  `sandbox-exec` with `Protect::sandbox_profile`. The profile allows all,
+  but denies writes to the protected paths. It also denies writes to the
+  directories above them, so a command cannot delete or rename a parent
+  directory. macOS enforces the profile, whatever the command is.
+
+Only macOS has `sandbox-exec`. On another system, `run_loop_with_env`
+fails if the agent has the `bash` tool and `protect=`. The success check
+runs without the sandbox, because the job, not the model, writes it.
+The sandbox does not stop a command that asks another process to write,
+for example a daemon or `osascript`. Tests are in `tests/protect.rs`.
 
 ### Context compaction
 
@@ -392,24 +467,28 @@ the compacted conversation. A failed summary request fails the run.
 `judge::evidence` includes the summary, so the success judge sees the
 earlier work. Tests are in `tests/context.rs`.
 
-### Loop blocks
+### Budget blocks
 
-`src/loop_block.rs` reads ```` ```loop:<name> ```` blocks. `parse_job`
-reads each block with `loop_block::parse_block` into a `LoopBlock`: its
-options as `key=value` params (`LoopBlock::params`) and its `tools:` as
+`src/budget_block.rs` reads ```` ```budget:<name> ```` blocks. `parse_job`
+reads each block with `budget_block::parse_block` into a `BudgetBlock`: its
+options as `key=value` params (`BudgetBlock::params`) and its `tools:` as
 `ToolLimits`. A list of text becomes one value with a `- <item>` line for
 each item. `BLOCK_KEYS` are the keys that a block can set, besides `tools`.
+A budget block holds only the general configuration that many actions use,
+for example limits and tools. `ACTION_KEYS` (`task`, `protect` and
+`guardrails`) change with each action, so they are options of the action
+only. `parse_block` fails on them.
 
-For an `autonomous` action, `parse_action` uses `loop_block::resolve` to
-put the block that `loop=<name>` names into `Actor::AgentTool::loop_block`.
-`AgentToolLoop::run_loop_with_env` reads `LoopBlock::merge`, the options of
+For an `autonomous` action, `parse_action` uses `budget_block::resolve` to
+put the block that `budget=<name>` names into `Actor::AgentTool::budget_block`.
+`AgentToolLoop::run_loop_with_env` reads `BudgetBlock::merge`, the options of
 the block and then the options of the action, so that an option of the
-action replaces the option of the block. `LoopBlock::make_tools` makes the
+action replaces the option of the block. `BudgetBlock::make_tools` makes the
 tools of `tools:`, each in a `Limited`, and they replace the default
-tools. Tests are in `tests/loop_block.rs`.
+tools. Tests are in `tests/budget_block.rs`.
 
 `parse_action` also calls `AgentConfig::check` for each agent action, with
-the options of its loop block. It reads the options as
+the options of its budget block. It reads the options as
 `AgentConfig::from_params` does, but it does not read the API key. So an
 invalid option stops the job before it starts.
 
@@ -440,6 +519,7 @@ data before Atama stops, so that the coverage of these tests counts.
 `token_budget=<n>` limits the tokens of one run. A model profile can set
 it, and the option of the action replaces the value of the profile
 (`AgentConfig::from_params`). `profile::parse_token_budget` reads both.
+An `_` between two digits separates groups of digits, as in `100_000`.
 `openai::parse_reply` reads `usage.total_tokens` into `Reply::tokens`.
 
 `RunBudget::add_tokens` adds up the tokens of each reply. Before each
@@ -452,7 +532,11 @@ of each reply shows its tokens and the used budget.
 
 ### Model, debug output and tests
 
-`thinking=false` makes `AgentConfig::thinking` `Some(false)`. Then
+`thinking=false` makes `AgentConfig::thinking` `Some(false)`. A model
+profile can also set `thinking=`, and the option of the action replaces
+it, as with `token_budget=`. The judge client uses the `thinking` of its
+profile. For example, `gpt-6-luna` rejects tools on `/chat/completions`
+unless `reasoning_effort` is `none`, so its profile sets `thinking=false`. Then
 `openai::request_body` adds `"reasoning_effort": "none"`, which turns off
 the thinking of the model on Ollama. Without `thinking=`, or with
 `thinking=true`, the body has no `reasoning_effort`, and the server uses
@@ -460,7 +544,7 @@ its default.
 
 The model comes from a model profile (`src/profile.rs`). A job file can
 start with a ```` ```config ```` block, before the `# <name>` heading. Each
-line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`, and
+line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]`, and
 `ModelProfile::from_str` reads it. `parse_job` reads the block with
 `profile::parse_profiles`, and `parse_action` uses `profile::resolve` to
 put the profile that `model=<name>` names into `Actor::AgentTool::profile`.

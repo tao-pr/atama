@@ -75,9 +75,11 @@ fn check_pattern_rejects_bad_patterns() {
     );
     assert_eq!(
         check_pattern("src/*.rs"),
-        Err("the `list_files` pattern `src/*.rs` has a `/`, but `list_files` does not \
+        Err(
+            "the `list_files` pattern `src/*.rs` has a `/`, but `list_files` does not \
              go into subdirectories"
-            .to_string())
+                .to_string()
+        )
     );
     assert_eq!(
         check_pattern("*.[rs"),
@@ -146,9 +148,11 @@ fn fails_without_a_single_readable_directory() {
     );
     assert_eq!(
         list(None, "*", "a\nb\n"),
-        Err("`list_files` lists one directory, but its input has 2 lines. To list one \
+        Err(
+            "`list_files` lists one directory, but its input has 2 lines. To list one \
              directory for each line, use `foreach list_files`"
-            .to_string())
+                .to_string()
+        )
     );
     let missing = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("list_files_no_such_dir");
     let missing = missing.to_string_lossy();

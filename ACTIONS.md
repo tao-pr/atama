@@ -32,9 +32,10 @@ Some actions accept a value in double quotes, so that the value can have
 spaces, as in `task="Fix the failing test."`. Inside quotes, `\"` is a quote
 and `\\` is a backslash. Atama removes the quotes before it uses the value.
 
-These actions accept quotes: `websearch`, `agent:<type>`, `read_file`,
-`list_files` and `write_file`. The other actions split the line at each space, and they keep
-quote characters as they are.
+These actions accept quotes: `websearch`, `read_file`, `list_files` and
+`write_file`. The options of `agent:<type>` also accept quotes, but they do
+not need them (see [`agent:<type>`](#agenttype)). The other actions split the
+line at each space, and they keep quote characters as they are.
 
 ## `bash`
 
@@ -232,7 +233,10 @@ number, or if the query is empty. A word with an unknown key, as in
 ## `agent:<type>`
 
 ```text
-agent:<type> model=<profile> [options...]
+agent:<type>
+  - model=<profile>
+  - <key>=<value>
+  - ...
 ```
 
 Sends a task to a chat model and runs the tools that the model asks for. The
@@ -243,9 +247,29 @@ The model must support tool calls. It must be on a server with an OpenAI
 compatible `/chat/completions` endpoint, such as OpenAI, Ollama, vLLM or LM
 Studio. To set up the model, see "Model profiles" in [README.md](README.md).
 
-Each word after `agent:<type>` is a `key=value` option. An unknown option, or
-a word without `=`, makes the action fail. Put a value with spaces in double
-quotes (see [Quotes in parameters](#quotes-in-parameters)).
+The options of an agent are a list under the action, one `- <key>=<value>`
+bullet on each line. Indent the bullets more than the bullet of the action.
+An option on the line of the action, as in `agent:coder model=local-qwen`,
+stops the job before it starts. An unknown option, or an item without `=`,
+also stops the job.
+
+A value can have spaces, and it needs no quotes. If the whole value is in
+double quotes, Atama removes them (see
+[Quotes in parameters](#quotes-in-parameters)). To write a long value on
+more than one line, indent the next lines more than the bullet. Atama joins
+the lines with one space:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Write a Python program that prints the first 10 prime numbers.
+      Save it to ./output/primes.py and run it with python3.
+```
+
+In a `foreach agent:<type>` action, the list goes under the `foreach` line
+in the same way.
 
 Options of every agent:
 
@@ -254,7 +278,7 @@ Options of every agent:
 | `model=<profile>` | Yes | The name of a model profile in the `config` block. An unknown name stops the job before it starts. |
 | `task="<text>"` | No | The instruction. The input of the action goes below it. The action fails if it has no task and no input. |
 | `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10, and 50 for `autonomous`. |
-| `token_budget=<n>` | No | The most tokens in one run, a number above 0. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
+| `token_budget=<n>` | No | The most tokens in one run, a number above 0. An `_` between two digits separates groups of digits, as in `100_000`. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
 | `max_context=<n>` | No | The most tokens of the conversation, a number above 0. Before a request that is over it, Atama asks the model for a summary of the work so far, and sends the request with the system prompt, the task and the summary only. The summary costs tokens of the budget. Atama estimates 4 characters for one token. Without this option, Atama never summarizes. |
 | `thinking=<true\|false>` | No | `false` sends `"reasoning_effort": "none"`, which turns off the thinking of the model on Ollama. Other servers can reject it. `true` is the same as no option. |
 | `output_schema=<name\|path>` | No | Makes the output a JSON value that matches a schema. See "Output schemas" in [README.md](README.md). |
@@ -274,7 +298,9 @@ permissions. Use it only in a directory and with a model that you trust.
 
 ```markdown
 - actions:
-  - agent:coder model=local-qwen task="Fix the failing test."
+  - agent:coder
+    - model=local-qwen
+    - task=Fix the failing test.
 ```
 
 ### `agent:summarizer`
@@ -300,7 +326,10 @@ The size of `max_output=` is one of these:
 ```markdown
 - actions:
   - read_file ./notes.md
-  - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
+  - agent:summarizer
+    - model=local-qwen
+    - expertise=software engineering
+    - max_output=3 sentences
 ```
 
 ### `agent:autonomous`
@@ -311,16 +340,15 @@ the agent replies without tool calls, which means "I am done". Then the
 success checks run. If a check fails, the agent gets the reason, and the
 next iteration starts.
 
-There are two success checks. You must give one of them, and you can give
-both:
+There are two success checks. You must give one of them or both:
 
 - `success_check=` is a bash command. Exit status 0 means that the task is done.
-- `success=` is success criteria in natural language. A separate request to the model of the agent, the judge, decides whether the work meets them. The judge gets the task, the criteria, the tool calls of the agent with their results, and its last reply. If the tool calls and results are longer than 10,000 characters, the judge gets only their end.
+- `success=` is success criteria in natural language. A separate request to the model of the agent, the `judge,` decides whether the work meets them.
 
 If you give both, the command runs first, and the judge runs only if the
 command passes.
 
-A step is one request to the model and its one reply. For example, the
+**A step is one request to the model and its one reply.** For example, the
 agent reads a file, edits it, runs the tests and says that it is done. That
 is 4 steps in iteration 1. `max_iterations=` limits how many times the agent
 can say that it is done and try again. `max_steps=` limits the steps of the
@@ -345,17 +373,22 @@ It takes these options:
 | `max_iterations=<n>` | No | The most iterations, a number above 0. The default is 5. |
 | `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. The time counts from the start of the action. Atama examines the time before each request and each tool call. A `bash` call or a success check that still runs at the limit stops, with all its child processes. |
 | `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. |
-| `guard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
+| `toolGuard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
-| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `guard=judge`. |
-| `loop=<name>` | No | The name of a loop block with more options. See [Loop blocks](#loop-blocks). |
+| `protect="<patterns>"` | No | Globs of the paths that the tools cannot write, separated by commas, as in `protect="src/**,Cargo.toml"`. See [Protected paths](#protected-paths). |
+| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `toolGuard=judge`. |
+| `budget=<name>` | No | The name of a budget block with the general limits and tools of the agent. See [Budget blocks](#budget-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
 model profile of the agent. For example, a small local model can judge the
 work of a large one. The API key of the judge profile comes from its own
 `api_key=` variable. The tokens of the judge and the guard count in the
-token budget of the action. With `guard=judge`, each tool call costs one
+token budget of the action. With `toolGuard=judge`, each tool call costs one
 more request to the model.
+
+The guardrails and the guard are text that a model reads, so they cannot
+promise that a rule holds. For a rule about files, use `protect=`, which
+Atama enforces without a model.
 
 With `--debug`, each header of a run with more than one iteration names
 the iteration, as in `iteration 2 step 3`. The header of each request also
@@ -363,30 +396,105 @@ shows the used time, as in `41s of 30m`.
 
 If you use `agent:autonomous`, the model can run any command with your
 permissions, and nobody approves each command. Use it only in a directory
-and with a model that you trust.
+and with a model that you trust. `protect=` keeps the agent from writing
+the paths that you name, but it does not limit the other commands.
 
 ```markdown
 - actions:
-  - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m guardrails="Do not change files in tests/."
-  - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." guard=judge
+  - agent:autonomous
+    - model=local-qwen
+    - task=Make all tests pass.
+    - success_check=cargo test
+    - max_time=20m
+    - protect=tests/**
+  - agent:autonomous
+    - model=local-qwen
+    - task=Write a README for this project.
+    - success=The README explains how to install, configure and run the tool.
+    - guardrails=Do not change source files.
+    - toolGuard=judge
 ```
 
-#### Loop blocks
+#### Steps of a run
 
-If the criteria or the guardrails have more than one line, or you want to
-select the tools, put the options into a loop block. A loop block is a
-```` ```loop:<name> ```` block before the `# <name>` heading of the job. The
-action selects it with `loop=<name>`:
+A run of an `autonomous` agent has these steps. The names in code font are
+the types and functions in `src/agent_loop_openai_compat/`.
+
+1. The loop starts with the system prompt and the task. It makes the list of `FinalLoopCheck`s from the options: `SchemaCheck`, `CommandCheck`, then `SuccessJudge`.
+2. Before each step, `RunBudget` makes sure that the run still has steps, tokens and time. With `max_context=`, the loop compacts a conversation that is too long.
+3. The loop sends the conversation to the model. The model replies with tool calls or with a final text.
+4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
+5. If the guard allows the call, the tool runs. With `protect=`, a write to a protected path fails. The result goes into the conversation, and the loop goes back to step 2.
+6. A reply without tool calls goes through the `FinalLoopCheck`s in order. `SchemaCheck` and `CommandCheck` decide without a model.
+7. `SuccessJudge` asks the `Judge` with the criteria, the evidence and the reply. The `Verdict` becomes `Done` if `pass` is true, else `Retry` with its `reason`.
+8. If all checks give `Done`, the run ends. The output of the last check is the output of the action.
+9. If a check gives `Retry`, the model gets its message, and the loop goes on. A failed `CommandCheck` or `SuccessJudge` also starts the next iteration.
+
+The `Judge` sends a separate request to the model, and the `Verdict` is its
+answer: `pass` and a `reason`. A `FinalLoopCheck` is a rule that the reply
+at the end of an iteration must pass. Of the checks, only `SuccessJudge`
+uses a `Verdict`.
+
+#### Protected paths
+
+`protect=` names the paths that the agent cannot write, delete or rename.
+It also protects the paths below them. The agent also cannot delete or
+rename a directory above a protected path, because that moves the path.
+The agent can still read the protected paths.
+
+Each pattern is a glob of a path, relative to the working directory or
+absolute:
+
+- `*` matches any text in one part of the path, also a name that starts with `.`.
+- `?` matches one character in one part of the path.
+- `**` as a whole part matches any number of parts, as in `src/**/*.rs`.
+- `[a-z]` matches one character in the range, and `[!x]` one character that is not `x`. A class can have only letters, digits, `-`, `_` and `.`.
+
+Atama enforces the patterns in each tool using **OS sandboxing**, without a model:
+
+- `write_file` does not write a protected path. It follows symbolic links and `..`, so a link to a protected file is protected too.
+- `bash` runs each command inside the macOS sandbox, `sandbox-exec`. The sandbox denies each write to a protected path, whatever the command is. For example, `rm -rf`, `mv`, a redirect and a script all fail.
+
+A blocked call fails, and the agent gets the error. The system prompt
+tells the agent the protected paths, so that it does not try. A blocked
+call counts as a failed call of the tool, not as a violation of the guard.
+
+If you use `protect=` and the agent has the `bash` tool, the action needs
+macOS, because only macOS has `sandbox-exec`. On another system, the action
+fails before the first request. To use `protect=` on another system, remove
+`bash` from `tools:` of the budget block.
+
+`protect=` has these limits:
+
+- The success check runs without the sandbox, because you write the command, not the agent.
+- A command can ask another program that already runs to write a file, such as a daemon or `osascript`. The sandbox does not stop that program.
+
+```markdown
+- actions:
+  - agent:autonomous
+    - model=local-qwen
+    - task=Fix the bug in the parser.
+    - success_check=cargo test
+    - protect=tests/**,Cargo.toml,.env
+```
+
+#### Budget blocks
+
+A budget block holds the general configuration of an `autonomous` agent,
+for example its limits and its tools. Many actions can use the same block.
+A budget block is a ```` ```budget:<name> ```` block before the `# <name>`
+heading of the job. The action selects it with `budget=<name>`.
+
+The details of one action are options of the action, not of the block.
+These options are `task=`, `protect=` and `guardrails=`. A budget block with
+`task:`, `protect:` or `guardrails:` stops the job with an error.
 
 ````markdown
-```loop:fix-tests
+```budget:standard
+max_iterations: 5
 max_time: 20m
-success_check: cargo test --quiet
-success: All tests pass, and no test was deleted or ignored.
-guard: judge
-guardrails:
-  - Do not change files in tests/.
-  - Do not run git push or git reset.
+token_budget: 200_000
+toolGuard: judge
 tools:
   - read_file
   - list_files
@@ -399,18 +507,24 @@ tools:
 ## Fix
 
 - actions:
-  - agent:autonomous model=local-qwen loop=fix-tests task="Make all tests pass."
+  - agent:autonomous
+    - model=local-qwen
+    - budget=standard
+    - task=Make all tests pass.
+    - success_check=cargo test --quiet
+    - protect=tests/**,Cargo.toml
+    - guardrails=Do not run git push or git reset.
 ````
 
 Each line is `<key>: <value>`. A key with no value starts a list, and each
 item of the list is a `- <item>` line after it. The keys are the options
-`task`, `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
-`max_time`, `success_check`, `success`, `guardrails`, `guard` and
-`max_violations`, `judge_model`, and `tools`. A list of text, such as `guardrails:`, gives
-the agent one `- <item>` line for each item.
+`max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
+`max_time`, `success_check`, `success`, `toolGuard`, `max_violations`,
+`judge_model`, and `tools`. A list of text, such as `success:`, gives the
+agent one `- <item>` line for each item.
 
-An option on the action line replaces the same option of the block. The
-action needs `model=` on its line.
+An option of the action replaces the same option of the block. The action
+needs `model=` in its options.
 
 `tools:` selects the tools of the agent from `bash`, `read_file`,
 `write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most

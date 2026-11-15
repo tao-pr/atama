@@ -97,6 +97,9 @@ pub fn format_job(job: &Job, color: bool) -> String {
         if !actions.is_empty() {
             let _ = write!(out, " {}", actions.join("; "));
         }
+        if let Some(condition) = &task.skip_if {
+            let _ = write!(out, " (skip if {})", condition.describe());
+        }
         if let Some(hook) = &task.if_fail {
             let _ = write!(
                 out,

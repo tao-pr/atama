@@ -3,7 +3,7 @@
 Atama runs automation pipelines that you write in markdown. You describe the
 tasks in a markdown file, and Atama runs them. You can mix agent-based task with non-agent tasks.
 
-## Pipeline format
+## Pipeline format (markdown)
 
 The top-level heading names the pipeline. Each second-level heading is a
 task:
@@ -18,6 +18,7 @@ description of the pipeline
 description
 
 - begin_if: <trigger condition>
+- skip_if: exist(<file>)
 - actions:
   - action1
   - action2
@@ -44,30 +45,46 @@ openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API
 The task id is its heading text, so `## Build` is `task(Build)`. Task ids
 must be unique.
 
-Examples:
+## Basic Example Markdown Jobs
 
-- `tests/fixtures/example_job.md`: a full job.
-- `jobs/sample_api_calls.md`: every action type.
-- `jobs/sample_agents.md`: a `websearch` action and a `summarizer` agent.
-- `jobs/sample_foreach.md`: the `foreach` prefix.
-- `jobs/sample_agent_with_structured_output.md`: an agent with
+- [`tests/fixtures/example_job.md`](tests/fixtures/example_job.md): a full job.
+- [`jobs/sample_api_calls.md`](jobs/sample_api_calls.md): every action type.
+- [`jobs/sample_agents.md`](jobs/sample_agents.md): a `websearch` action and a `summarizer` agent.
+- [`jobs/sample_foreach.md`](jobs/sample_foreach.md): the `foreach` prefix.
+- [`jobs/sample_agent_with_structured_output.md`](jobs/sample_agent_with_structured_output.md): an agent with
   `output_schema=`.
-- `jobs/sample_coder.md`: a `coder` agent that writes a Python program, and
+- [`jobs/sample_coder.md`](jobs/sample_coder.md): a `coder` agent that writes a Python program, and
   a `summarizer` agent that explains it.
-- `jobs/sample_autonomous.md`: an `autonomous` agent that works until a
+- [`jobs/sample_autonomous.md`](jobs/sample_autonomous.md): an `autonomous` agent that works until a
   check script accepts its report.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
+
+## Advanced Example Markdown Jobs
+
+- [`jobs/auto_model_research.md`](jobs/auto_model_research.md): research the frontier models of OpenAI, Hugging Face, Anthropic, Grok, Gemini, Nemotron, DeepSeek, Kimi and Mistral, and small GGUF models for Ollama on a CPU. The research is about tool calls, structured input and output, and text analysis. Needs Ollama with `local-spark2`, `OPENAI_API_KEY` for `openai-luna`, `TAVILY_API_KEY` and `jq`. The job can run on a CPU machine with Ollama.
 
 ## Actions
 
 An action is one line in the `- actions:` list of a task. The first word is
 the action type, and the other words are its parameters. For example:
 
-- `bash npm ci`, `api_call GET https://example.com`,
-- `websearch topic="latest Rust release"` and
-- `agent:coder model=local-qwen task="Fix the failing test."`.
+- `bash npm ci`,
+- `api_call GET https://example.com`,
+- `websearch topic="latest Rust release"`.
+
+An `agent:<type>` action is different. Its options are not on the line of
+the action. They are a list under the action, one `- <key>=<value>` bullet
+for each option:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Fix the failing test.
+```
 
 Each action takes input from previous task/action, passes out its output to the next.
 
@@ -120,6 +137,10 @@ The `if_fail` and `if_succeed` hooks run when a task finishes:
 
 Atama makes a graph of the tasks from their `begin_if` conditions.
 
+`skip_if: exist(<file>)` is optional. If the file exists, the task does not
+run. The task succeeds, and the content of the file is its output.
+`skip_if: exists-nonempty(<file>)` also needs the file to not be empty.
+
 ## Agents
 
 An `agent:<type>` action sends its task to a chat model. There are three
@@ -131,10 +152,14 @@ agent types:
   is a bash command, criteria for a judge model, or both. Limits on
   iterations, steps, tokens and time stop the run. Guardrails tell the agent
   what it must not do, and a judge can block a tool call that breaks them.
+  Protected paths (`protect=`) are paths that the agent cannot write. Atama
+  enforces them without a model, with the
+  [macOS sandbox](ACTIONS.md#protected-paths) for `bash`.
 
 [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
-```` ```loop:<name> ```` block can hold the options of an `autonomous`
-agent (see [Loop blocks](ACTIONS.md#loop-blocks)). This section describes
+```` ```budget:<name> ```` block can hold the general limits and tools of
+an `autonomous` agent, so that many actions can use them (see
+[Budget blocks](ACTIONS.md#budget-blocks)). This section describes
 the parts of the job file that agents use.
 
 If you use `agent:coder` or `agent:autonomous`, the model can run any
@@ -147,7 +172,7 @@ A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -158,7 +183,11 @@ on one line of the `config` block:
 - `api_key=<ENV_VAR>`: the environment variable with the API key. Leave it
   out for a server without a key, such as Ollama.
 - `token_budget=<n>`: the most tokens that one run of an agent can use.
+  An `_` between two digits separates groups of digits, as in `100_000`.
   Leave it out for no limit. See "Token budget" below.
+- `thinking=false`: send `"reasoning_effort": "none"` for each action that
+  uses the profile. Use it for a model such as `gpt-6-luna`, which takes
+  tools only without reasoning. A `thinking=` option of the action replaces it.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job
@@ -167,8 +196,8 @@ does not start.
 ### Token budget (optional)
 
 A token budget limits the tokens that one run of an agent uses. Set it on a
-model profile with `token_budget=<n>`, or on one action, as in
-`agent:coder model=local-qwen token_budget=50000`. The value of the action
+model profile with `token_budget=<n>`, or on one action with the option
+`- token_budget=50000` in the list of the action. The value of the action
 replaces the value of the profile.
 
 Atama adds up `usage.total_tokens` from each response of the server. Each
@@ -209,7 +238,9 @@ A schema block comes before the `# <name>` heading. Its fence is
 ## Summary
 
 - actions:
-  - agent:summarizer model=local-qwen output_schema=article
+  - agent:summarizer
+    - model=local-qwen
+    - output_schema=article
 ````
 
 The job does not start if a block is not a valid JSON schema, if a name is

@@ -64,8 +64,21 @@ profile. If an agent uses its budget before its final reply, it fails.
 Then `if_fail: retry=0` fails the task without a retry.
 
 - actions-parallel:max=1
-  - agent:coder model=local-spark2 thinking=false max_steps=8 token_budget=40000 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-spark2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
-  - agent:coder model=local-qwen2 thinking=true max_steps=8 task="Write a Python program of at most 10 lines that does the coding task below. Save it to ./output/coder/solution-qwen2.py with the bash tool, then run it with python3 to test it. If it fails, fix it."
+  - agent:coder
+    - model=local-spark2
+    - thinking=false
+    - max_steps=8
+    - token_budget=40000
+    - task=Write a Python program of at most 10 lines that does the coding task
+      below. Save it to ./output/coder/solution-spark2.py with the bash tool,
+      then run it with python3 to test it. If it fails, fix it.
+  - agent:coder
+    - model=local-qwen2
+    - thinking=true
+    - max_steps=8
+    - task=Write a Python program of at most 10 lines that does the coding task
+      below. Save it to ./output/coder/solution-qwen2.py with the bash tool,
+      then run it with python3 to test it. If it fails, fix it.
 - if_fail: retry=0
 
 ## Run code
@@ -85,7 +98,13 @@ Explain the program of the `local-spark2` agent with spark2.
 
 - actions:
   - read_file ./output/coder/solution-spark2.py
-  - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
+  - agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - expertise=Python programming
+    - max_output=5 sentences
+    - task=Explain the logic of this Python program in at most 5 lines, one
+      sentence on each line.
   - write_file ./output/coder/explanation-spark2.txt
 
 ## Explain qwen2 code
@@ -95,5 +114,11 @@ Explain the program of the `local-qwen2` agent with spark2.
 - begin_if: task(Run code) succeed
 - actions:
   - read_file ./output/coder/solution-qwen2.py
-  - agent:summarizer model=local-spark2 thinking=false expertise="Python programming" max_output="5 sentences" task="Explain the logic of this Python program in at most 5 lines, one sentence on each line."
+  - agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - expertise=Python programming
+    - max_output=5 sentences
+    - task=Explain the logic of this Python program in at most 5 lines, one
+      sentence on each line.
   - write_file ./output/coder/explanation-qwen2.txt

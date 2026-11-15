@@ -27,7 +27,7 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 18] = [
+const OPTION_KEYS: [&str; 19] = [
     "model",
     "max_steps",
     "token_budget",
@@ -42,9 +42,10 @@ const OPTION_KEYS: [&str; 18] = [
     "success_check",
     "guardrails",
     "success",
-    "guard",
+    "toolGuard",
     "max_violations",
-    "loop",
+    "protect",
+    "budget",
     "judge_model",
 ];
 
@@ -82,9 +83,9 @@ pub struct AgentConfig {
     pub summarizer: Option<SummarizerOptions>,
     /// The task, the instruction for the model.
     pub task: String,
-    /// From `thinking=<true|false>`. `Some(false)` asks the server to turn
-    /// off the thinking of the model. `None` and `Some(true)` send nothing,
-    /// so the server uses its default.
+    /// From `thinking=<true|false>` of the action, else from the profile.
+    /// `Some(false)` asks the server to turn off the thinking of the model.
+    /// `None` and `Some(true)` send nothing, so the server uses its default.
     pub thinking: Option<bool>,
     /// From `output_schema=<name|path>`: the name of a schema block of the
     /// job, or the path of a JSON schema file (see [`crate::schema::load`]).
@@ -96,20 +97,20 @@ pub struct AgentConfig {
 
 /// How an `autonomous` agent enforces its guardrails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Guard {
-    /// `guard=prompt`: the guardrails are only in the system prompt.
+pub enum ToolGuard {
+    /// `toolGuard=prompt`: the guardrails are only in the system prompt.
     #[default]
     Prompt,
-    /// `guard=judge`: a model request examines each tool call before it
+    /// `toolGuard=judge`: a model request examines each tool call before it
     /// runs, and blocks a call that breaks a guardrail.
     Judge,
 }
 
-impl std::fmt::Display for Guard {
+impl std::fmt::Display for ToolGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Guard::Prompt => "prompt",
-            Guard::Judge => "judge",
+            ToolGuard::Prompt => "prompt",
+            ToolGuard::Judge => "judge",
         })
     }
 }
@@ -132,14 +133,17 @@ pub struct AutonomousOptions {
     /// From `guardrails=<text>`: rules that the agent must obey, in natural
     /// language. The loop puts them into the system prompt.
     pub guardrails: Option<String>,
-    /// From `guard=<prompt|judge>`. The default is [`Guard::Prompt`].
-    pub guard: Guard,
+    /// From `toolGuard=<prompt|judge>`. The default is [`ToolGuard::Prompt`].
+    pub guard: ToolGuard,
     /// From `max_violations=<n>`: the most tool calls that the guard blocks
     /// before the run fails. The default is [`DEFAULT_MAX_VIOLATIONS`].
     pub max_violations: u32,
-    /// From `loop=<name>`: the name of the loop block of the action (see
-    /// [`crate::loop_block`]).
-    pub loop_name: Option<String>,
+    /// From `protect=<patterns>`: the globs of the paths that the tools
+    /// must not write (see [`crate::protect`]). Empty protects no path.
+    pub protect: Vec<String>,
+    /// From `budget=<name>`: the name of the budget block of the action (see
+    /// [`crate::budget_block`]).
+    pub budget_name: Option<String>,
     /// From `judge_model=<profile>`: the model profile of the judges, from
     /// the ```` ```config ```` block. `None` uses the model of the agent.
     pub judge_model: Option<String>,
@@ -156,22 +160,24 @@ struct AutonomousValues {
     guardrails: Option<String>,
     guard: Option<String>,
     max_violations: Option<String>,
-    loop_name: Option<String>,
+    protect: Option<String>,
+    budget_name: Option<String>,
     judge_model: Option<String>,
 }
 
 impl AutonomousValues {
     /// The key and the value of each option.
-    fn options(&self) -> [(&'static str, &Option<String>); 9] {
+    fn options(&self) -> [(&'static str, &Option<String>); 10] {
         [
             ("max_iterations", &self.max_iterations),
             ("max_time", &self.max_time),
             ("success_check", &self.success_check),
             ("success", &self.success),
             ("guardrails", &self.guardrails),
-            ("guard", &self.guard),
+            ("toolGuard", &self.guard),
             ("max_violations", &self.max_violations),
-            ("loop", &self.loop_name),
+            ("protect", &self.protect),
+            ("budget", &self.budget_name),
             ("judge_model", &self.judge_model),
         ]
     }
@@ -181,7 +187,7 @@ impl AutonomousOptions {
     /// Reads the options from their values.
     ///
     /// Fails if a value is invalid, the values have neither `success=` nor
-    /// `success_check=`, or `guard=judge` has no `guardrails=`.
+    /// `success_check=`, or `toolGuard=judge` has no `guardrails=`.
     fn from_values(values: AutonomousValues) -> Result<Self, String> {
         if values.success.is_none() && values.success_check.is_none() {
             return Err(
@@ -192,16 +198,17 @@ impl AutonomousOptions {
             );
         }
         let guard = match values.guard.as_deref() {
-            None | Some("prompt") => Guard::Prompt,
-            Some("judge") => Guard::Judge,
-            Some(other) => return Err(format!("`guard={other}` is not `prompt` or `judge`")),
+            None | Some("prompt") => ToolGuard::Prompt,
+            Some("judge") => ToolGuard::Judge,
+            Some(other) => return Err(format!("`toolGuard={other}` is not `prompt` or `judge`")),
         };
-        if guard == Guard::Judge && values.guardrails.is_none() {
-            return Err("`guard=judge` needs `guardrails=<text>`".to_string());
+        if guard == ToolGuard::Judge && values.guardrails.is_none() {
+            return Err("`toolGuard=judge` needs `guardrails=<text>`".to_string());
         }
-        if values.judge_model.is_some() && values.success.is_none() && guard != Guard::Judge {
+        if values.judge_model.is_some() && values.success.is_none() && guard != ToolGuard::Judge {
             return Err(
-                "`judge_model=` needs a judge: `success=<criteria>` or `guard=judge`".to_string(),
+                "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`"
+                    .to_string(),
             );
         }
         Ok(AutonomousOptions {
@@ -221,7 +228,11 @@ impl AutonomousOptions {
                 None => DEFAULT_MAX_VIOLATIONS,
                 Some(value) => positive("max_violations", &value)?,
             },
-            loop_name: values.loop_name,
+            protect: match values.protect {
+                None => Vec::new(),
+                Some(value) => crate::protect::parse_patterns(&value)?,
+            },
+            budget_name: values.budget_name,
             judge_model: values.judge_model,
         })
     }
@@ -474,9 +485,10 @@ impl Values {
                 "success_check" => &mut values.autonomous.success_check,
                 "success" => &mut values.autonomous.success,
                 "guardrails" => &mut values.autonomous.guardrails,
-                "guard" => &mut values.autonomous.guard,
+                "toolGuard" => &mut values.autonomous.guard,
                 "max_violations" => &mut values.autonomous.max_violations,
-                "loop" => &mut values.autonomous.loop_name,
+                "protect" => &mut values.autonomous.protect,
+                "budget" => &mut values.autonomous.budget_name,
                 "judge_model" => &mut values.autonomous.judge_model,
                 _ => {
                     return Err(format!(
@@ -505,8 +517,8 @@ impl AgentConfig {
     /// Fails if a param is not a known option, an option is empty, set twice
     /// or invalid, the params have an option of another agent type, there is
     /// no `model=`, `profile` is not the profile that `model=` names, or the
-    /// environment variable of the API key is not set. `token_budget=` of
-    /// the action replaces the `token_budget` of the profile.
+    /// environment variable of the API key is not set. `token_budget=` and
+    /// `thinking=` of the action replace those of the profile.
     pub fn from_params(
         agent: AgentType,
         params: &[String],
@@ -556,11 +568,8 @@ impl AgentConfig {
             .map(crate::profile::parse_token_budget)
             .transpose()?;
         let thinking = thinking
-            .map(|value| match value.as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => Err(format!("`thinking={value}` is not `true` or `false`")),
-            })
+            .as_deref()
+            .map(crate::profile::parse_thinking)
             .transpose()?;
         let name = model.ok_or_else(|| crate::profile::missing_model(agent))?;
         let profile = named_profile(&name, profile)?;
@@ -575,7 +584,7 @@ impl AgentConfig {
             max_context,
             summarizer,
             task: task.unwrap_or_default(),
-            thinking,
+            thinking: thinking.or(profile.thinking),
             output_schema,
             autonomous,
         })
@@ -636,7 +645,7 @@ impl AgentConfig {
             let or_not_set = |value: &Option<String>| value.clone().unwrap_or("not set".into());
             summary.push_str(&format!(
                 "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nsuccess: {}\n\
-                 guardrails: {}\nguard: {}\nmax_violations: {}\njudge_model: {}",
+                 guardrails: {}\ntoolGuard: {}\nmax_violations: {}\nprotect: {}\njudge_model: {}",
                 options.max_iterations,
                 format_duration(options.max_time),
                 or_not_set(&options.success_check),
@@ -644,6 +653,11 @@ impl AgentConfig {
                 or_not_set(&options.guardrails),
                 options.guard,
                 options.max_violations,
+                if options.protect.is_empty() {
+                    "not set".to_string()
+                } else {
+                    options.protect.join(", ")
+                },
                 or_not_set(&options.judge_model),
             ));
         }

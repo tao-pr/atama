@@ -7,7 +7,7 @@ use std::rc::Rc;
 use serde_json::json;
 
 use atama::agent_loop_openai_compat::checks::{
-    CheckResult, CommandCheck, FinalCheck, MAX_CHECK_CHARS, Rejection, SchemaCheck, run_checks,
+    CheckResult, CommandCheck, FinalLoopCheck, MAX_CHECK_CHARS, Rejection, SchemaCheck, run_checks,
     tail,
 };
 use atama::agent_loop_openai_compat::judge::Judge;
@@ -24,13 +24,13 @@ impl ChatClient for NoModel {
 }
 
 /// Runs `check` on `reply` without a model and without messages.
-fn check_reply(check: &mut dyn FinalCheck, reply: &str) -> CheckResult {
+fn check_reply(check: &mut dyn FinalLoopCheck, reply: &str) -> CheckResult {
     let mut client = NoModel;
     check.check(reply, &mut Judge::new(&mut client), &[])
 }
 
 /// Runs `checks` on `reply` without a model and without messages.
-fn run(checks: &mut [Box<dyn FinalCheck>], reply: &str) -> Result<String, Rejection> {
+fn run(checks: &mut [Box<dyn FinalLoopCheck>], reply: &str) -> Result<String, Rejection> {
     let mut client = NoModel;
     run_checks(checks, reply, &mut Judge::new(&mut client), &[])
 }
@@ -52,7 +52,7 @@ struct Fixed {
     seen: Rc<RefCell<Vec<String>>>,
 }
 
-impl FinalCheck for Fixed {
+impl FinalLoopCheck for Fixed {
     fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         self.seen.borrow_mut().push(reply.to_string());
         self.result.clone()
@@ -67,7 +67,7 @@ impl FinalCheck for Fixed {
     }
 }
 
-fn fixed(result: CheckResult) -> (Box<dyn FinalCheck>, Rc<RefCell<Vec<String>>>) {
+fn fixed(result: CheckResult) -> (Box<dyn FinalLoopCheck>, Rc<RefCell<Vec<String>>>) {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let check = Fixed {
         result,

@@ -4,10 +4,12 @@
 use serde_json::{Value, json};
 
 use super::Tool;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::actor::list_files::DEFAULT_PATTERN;
-use crate::actor::{Actor, AgentType, run_bash};
+use crate::actor::{Actor, AgentType, run_bash, run_bash_in_sandbox};
+use crate::protect::Protect;
 
 /// Most characters of a tool result that the model gets. A longer result is
 /// cut, so that one command cannot fill the model's context.
@@ -22,7 +24,7 @@ pub fn tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
     let tool: Box<dyn Tool> = match name {
         "bash" => Box::new(Bash::default()),
         "read_file" => Box::new(ReadFile),
-        "write_file" => Box::new(WriteFile),
+        "write_file" => Box::new(WriteFile::default()),
         "list_files" => Box::new(ListFiles),
         _ => return None,
     };
@@ -147,14 +149,21 @@ impl Tool for Limited {
     fn set_deadline_time(&mut self, deadline_time: Option<Instant>) {
         self.tool.set_deadline_time(deadline_time);
     }
+
+    fn set_protect(&mut self, protect: Option<Arc<Protect>>) {
+        self.tool.set_protect(protect);
+    }
 }
 
 /// `bash`: runs a command in bash in the current directory and returns its
 /// stdout. With a deadline, it stops the command and its child processes at
-/// the deadline (see [`Tool::set_deadline_time`]).
+/// the deadline (see [`Tool::set_deadline_time`]). With protected paths, it
+/// runs the command inside `sandbox-exec`, which denies the writes to them
+/// (see [`Tool::set_protect`]).
 #[derive(Default)]
 pub struct Bash {
     deadline_time: Option<Instant>,
+    protect: Option<Arc<Protect>>,
 }
 
 impl Tool for Bash {
@@ -177,12 +186,21 @@ impl Tool for Bash {
 
     fn call(&mut self, arguments: &Value) -> Result<String, String> {
         let command = string_argument(arguments, "command")?;
-        let output = run_bash(&command, &[], "", self.deadline_time)?;
+        let output = match &self.protect {
+            None => run_bash(&command, &[], "", self.deadline_time)?,
+            Some(protect) => {
+                run_bash_in_sandbox(&command, &protect.sandbox_profile(), self.deadline_time)?
+            }
+        };
         Ok(truncate(output))
     }
 
     fn set_deadline_time(&mut self, deadline_time: Option<Instant>) {
         self.deadline_time = deadline_time;
+    }
+
+    fn set_protect(&mut self, protect: Option<Arc<Protect>>) {
+        self.protect = protect;
     }
 }
 
@@ -216,8 +234,12 @@ impl Tool for ReadFile {
 }
 
 /// `write_file`: writes text to a file, and makes the missing parent
-/// directories.
-pub struct WriteFile;
+/// directories. It does not write a protected path (see
+/// [`Protect::check_write`]).
+#[derive(Default)]
+pub struct WriteFile {
+    protect: Option<Arc<Protect>>,
+}
 
 impl Tool for WriteFile {
     fn name(&self) -> &str {
@@ -245,11 +267,18 @@ impl Tool for WriteFile {
     fn call(&mut self, arguments: &Value) -> Result<String, String> {
         let path = string_argument(arguments, "path")?;
         let content = string_argument(arguments, "content")?;
+        if let Some(protect) = &self.protect {
+            protect.check_write(&path)?;
+        }
         Actor::WriteFile { path: path.clone() }.act(&content)?;
         Ok(format!(
             "wrote {} characters to `{path}`",
             content.chars().count()
         ))
+    }
+
+    fn set_protect(&mut self, protect: Option<Arc<Protect>>) {
+        self.protect = protect;
     }
 }
 

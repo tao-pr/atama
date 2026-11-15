@@ -148,9 +148,7 @@ pub(super) fn list_files(dir: Option<&str>, pattern: &str, input: &str) -> Resul
         None => {
             let dir = input.trim();
             if dir.is_empty() {
-                return Err(
-                    "`list_files` needs a directory in `dir=` or in its input".to_string(),
-                );
+                return Err("`list_files` needs a directory in `dir=` or in its input".to_string());
             }
             if dir.lines().count() > 1 {
                 return Err(format!(

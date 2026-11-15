@@ -7,7 +7,7 @@ use std::time::Duration;
 use atama::agent_loop_openai_compat::agent_options::{
     AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
     DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS,
-    DEFAULT_SUMMARIZER_PROMPT, Guard, MaxOutput, SummarizerOptions, format_duration,
+    DEFAULT_SUMMARIZER_PROMPT, MaxOutput, SummarizerOptions, ToolGuard, format_duration,
     parse_duration,
 };
 use atama::profile::ModelProfile;
@@ -28,6 +28,7 @@ fn profile() -> ModelProfile {
         base_url: "http://x.test/v1".into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     }
 }
 
@@ -72,6 +73,14 @@ fn the_token_budget_of_the_action_replaces_the_budget_of_the_profile() {
     assert_eq!(budget(&["model=m"], None), None);
     assert_eq!(budget(&["model=m"], Some(9000)), Some(9000));
     assert_eq!(budget(&["model=m", "token_budget=500"], None), Some(500));
+    assert_eq!(
+        budget(&["model=m", "token_budget=100_000"], None),
+        Some(100_000)
+    );
+    assert_eq!(
+        budget(&["model=m", "token_budget=1_000_000"], None),
+        Some(1_000_000)
+    );
     assert_eq!(
         budget(&["model=m", "token_budget=500"], Some(9000)),
         Some(500)
@@ -172,7 +181,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -192,6 +201,26 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "token_budget=-5"],
             "`token_budget=-5` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=_100"],
+            "`token_budget=_100` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=100_"],
+            "`token_budget=100_` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=1__000"],
+            "`token_budget=1__000` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=_"],
+            "`token_budget=_` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=0_000"],
+            "`token_budget=0_000` is not a positive number",
         ),
     ];
     for (input, message) in cases {
@@ -386,7 +415,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`"
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`"
                 .into(),
         ),
         (
@@ -481,9 +510,10 @@ fn autonomous_reads_its_options_with_defaults() {
             success_check: Some("cargo test".into()),
             success: None,
             guardrails: None,
-            guard: Guard::Prompt,
+            guard: ToolGuard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
-            loop_name: None,
+            protect: Vec::new(),
+            budget_name: None,
             judge_model: None,
         })
     );
@@ -497,8 +527,9 @@ fn autonomous_reads_its_options_with_defaults() {
         "max_steps=7",
         "guardrails=Do not push.",
         "success=All tests pass.",
-        "guard=judge",
+        "toolGuard=judge",
         "max_violations=2",
+        "protect=src/**,Cargo.toml",
     ])
     .unwrap();
     assert_eq!(config.max_steps, 7);
@@ -510,9 +541,10 @@ fn autonomous_reads_its_options_with_defaults() {
             success_check: Some("true".into()),
             success: Some("All tests pass.".into()),
             guardrails: Some("Do not push.".into()),
-            guard: Guard::Judge,
+            guard: ToolGuard::Judge,
             max_violations: 2,
-            loop_name: None,
+            protect: vec!["src/**".into(), "Cargo.toml".into()],
+            budget_name: None,
             judge_model: None,
         })
     );
@@ -520,13 +552,14 @@ fn autonomous_reads_its_options_with_defaults() {
         config.summary(),
         "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
          max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nsuccess: All tests pass.\n\
-         guardrails: Do not push.\nguard: judge\nmax_violations: 2\njudge_model: not set"
+         guardrails: Do not push.\ntoolGuard: judge\nmax_violations: 2\n\
+         protect: src/**, Cargo.toml\njudge_model: not set"
     );
-    let config = autonomous(&["model=m", "success=done", "guard=prompt"]).unwrap();
+    let config = autonomous(&["model=m", "success=done", "toolGuard=prompt"]).unwrap();
     assert!(
         config.summary().ends_with(
             "\nmax_time: 30m\nsuccess_check: not set\nsuccess: done\nguardrails: not set\n\
-             guard: prompt\nmax_violations: 3\njudge_model: not set"
+             toolGuard: prompt\nmax_violations: 3\nprotect: not set\njudge_model: not set"
         ),
         "{}",
         config.summary()
@@ -543,12 +576,12 @@ fn autonomous_rejects_invalid_options() {
              when the task is done",
         ),
         (
-            vec!["model=m", "success=x", "guard=strict"],
-            "`guard=strict` is not `prompt` or `judge`",
+            vec!["model=m", "success=x", "toolGuard=strict"],
+            "`toolGuard=strict` is not `prompt` or `judge`",
         ),
         (
-            vec!["model=m", "success=x", "guard=judge"],
-            "`guard=judge` needs `guardrails=<text>`",
+            vec!["model=m", "success=x", "toolGuard=judge"],
+            "`toolGuard=judge` needs `guardrails=<text>`",
         ),
         (
             vec!["model=m", "success=x", "max_violations=0"],
@@ -566,6 +599,11 @@ fn autonomous_rejects_invalid_options() {
         (
             vec!["model=m", "success_check=true", "expertise=law"],
             "option `expertise` works only with `agent:summarizer`",
+        ),
+        (
+            vec!["model=m", "success_check=true", "protect=src/a**"],
+            "the `protect` pattern `src/a**` has a `**` that is not a whole part of the path, \
+             as in `src/**/a.rs`",
         ),
     ];
     for (words, expected) in cases {
@@ -586,8 +624,9 @@ fn other_agents_reject_the_options_of_autonomous() {
             "success_check=true",
             "success=x",
             "guardrails=x",
-            "guard=judge",
+            "toolGuard=judge",
             "max_violations=1",
+            "protect=src",
         ] {
             let key = option.split_once('=').unwrap().0;
             let err = AgentConfig::from_params(
@@ -670,9 +709,24 @@ fn autonomous_reads_judge_model() {
         "model=m",
         "success_check=true",
         "guardrails=g",
-        "guard=judge",
+        "toolGuard=judge",
         "judge_model=small",
     ])
     .unwrap();
     assert!(config.autonomous.unwrap().judge_model.is_some());
+}
+
+#[test]
+fn takes_thinking_from_the_profile_unless_the_action_sets_it() {
+    let profile = ModelProfile {
+        thinking: Some(false),
+        ..profile()
+    };
+    let thinking = |words: &[&str]| {
+        AgentConfig::from_params(AgentType::Coder, &params(words), Some(&profile), &no_env)
+            .unwrap()
+            .thinking
+    };
+    assert_eq!(thinking(&["model=m"]), Some(false));
+    assert_eq!(thinking(&["model=m", "thinking=true"]), Some(true));
 }

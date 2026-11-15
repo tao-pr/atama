@@ -9,9 +9,44 @@ use atama::profile::ModelProfile;
 use atama::schema::OutputSchema;
 use atama::tavily::DEFAULT_BASE_URL;
 use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
-use atama::{Event, Hook, ParseError, Trigger, parse_job};
+use atama::{Event, Hook, ParseError, SkipIf, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
+
+/// Writes an action as a job file has it. The options of an agent action,
+/// as in `agent:coder model=p task="Fix it."`, go in a list under the
+/// action, one `- <key>=<value>` bullet for each option. Another action does
+/// not change. The action bullet has 2 spaces before it.
+fn listed(action: &str) -> String {
+    let start = if action.starts_with("foreach agent:") {
+        "foreach ".len()
+    } else if action.starts_with("agent:") {
+        0
+    } else {
+        return action.to_string();
+    };
+    let (head, rest) = match action[start..].split_once(' ') {
+        Some((name, rest)) => (&action[..start + name.len()], rest),
+        None => (action, ""),
+    };
+    // Split the options at spaces, but not inside quotes.
+    let mut options = vec![String::new()];
+    let mut quoted = false;
+    for c in rest.chars() {
+        match c {
+            ' ' if !quoted => options.push(String::new()),
+            c => {
+                quoted ^= c == '"';
+                options.last_mut().unwrap().push(c);
+            }
+        }
+    }
+    let mut text = head.to_string();
+    for option in options.iter().filter(|option| !option.is_empty()) {
+        text.push_str(&format!("\n    - {option}"));
+    }
+    text
+}
 
 #[test]
 fn parses_example_job() {
@@ -168,7 +203,7 @@ fn parses_agent_tool_actions() {
                 params: params.into_iter().map(Into::into).collect(),
                 profile: None,
                 output_schema: None,
-                loop_block: None,
+                budget_block: None,
                 judge_profile: None,
             },
             "{statement}"
@@ -188,8 +223,8 @@ fn reads_model_profiles_from_the_config_block() {
          # Job\n\
          ## A\n\
          - actions:\n  \
-           - agent:coder model=local task=t\n  \
-           - agent:summarizer model=cloud\n",
+           - agent:coder\n    - model=local\n    - task=t\n  \
+           - agent:summarizer\n    - model=cloud\n",
     )
     .expect("job should parse");
     let profiles: Vec<ModelProfile> = job.tasks[0]
@@ -212,6 +247,7 @@ fn reads_model_profiles_from_the_config_block() {
                 base_url: "http://localhost:11434/v1".into(),
                 api_key_env: None,
                 token_budget: None,
+                thinking: None,
             },
             ModelProfile {
                 name: "cloud".into(),
@@ -219,6 +255,7 @@ fn reads_model_profiles_from_the_config_block() {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key_env: Some("OPENAI_API_KEY".into()),
                 token_budget: None,
+                thinking: None,
             },
         ]
     );
@@ -231,7 +268,7 @@ fn reads_model_profiles_from_the_config_block() {
 
 #[test]
 fn reads_the_token_budget_of_a_profile() {
-    let profile: ModelProfile = "p: model=m, base_url=http://x.test, token_budget=5000"
+    let profile: ModelProfile = "p: model=m, base_url=http://x.test, token_budget=5_000"
         .parse()
         .unwrap();
     assert_eq!(profile.token_budget, Some(5000));
@@ -240,9 +277,28 @@ fn reads_the_token_budget_of_a_profile() {
 }
 
 #[test]
+fn reads_the_thinking_of_a_profile() {
+    let thinking = |line: &str| line.parse::<ModelProfile>().map(|profile| profile.thinking);
+    assert_eq!(thinking("p: model=m, base_url=http://x.test"), Ok(None));
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=false"),
+        Ok(Some(false))
+    );
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=true"),
+        Ok(Some(true))
+    );
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=no"),
+        Err("`thinking=no` is not `true` or `false` in profile `p`".to_string())
+    );
+}
+
+#[test]
 fn rejects_invalid_model_profiles() {
-    let job =
-        |config: &str, action: &str| format!("{config}# Job\n## A\n- actions:\n  - {action}\n");
+    let job = |config: &str, action: &str| {
+        format!("{config}# Job\n## A\n- actions:\n  - {}\n", listed(action))
+    };
     let profile = "```config\np: model=m, base_url=http://x.test\n```\n";
     let cases = [
         (
@@ -284,8 +340,8 @@ fn rejects_invalid_model_profiles() {
         (
             job("```config\np: key=k\n```\n", "mock"),
             2,
-            "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=` \
-             or `token_budget=`",
+            "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=`, \
+             `token_budget=` or `thinking=`",
         ),
         (
             job(
@@ -398,7 +454,7 @@ fn parses_foreach_actions() {
 fn gives_the_agent_of_a_foreach_action_its_profile() {
     let job = parse_job(
         "```config\np: model=m, base_url=http://x.test\n```\n\
-         # Job\n## A\n- actions:\n  - foreach agent:summarizer model=p\n",
+         # Job\n## A\n- actions:\n  - foreach agent:summarizer\n    - model=p\n",
     )
     .expect("job should parse");
     let Actor::ForEach(inner) = &job.tasks[0].actions[0] else {
@@ -409,12 +465,110 @@ fn gives_the_agent_of_a_foreach_action_its_profile() {
         "{inner:?}"
     );
 
-    let err = parse_job("# Job\n## A\n- actions:\n  - foreach agent:coder model=q\n").unwrap_err();
+    let err =
+        parse_job("# Job\n## A\n- actions:\n  - foreach agent:coder\n    - model=q\n").unwrap_err();
     assert_eq!(err.line, 4);
     assert!(
         err.message.starts_with("unknown model profile `q`"),
         "{err}"
     );
+}
+
+#[test]
+fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
+    let job = parse_job(include_str!("../jobs/auto_model_research.md")).expect("job should parse");
+    let names: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Prepare",
+            "Providers",
+            "Generate Web Search Queries",
+            "Running websearch",
+            "Extract Model Data into {provider}-models.json",
+            "Search Small GGUF Models for Ollama"
+        ]
+    );
+    for (task, schema) in [(2, "search_query"), (4, "models")] {
+        let action = &job.tasks[task].actions[usize::from(task == 4)];
+        let Actor::ForEach(inner) = action else {
+            panic!("expected foreach, got {action:?}");
+        };
+        let Actor::AgentTool {
+            agent,
+            profile,
+            output_schema,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected an agent, got {inner:?}");
+        };
+        assert_eq!(*agent, AgentType::Summarizer);
+        assert_eq!(
+            profile.as_ref().map(|p| p.name.as_str()),
+            Some("local-spark2")
+        );
+        assert!(
+            output_schema.as_ref().is_some_and(|s| s.name == schema),
+            "{output_schema:?}"
+        );
+    }
+    let actions = |task: usize| -> Vec<String> {
+        job.tasks[task]
+            .actions
+            .iter()
+            .map(|actor| actor.to_string())
+            .collect()
+    };
+    let search = actions(3);
+    assert_eq!(
+        search[1],
+        "foreach tavily_search max_results=5 include_answer=basic"
+    );
+    assert_eq!(search[3], "write_file ./output/model_research/search.jsonl");
+    assert_eq!(
+        actions(4).last().unwrap(),
+        "bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-"
+    );
+    // The GGUF task empties gguf.jsonl first, and appends to it last.
+    let gguf = actions(5);
+    assert_eq!(
+        gguf.first().unwrap(),
+        "bash truncate -s 0 ./output/model_research/gguf.jsonl"
+    );
+    assert_eq!(
+        gguf[1],
+        "list_files dir=./output/model_research pattern=models-*.json"
+    );
+    assert_eq!(
+        gguf[8],
+        "foreach tavily_search max_results=5 include_answer=basic"
+    );
+    assert_eq!(
+        gguf.last().unwrap(),
+        "bash tee -a ./output/model_research/gguf.jsonl"
+    );
+    let schemas: Vec<String> = [5, 11]
+        .iter()
+        .map(|&index| match &job.tasks[5].actions[index] {
+            Actor::ForEach(inner) => match inner.as_ref() {
+                Actor::AgentTool {
+                    profile,
+                    output_schema,
+                    ..
+                } => {
+                    assert_eq!(
+                        profile.as_ref().map(|p| p.name.as_str()),
+                        Some("local-spark2")
+                    );
+                    output_schema.as_ref().unwrap().name.clone()
+                }
+                other => panic!("expected an agent, got {other:?}"),
+            },
+            other => panic!("expected foreach, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(schemas, ["search_query", "gguf"]);
 }
 
 #[test]
@@ -864,6 +1018,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
             base_url: "http://localhost:11434/v1".into(),
             api_key_env: None,
             token_budget: None,
+            thinking: None,
         })
     );
     let no_env = |_: &str| None;
@@ -965,7 +1120,8 @@ fn treats_deeper_headings_as_description() {
 /// A job with `blocks` before its heading and one action.
 fn schema_job(blocks: &str, action: &str) -> String {
     format!(
-        "```config\np: model=m, base_url=http://x.test\n```\n{blocks}# Job\n## A\n- actions:\n  - {action}\n"
+        "```config\np: model=m, base_url=http://x.test\n```\n{blocks}# Job\n## A\n- actions:\n  - {}\n",
+        listed(action)
     )
 }
 
@@ -1177,7 +1333,7 @@ fn sample_structured_output_job_extracts_one_json_object_for_each_city() {
         params,
         profile: Some(profile),
         output_schema: Some(schema),
-        loop_block: None,
+        budget_block: None,
         judge_profile: None,
     } = inner.as_ref()
     else {
@@ -1555,77 +1711,88 @@ fn parses_the_max_of_actions_parallel() {
     }
 }
 
-// Loop blocks
+// Budget blocks
 
-const LOOP_BLOCK: &str = "```loop:fix\nsuccess_check: cargo test\nguardrails:\n  - Do not push.\ntools:\n  - bash max_calls=3\n```\n";
+const BUDGET_BLOCK: &str = "```budget:fix\nsuccess_check: cargo test\nmax_time: 5m\nmax_iterations: 3\ntools:\n  - bash max_calls=3\n```\n";
 
-/// The loop block of the first action of the first task.
-fn first_loop_block(job: &atama::Job) -> Option<atama::loop_block::LoopBlock> {
+/// The budget block of the first action of the first task.
+fn first_budget_block(job: &atama::Job) -> Option<atama::budget_block::BudgetBlock> {
     match &job.tasks[0].actions[0] {
-        Actor::AgentTool { loop_block, .. } => loop_block.clone(),
+        Actor::AgentTool { budget_block, .. } => budget_block.clone(),
         other => panic!("expected an agent, got {other:?}"),
     }
 }
 
 #[test]
-fn reads_loop_blocks_and_gives_the_named_block_to_the_agent() {
+fn reads_budget_blocks_and_gives_the_named_block_to_the_agent() {
     let job = parse_job(&schema_job(
-        LOOP_BLOCK,
-        "agent:autonomous model=p loop=fix task=\"Fix it.\"",
+        BUDGET_BLOCK,
+        "agent:autonomous model=p budget=fix task=\"Fix it.\"",
     ))
     .expect("job should parse");
-    let block = first_loop_block(&job).expect("the agent has the block");
+    let block = first_budget_block(&job).expect("the agent has the block");
     assert_eq!(block.name, "fix");
     assert_eq!(
         block.params,
-        ["success_check=cargo test", "guardrails=- Do not push."]
+        [
+            "success_check=cargo test",
+            "max_time=5m",
+            "max_iterations=3"
+        ]
     );
     // The printed action keeps the name of the block.
     assert_eq!(
         job.tasks[0].actions[0].to_string(),
-        "agent:autonomous model=p loop=fix task=\"Fix it.\""
+        "agent:autonomous model=p budget=fix task=\"Fix it.\""
     );
     let job = parse_job(&schema_job(
-        LOOP_BLOCK,
+        BUDGET_BLOCK,
         "agent:autonomous model=p success=x",
     ))
     .expect("job should parse");
-    assert_eq!(first_loop_block(&job), None);
+    assert_eq!(first_budget_block(&job), None);
 }
 
 #[test]
-fn rejects_invalid_loop_blocks_and_agent_options() {
+fn rejects_invalid_budget_blocks_and_agent_options() {
     let cases = [
         (
-            "# Job\n```loop:fix\nsuccess: x\n```\n## A\n- actions:\n  - mock\n".to_string(),
+            "# Job\n```budget:fix\nsuccess: x\n```\n## A\n- actions:\n  - mock\n".to_string(),
             2,
-            "the ```loop:<name> block must come before the `# <job name>` heading",
+            "the ```budget:<name> block must come before the `# <job name>` heading",
         ),
         (
-            "```loop:a b\nsuccess: x\n```\n# Job\n## A\n- actions:\n  - mock\n".to_string(),
+            "```budget:a b\nsuccess: x\n```\n# Job\n## A\n- actions:\n  - mock\n".to_string(),
             1,
-            "`a b` is not a loop block name, use 1 to 64 letters, digits, `_` or `-`, as in \
-             ```loop:fix-tests",
+            "`a b` is not a budget block name, use 1 to 64 letters, digits, `_` or `-`, as in \
+             ```budget:fix-tests",
         ),
         (
-            format!("{LOOP_BLOCK}{LOOP_BLOCK}# Job\n## A\n- actions:\n  - mock\n"),
+            format!("{BUDGET_BLOCK}{BUDGET_BLOCK}# Job\n## A\n- actions:\n  - mock\n"),
             8,
-            "loop block `fix` is defined twice",
+            "budget block `fix` is defined twice",
         ),
         (
-            "```loop:fix\nsuccess: x\n".to_string(),
+            "```budget:fix\nsuccess: x\n".to_string(),
             1,
-            "the ```loop:fix block has no closing ```",
+            "the ```budget:fix block has no closing ```",
         ),
         (
-            "```loop:fix\nsuccess: x\nwrong\n```\n# Job\n## A\n- actions:\n  - mock\n".to_string(),
+            "```budget:fix\nsuccess: x\nwrong\n```\n# Job\n## A\n- actions:\n  - mock\n"
+                .to_string(),
             3,
             "expected `<key>: <value>`, found `wrong`",
         ),
         (
-            schema_job(LOOP_BLOCK, "agent:autonomous model=p loop=other"),
+            "```budget:fix\nmax_time: 5m\ntask: Fix it.\n```\n# Job\n## A\n- actions:\n  - mock\n"
+                .to_string(),
+            3,
+            "`task` cannot be in budget block `fix`, set `task=` in the options of the action",
+        ),
+        (
+            schema_job(BUDGET_BLOCK, "agent:autonomous model=p budget=other"),
             14,
-            "loop block `other` is not defined in the job",
+            "budget block `other` is not defined in the job",
         ),
         (
             schema_job("", "agent:autonomous model=p"),
@@ -1636,17 +1803,17 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
         ),
         (
             schema_job(
-                LOOP_BLOCK,
-                "agent:autonomous model=p loop=fix max_time=soon",
+                BUDGET_BLOCK,
+                "agent:autonomous model=p budget=fix max_time=soon",
             ),
             14,
             "`max_time=soon` is not a duration, expected a positive number and a unit as in \
              `90s`, `20m` or `1h`",
         ),
         (
-            schema_job(LOOP_BLOCK, "agent:coder model=p loop=fix"),
+            schema_job(BUDGET_BLOCK, "agent:coder model=p budget=fix"),
             14,
-            "option `loop` works only with `agent:autonomous`",
+            "option `budget` works only with `agent:autonomous`",
         ),
         (
             schema_job("", "foreach agent:coder model=p max_step=3"),
@@ -1654,7 +1821,7 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
             "unknown option `max_step`, expected `model=`, `max_steps=`, `token_budget=`, \
              `max_context=`, `task=`, `thinking=`, `output_schema=`, `expertise=`, `max_output=`, \
              `max_iterations=`, `max_time=`, `success_check=`, `guardrails=`, `success=`, \
-             `guard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
         ),
     ];
     for (text, line, message) in cases {
@@ -1675,7 +1842,8 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
 fn judge_job(blocks: &str, action: &str) -> String {
     format!(
         "```config\np: model=m, base_url=http://x.test\nsmall: model=s, base_url=http://y.test\n```\n\
-         {blocks}# Job\n## A\n- actions:\n  - {action}\n"
+         {blocks}# Job\n## A\n- actions:\n  - {}\n",
+        listed(action)
     )
 }
 
@@ -1695,6 +1863,7 @@ fn gives_the_profile_that_judge_model_names_to_the_agent() {
         base_url: "http://y.test".into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     };
     let job = parse_job(&judge_job(
         "",
@@ -1703,10 +1872,10 @@ fn gives_the_profile_that_judge_model_names_to_the_agent() {
     .expect("job should parse");
     assert_eq!(first_judge_profile(&job), Some(small.clone()));
 
-    // `judge_model` can come from the loop block.
+    // `judge_model` can come from the budget block.
     let job = parse_job(&judge_job(
-        "```loop:fix\nsuccess: x\njudge_model: small\n```\n",
-        "agent:autonomous model=p loop=fix",
+        "```budget:fix\nsuccess: x\njudge_model: small\n```\n",
+        "agent:autonomous model=p budget=fix",
     ))
     .expect("job should parse");
     assert_eq!(first_judge_profile(&job), Some(small));
@@ -1727,7 +1896,7 @@ fn rejects_an_invalid_judge_model() {
                 "",
                 "agent:autonomous model=p success_check=true judge_model=small",
             ),
-            "`judge_model=` needs a judge: `success=<criteria>` or `guard=judge`",
+            "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`",
         ),
         (
             judge_job("", "agent:coder model=p judge_model=small"),
@@ -1759,20 +1928,207 @@ fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
         "{params:?}"
     );
     let Actor::AgentTool {
-        agent, loop_block, ..
+        agent,
+        params,
+        budget_block,
+        ..
     } = &job.tasks[3].actions[0]
     else {
         panic!("expected the agent, got {:?}", job.tasks[3].actions[0]);
     };
     assert_eq!(*agent, AgentType::Autonomous);
-    let block = loop_block.as_ref().expect("the agent has its loop block");
-    assert!(
-        block.params.contains(
-            &"success_check=python3 ./output/autonomous/check_report.py \
-              ./output/autonomous/report.json"
-                .to_string()
-        ),
-        "{:?}",
-        block.params
+    let block = budget_block
+        .as_ref()
+        .expect("the agent has its budget block");
+    assert_eq!(
+        block.params,
+        ["max_iterations=4", "max_time=10m", "token_budget=100_000"]
     );
+    for param in [
+        "success_check=python3 ./output/autonomous/check_report.py \
+         ./output/autonomous/report.json",
+        "protect=./output/autonomous/check_report.py",
+        "guardrails=Write files only in ./output/autonomous/.",
+    ] {
+        assert!(params.contains(&param.to_string()), "{params:?}");
+    }
+    assert!(
+        params.iter().any(|p| p.starts_with("task=Write ")),
+        "{params:?}"
+    );
+}
+
+// Options of an agent action as a list
+
+#[test]
+fn reads_the_options_of_an_agent_action_from_a_list() {
+    let job = parse_job(
+        "```config\np: model=m, base_url=http://x.test\n```\n\
+         # Job\n## A\n- actions:\n  \
+           - agent:summarizer\n    \
+             - model=p\n\n    \
+             - max_output=\"40%\"\n    \
+             - expertise=\"say \\\"hi\\\"\"\n    \
+             - task=Read the input.\n      \
+               Write a summary.\n  \
+           - foreach agent:coder\n\t- model=p\n  \
+           - bash ls\n\
+         - if_fail: die\n",
+    )
+    .expect("job should parse");
+    let actions = &job.tasks[0].actions;
+    assert_eq!(actions.len(), 3, "{actions:?}");
+    let Actor::AgentTool { params, .. } = &actions[0] else {
+        panic!("expected an agent, got {:?}", actions[0]);
+    };
+    assert_eq!(
+        params,
+        &[
+            "model=p",
+            "max_output=40%",
+            "expertise=say \"hi\"",
+            "task=Read the input. Write a summary.",
+        ]
+    );
+    let Actor::ForEach(inner) = &actions[1] else {
+        panic!("expected a foreach action, got {:?}", actions[1]);
+    };
+    assert!(
+        matches!(inner.as_ref(), Actor::AgentTool { params, .. } if params == &["model=p"]),
+        "{inner:?}"
+    );
+    assert_eq!(actions[2].to_string(), "bash ls");
+    assert_eq!(job.tasks[0].if_fail, Some(Hook::Die));
+}
+
+#[test]
+fn an_agent_action_at_the_end_of_the_job_gets_its_options() {
+    let job = parse_job(
+        "```config\np: model=m, base_url=http://x.test\n```\n\
+         # Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n## B\n\
+         - actions:\n  - agent:coder\n    - model=p\n    - task=t",
+    )
+    .expect("job should parse");
+    assert_eq!(job.tasks[0].actions[0].to_string(), "agent:coder model=p");
+    assert_eq!(
+        job.tasks[1].actions[0].to_string(),
+        "agent:coder model=p task=t"
+    );
+}
+
+#[test]
+fn rejects_options_that_are_not_in_a_list() {
+    let config = "```config\np: model=m, base_url=http://x.test\n```\n";
+    let cases = [
+        (
+            format!("{config}# Job\n## A\n- actions:\n  - agent:coder model=p\n"),
+            7,
+            "put the options of `agent:coder` in a list under the action, one \
+             `- <key>=<value>` bullet on each line, as in `- model=<profile>`",
+        ),
+        (
+            format!("{config}# Job\n## A\n- actions: foreach agent:summarizer model=p\n"),
+            6,
+            "put the options of `agent:summarizer` in a list under the action, one \
+             `- <key>=<value>` bullet on each line, as in `- model=<profile>`",
+        ),
+        (
+            format!("{config}# Job\n## A\n- actions:\n  - bash ls\n    - mock\n"),
+            8,
+            "`mock` is indented under an action that takes no list of options, only \
+             `agent:<type>` takes one. To add an action, indent its bullet as much as the \
+             other actions",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - task=\"a\\\"\n"
+            ),
+            9,
+            "a quote in `\"a\\\"` has no closing quote",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - task=\"a\" \"b\"\n"
+            ),
+            9,
+            "the value of `task` has text after its closing quote, in `task=\"a\" \"b\"`",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - verbose\n"
+            ),
+            7,
+            "unexpected `verbose`, put the task in `task=\"...\"`",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line,
+                message: message.into()
+            }),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn parses_the_skip_if_field() {
+    let job = parse_job(
+        "# Job\n## A\n- skip_if: exist( ./out/a.txt )\n- actions: mock\n## B\n- actions: mock\n",
+    )
+    .expect("job should parse");
+
+    assert_eq!(
+        job.tasks[0].skip_if,
+        Some(SkipIf::Exist("./out/a.txt".into()))
+    );
+    assert_eq!(job.tasks[0].actions, [Actor::MockPlaceholder]);
+    assert!(job.tasks[0].description.is_empty());
+    assert_eq!(job.tasks[1].skip_if, None);
+}
+
+#[test]
+fn parses_the_exists_nonempty_condition() {
+    let job = parse_job("# Job\n## A\n- skip_if: exists-nonempty(a.txt)\n- actions: mock\n")
+        .expect("job should parse");
+
+    assert_eq!(
+        job.tasks[0].skip_if,
+        Some(SkipIf::ExistsNonEmpty("a.txt".into()))
+    );
+}
+
+#[test]
+fn rejects_invalid_skip_if_fields() {
+    let cases = [
+        ("- skip_if:\n", "`skip_if` has no value"),
+        (
+            "- skip_if: exist(a)\n- skip_if: exist(b)\n",
+            "duplicate `skip_if` field",
+        ),
+        ("- skip_if: exist()\n", "`exist()` needs a file name"),
+        (
+            "- skip_if: exists-nonempty( )\n",
+            "`exists-nonempty()` needs a file name",
+        ),
+        (
+            "- skip_if: exist(a\n",
+            "missing `)` in `skip_if` condition `exist(a`",
+        ),
+        (
+            "- skip_if: missing(a)\n",
+            "unknown `skip_if` condition `missing`, expected `exist(<file>)` or \
+             `exists-nonempty(<file>)`",
+        ),
+        ("- skip_if: a.txt\n", "unknown `skip_if` condition `a.txt`"),
+    ];
+    for (fields, message) in cases {
+        let error = parse_job(&format!("# Job\n## A\n{fields}")).expect_err(fields);
+        assert!(
+            error.to_string().contains(message),
+            "{fields:?} gave {error}, expected {message:?}"
+        );
+    }
 }

@@ -174,7 +174,7 @@ fn debug_writes_agent_requests_to_stderr() {
         "debug",
         &format!(
             "```config\nm: model=model-1, base_url={url}\n```\n\
-             # Job\n## Ask\n- actions: agent:coder model=m task=\"find it\"\n"
+             # Job\n## Ask\n- actions:\n  - agent:coder\n    - model=m\n    - task=find it\n"
         ),
     );
 
@@ -245,7 +245,7 @@ fn agent_sends_the_key_from_the_variable_that_its_profile_names() {
         "profile-key",
         &format!(
             "```config\np: model=model-1, base_url={url}, api_key=ATAMA_TEST_KEY\n```\n\
-             # Job\n## Ask\n- actions: agent:coder model=p task=hi\n"
+             # Job\n## Ask\n- actions:\n  - agent:coder\n    - model=p\n    - task=hi\n"
         ),
     );
 

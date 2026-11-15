@@ -38,13 +38,15 @@
 //! different port, change the URL.
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::actor::AgentType;
-use crate::loop_block::LoopBlock;
+use crate::budget_block::BudgetBlock;
 use crate::profile::ModelProfile;
+use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
@@ -56,10 +58,10 @@ pub mod openai;
 pub mod tools;
 
 use agent_options::{
-    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, Guard, format_duration,
+    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, ToolGuard, format_duration,
 };
 use budget::{RunBudget, StopReason};
-use checks::{CommandCheck, FinalCheck, Rejection, SchemaCheck};
+use checks::{CommandCheck, FinalLoopCheck, Rejection, SchemaCheck};
 use judge::{Judge, SuccessJudge};
 
 /// One message of the conversation with the model.
@@ -120,6 +122,10 @@ pub trait Tool {
     /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
     /// The default does nothing.
     fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
+    /// Sets the protected paths of the run, from `protect=`. A tool that
+    /// writes files must not write them, as `bash` and `write_file` do (see
+    /// [`crate::protect`]). The default does nothing.
+    fn set_protect(&mut self, _protect: Option<Arc<Protect>>) {}
 }
 
 /// A chat model that can call tools.
@@ -165,7 +171,9 @@ pub struct AgentToolLoop<'a> {
     /// The guardrails for the system prompt, if set.
     guardrails: Option<String>,
     /// How the loop enforces the guardrails.
-    guard: Guard,
+    guard: ToolGuard,
+    /// The paths that the tools must not write, if set.
+    protect: Option<Arc<Protect>>,
     /// The most tool calls that the guard blocks before the run fails.
     max_violations: u32,
     /// The most tokens that one run can use, if set.
@@ -179,8 +187,8 @@ pub struct AgentToolLoop<'a> {
     schema_block: Option<OutputSchema>,
     /// The schema that the final reply must match, if set.
     output_schema: Option<OutputSchema>,
-    /// The loop block of the job that `loop=<name>` names.
-    loop_block: Option<LoopBlock>,
+    /// The budget block of the job that `budget=<name>` names.
+    budget_block: Option<BudgetBlock>,
     /// The model profile of the job that `judge_model=<name>` names.
     judge_profile: Option<ModelProfile>,
     /// The client of the judges, if they do not use the client of the
@@ -209,14 +217,15 @@ impl<'a> AgentToolLoop<'a> {
             success_check: None,
             success: None,
             guardrails: None,
-            guard: Guard::Prompt,
+            guard: ToolGuard::Prompt,
+            protect: None,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             token_budget: None,
             max_context: None,
             reasoning_effort: None,
             schema_block: None,
             output_schema: None,
-            loop_block: None,
+            budget_block: None,
             judge_profile: None,
             judge_client: None,
             debug: None,
@@ -249,12 +258,12 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
-    /// Sets the loop block of the job that the `loop=<name>` of the action
+    /// Sets the budget block of the job that the `budget=<name>` of the action
     /// names. [`AgentToolLoop::run_loop`] reads the options of the block
     /// with the options of the action, and takes the tools of the block
-    /// (see [`LoopBlock::merge`] and [`LoopBlock::make_tools`]).
-    pub fn loop_block(mut self, block: Option<LoopBlock>) -> Self {
-        self.loop_block = block;
+    /// (see [`BudgetBlock::merge`] and [`BudgetBlock::make_tools`]).
+    pub fn budget_block(mut self, block: Option<BudgetBlock>) -> Self {
+        self.budget_block = block;
         self
     }
 
@@ -326,10 +335,10 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
-    /// Sets how the loop enforces the guardrails. With [`Guard::Judge`], a
-    /// judge examines each tool call before it runs, and the loop blocks a
+    /// Sets how the loop enforces the guardrails. With [`ToolGuard::Judge`], a
+    /// judge examines each tool call before it runs, and the budget blocks a
     /// call that breaks a guardrail (see [`judge::review`]).
-    pub fn guard(mut self, guard: Guard) -> Self {
+    pub fn guard(mut self, guard: ToolGuard) -> Self {
         self.guard = guard;
         self
     }
@@ -337,6 +346,14 @@ impl<'a> AgentToolLoop<'a> {
     /// Sets the most tool calls that the guard blocks before the run fails.
     pub fn max_violations(mut self, max_violations: u32) -> Self {
         self.max_violations = max_violations;
+        self
+    }
+
+    /// Sets the paths that the tools must not write (see [`crate::protect`]).
+    /// [`AgentToolLoop::run_with`] gives them to each tool, and tells the
+    /// model about them in the system prompt.
+    pub fn protect(mut self, protect: Option<Protect>) -> Self {
+        self.protect = protect.map(Arc::new);
         self
     }
 
@@ -416,12 +433,12 @@ impl<'a> AgentToolLoop<'a> {
     /// `output_schema=`, the reply must match the schema (see
     /// [`schema::load`]).
     ///
-    /// With a loop block (see [`AgentToolLoop::loop_block`]), the options
+    /// With a budget block (see [`AgentToolLoop::budget_block`]), the options
     /// of the block come before the options of the action, and the tools of
     /// the block replace the default tools.
     ///
     /// Fails if the configuration is invalid, the output schema cannot be
-    /// loaded, `loop=` names no loop block, or a `summarizer` agent has no
+    /// loaded, `budget=` names no budget block, or a `summarizer` agent has no
     /// input.
     pub fn run_loop_with_env(
         &mut self,
@@ -431,29 +448,28 @@ impl<'a> AgentToolLoop<'a> {
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
         self.started = Some((self.clock)());
-        let params = match &self.loop_block {
+        let params = match &self.budget_block {
             Some(block) => block.merge(params),
             None => params.to_vec(),
         };
         let config = AgentConfig::from_params(self.agent, &params, profile, env)?;
         self.profile = Some(config.profile.clone());
         if let Some(options) = &config.autonomous {
-            if let Some(name) = &options.loop_name
-                && self.loop_block.is_none()
+            if let Some(name) = &options.budget_name
+                && self.budget_block.is_none()
             {
-                return Err(format!("loop block `{name}` is not defined in the job"));
+                return Err(format!("budget block `{name}` is not defined in the job"));
             }
-            if let Some(tools) = self.loop_block.as_ref().and_then(LoopBlock::make_tools) {
+            if let Some(tools) = self.budget_block.as_ref().and_then(BudgetBlock::make_tools) {
                 self.tools = tools;
             }
             if let Some(name) = &options.judge_model {
                 let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
                 let api_key = agent_options::read_api_key(judge, env)?;
-                self.judge_client = Some(Box::new(openai::OpenAiClient::new(
-                    &judge.base_url,
-                    &judge.model,
-                    api_key,
-                )));
+                self.judge_client = Some(Box::new(
+                    openai::OpenAiClient::new(&judge.base_url, &judge.model, api_key)
+                        .with_thinking(judge.thinking),
+                ));
             }
             self.max_iterations = options.max_iterations;
             self.max_time = Some(options.max_time);
@@ -462,6 +478,19 @@ impl<'a> AgentToolLoop<'a> {
             self.guardrails = options.guardrails.clone();
             self.guard = options.guard;
             self.max_violations = options.max_violations;
+            if !options.protect.is_empty() {
+                let cwd = crate::protect::working_dir()?;
+                self.protect = Some(Arc::new(Protect::new(&options.protect, &cwd)?));
+                // Only `sandbox-exec` keeps a bash command from the paths.
+                #[cfg(not(target_os = "macos"))]
+                if self.tools.iter().any(|tool| tool.name() == "bash") {
+                    return Err(
+                        "`protect=` needs `sandbox-exec` for the `bash` tool, which only macOS \
+                         has. Remove `bash` from `tools:` of the budget block"
+                            .to_string(),
+                    );
+                }
+            }
         }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
@@ -515,7 +544,7 @@ impl<'a> AgentToolLoop<'a> {
     /// tool calls ends an iteration. If the check fails, the model gets the
     /// reason, and the next iteration starts. The guardrails (see
     /// [`AgentToolLoop::guardrails`]) are in the system prompt. With
-    /// [`Guard::Judge`], a judge examines each tool call before it runs. A
+    /// [`ToolGuard::Judge`], a judge examines each tool call before it runs. A
     /// blocked call does not run, and the model gets the reason. The tokens
     /// of the judges count in the token budget.
     ///
@@ -526,7 +555,7 @@ impl<'a> AgentToolLoop<'a> {
     /// used the budget before the final reply. It fails if the summary
     /// request fails. With a time limit, it fails
     /// if the run used the time before a request or a tool call. With
-    /// [`Guard::Judge`], it fails if the guard blocks `max_violations`
+    /// [`ToolGuard::Judge`], it fails if the guard blocks `max_violations`
     /// calls.
     pub fn run_with(
         &mut self,
@@ -557,6 +586,9 @@ impl<'a> AgentToolLoop<'a> {
                 "{system}\n\nGuardrails. You must obey these rules in all your work:\n{guardrails}"
             );
         }
+        if let Some(protect) = &self.protect {
+            system = format!("{system}\n\n{}", protect.instruction());
+        }
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
         }
@@ -570,8 +602,9 @@ impl<'a> AgentToolLoop<'a> {
         let deadline_time = budget.deadline_time();
         for tool in &mut self.tools {
             tool.set_deadline_time(deadline_time);
+            tool.set_protect(self.protect.clone());
         }
-        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
+        let mut checks: Vec<Box<dyn FinalLoopCheck>> = Vec::new();
         if let Some(schema) = &self.output_schema {
             checks.push(Box::new(SchemaCheck::new(schema.clone())));
         }
@@ -585,8 +618,8 @@ impl<'a> AgentToolLoop<'a> {
         }
         // The guardrails that the guard enforces, if the guard is on.
         let guarded = match self.guard {
-            Guard::Judge => self.guardrails.clone(),
-            Guard::Prompt => None,
+            ToolGuard::Judge => self.guardrails.clone(),
+            ToolGuard::Prompt => None,
         };
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
@@ -778,7 +811,7 @@ impl<'a> AgentToolLoop<'a> {
     fn stop_error(
         &self,
         reason: &StopReason,
-        checks: &[Box<dyn FinalCheck>],
+        checks: &[Box<dyn FinalLoopCheck>],
         last_failure: Option<(usize, String)>,
     ) -> String {
         let label = self.label();

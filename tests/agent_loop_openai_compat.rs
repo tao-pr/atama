@@ -119,6 +119,7 @@ fn profile(base_url: &str) -> ModelProfile {
         base_url: base_url.into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     }
 }
 
@@ -297,7 +298,7 @@ fn file_tools_write_read_and_list_files() {
     let path = dir.join("sub/a.txt");
     let path = path.to_str().unwrap();
 
-    let result = WriteFile
+    let result = WriteFile::default()
         .call(&json!({"path": path, "content": "héllo"}))
         .unwrap();
     assert_eq!(result, format!("wrote 5 characters to `{path}`"));
@@ -327,12 +328,12 @@ fn file_tools_fail_on_missing_or_wrong_arguments() {
             "missing string argument `path`",
         ),
         (
-            Box::new(WriteFile),
+            Box::new(WriteFile::default()),
             json!({"content": "x"}),
             "missing string argument `path`",
         ),
         (
-            Box::new(WriteFile),
+            Box::new(WriteFile::default()),
             json!({"path": "x"}),
             "missing string argument `content`",
         ),
@@ -965,7 +966,7 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
                 "task=t",
                 "success=It works.",
                 "guardrails=Do not push.",
-                "guard=judge",
+                "toolGuard=judge",
                 "max_violations=1",
             ]),
             Some(&profile(&url)),
@@ -989,21 +990,19 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
     let out = String::from_utf8(out).unwrap();
     assert!(
         out.contains(
-            "success: It works.\nguardrails: Do not push.\nguard: judge\nmax_violations: 1"
+            "success: It works.\nguardrails: Do not push.\ntoolGuard: judge\nmax_violations: 1"
         ),
         "{out}"
     );
 }
 
 #[test]
-fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
-    let block = atama::loop_block::parse_block(
+fn run_loop_takes_the_options_and_tools_of_the_budget_block() {
+    let block = atama::budget_block::parse_block(
         "fix",
         &[
             "max_iterations: 7",
             "success_check: false",
-            "guardrails:",
-            "- Do not push.",
             "tools:",
             "- read_file max_calls=2",
         ],
@@ -1012,11 +1011,18 @@ fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
     let (url, requests) = serve(vec![(200, text_response("done"))]);
     let mut out = Vec::new();
     let output = AgentToolLoop::new(AgentType::Autonomous)
-        .loop_block(Some(block))
+        .budget_block(Some(block))
         .debug(&mut out)
         .run_loop_with_env(
-            // The action replaces the success check of the block.
-            &params(&["model=m", "task=t", "loop=fix", "success_check=true"]),
+            // The action replaces the success check of the block, and
+            // sets the guardrails.
+            &params(&[
+                "model=m",
+                "task=t",
+                "budget=fix",
+                "success_check=true",
+                "guardrails=- Do not push.",
+            ]),
             Some(&profile(&url)),
             "",
             &no_env,
@@ -1042,16 +1048,16 @@ fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
 }
 
 #[test]
-fn run_loop_fails_if_loop_names_no_block() {
+fn run_loop_fails_if_budget_names_no_block() {
     let err = AgentToolLoop::new(AgentType::Autonomous)
         .run_loop_with_env(
-            &params(&["model=m", "loop=fix", "success=x"]),
+            &params(&["model=m", "budget=fix", "success=x"]),
             Some(&profile("http://x.test")),
             "",
             &no_env,
         )
         .unwrap_err();
-    assert_eq!(err, "loop block `fix` is not defined in the job");
+    assert_eq!(err, "budget block `fix` is not defined in the job");
 }
 
 #[test]
@@ -1099,6 +1105,7 @@ fn run_loop_sends_the_judge_requests_to_the_judge_model() {
         base_url: judge_url,
         api_key_env: Some("JUDGE_KEY".into()),
         token_budget: None,
+        thinking: None,
     };
     let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
     let mut out = Vec::new();
@@ -1246,6 +1253,80 @@ fn run_loop_sends_thinking_false_to_the_server() {
     assert_eq!(request["reasoning_effort"], "none");
     let request = run(&["model=m", "task=t"]);
     assert!(request.get("reasoning_effort").is_none(), "{request}");
+}
+
+#[test]
+fn run_loop_sends_thinking_false_of_the_profile_with_the_tools() {
+    let (url, requests) = serve(vec![(200, text_response("hi")), (200, text_response("hi"))]);
+    let profile = ModelProfile {
+        thinking: Some(false),
+        ..profile(&url)
+    };
+    let run = |words: &[&str]| {
+        AgentToolLoop::new(AgentType::Coder)
+            .run_loop_with_env(&params(words), Some(&profile), "", &no_env)
+            .unwrap();
+        request_json(&requests.recv().unwrap())
+    };
+    let request = run(&["model=m", "task=t"]);
+    assert_eq!(request["reasoning_effort"], "none");
+    assert!(request["tools"].is_array(), "{request}");
+    // `thinking=true` of the action replaces the profile, and sends nothing.
+    let request = run(&["model=m", "task=t", "thinking=true"]);
+    assert!(request.get("reasoning_effort").is_none(), "{request}");
+}
+
+#[test]
+fn run_loop_puts_the_protected_paths_into_the_system_prompt() {
+    let (url, requests) = serve(vec![(200, text_response("done"))]);
+    let words = [
+        "model=m",
+        "task=t",
+        "success_check=true",
+        "protect=target/atama-protect-loop/**,Cargo.lock",
+    ];
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .run_loop_with_env(&params(&words), Some(&profile(&url)), "", &no_env)
+        .unwrap();
+    assert_eq!(output, "done");
+    let request = request_json(&requests.recv().unwrap());
+    let system = request["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with(
+            "A tool call that tries fails: `target/atama-protect-loop/**`, `Cargo.lock`"
+        ),
+        "{system}"
+    );
+}
+
+#[test]
+fn a_protected_write_file_call_gives_the_model_the_error() {
+    let dir = std::env::temp_dir().join(format!("atama-loop-protect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let target = format!("{}/keep/a.txt", dir.display());
+    let arguments = json!({"path": target, "content": "x"}).to_string();
+    let mut client = ScriptedClient::new(vec![
+        Ok(calls(&[("c1", "write_file", &arguments)])),
+        Ok(text("done")),
+    ]);
+    let protect = atama::protect::Protect::new(&["keep".to_string()], &dir).unwrap();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .protect(Some(protect))
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+    let last = client.conversations.last().unwrap().last().unwrap();
+    assert_eq!(
+        last,
+        &Message::Tool {
+            call_id: "c1".into(),
+            content: format!(
+                "error: `{target}` is protected by `protect=keep`, so the agent cannot write it"
+            ),
+        }
+    );
+    assert!(!dir.join("keep").exists());
 }
 
 #[test]
