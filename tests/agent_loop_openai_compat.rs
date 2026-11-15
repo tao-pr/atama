@@ -965,7 +965,7 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
                 "task=t",
                 "success=It works.",
                 "guardrails=Do not push.",
-                "guard=judge",
+                "toolGuard=judge",
                 "max_violations=1",
             ]),
             Some(&profile(&url)),
@@ -989,7 +989,7 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
     let out = String::from_utf8(out).unwrap();
     assert!(
         out.contains(
-            "success: It works.\nguardrails: Do not push.\nguard: judge\nmax_violations: 1"
+            "success: It works.\nguardrails: Do not push.\ntoolGuard: judge\nmax_violations: 1"
         ),
         "{out}"
     );

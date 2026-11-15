@@ -45,7 +45,7 @@ pub const BLOCK_KEYS: [&str; 13] = [
     "success_check",
     "success",
     "guardrails",
-    "guard",
+    "toolGuard",
     "max_violations",
     "judge_model",
 ];

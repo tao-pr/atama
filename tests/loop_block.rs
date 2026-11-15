@@ -99,7 +99,7 @@ fn rejects_invalid_lines() {
             0,
             "unknown key `model` in loop block `fix`, expected `task`, `max_steps`, \
              `token_budget`, `max_context`, `thinking`, `max_iterations`, `max_time`, `success_check`, \
-             `success`, `guardrails`, `guard`, `max_violations`, `judge_model` or `tools`",
+             `success`, `guardrails`, `toolGuard`, `max_violations`, `judge_model` or `tools`",
         ),
         (
             &["success: a", "success: b"],

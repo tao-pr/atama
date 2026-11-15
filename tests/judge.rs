@@ -1,5 +1,5 @@
 //! Tests for the judges of an `autonomous` agent: the success criteria
-//! (`success=`) and the guard (`guard=judge`), in
+//! (`success=`) and the guard (`toolGuard=judge`), in
 //! `src/agent_loop_openai_compat/judge.rs`.
 
 use std::cell::Cell;

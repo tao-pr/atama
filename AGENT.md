@@ -184,7 +184,7 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`guard=`, `max_violations=`, `loop=` and `judge_model=`. Other
+`toolGuard=`, `max_violations=`, `loop=` and `judge_model=`. Other
 agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
@@ -317,7 +317,7 @@ An `autonomous` agent works in iterations until its success checks pass.
 It needs `success_check=<command>` or `success=<criteria>`, or both. It
 takes `max_iterations=<n>` (default `DEFAULT_MAX_ITERATIONS`, 5),
 `max_time=<duration>` (default `DEFAULT_MAX_TIME`, 30 minutes),
-`guardrails=<text>`, `guard=<prompt|judge>` (default `prompt`) and
+`guardrails=<text>`, `toolGuard=<prompt|judge>` (default `prompt`) and
 `max_violations=<n>` (default `DEFAULT_MAX_VIOLATIONS`, 3). Its default
 `max_steps` is `DEFAULT_AUTONOMOUS_MAX_STEPS` (50). `AgentConfig::from_params`
 reads these options into `AutonomousOptions` only for `autonomous`. Other
@@ -352,7 +352,7 @@ header shows the used time, as in `41s of 30m`. Tests of the agent are in
 ### Judges of the `autonomous` agent
 
 `success=<criteria>` adds `judge::SuccessJudge` to the final checks, after
-the command check. `guard=judge` makes `run_with` call `judge::review`
+the command check. `toolGuard=judge` makes `run_with` call `judge::review`
 before each tool call. Both send a separate request with `judge::Judge`:
 a system prompt, one user message, no tools, and a reply that must match
 `judge::verdict_schema`, `{"pass": <bool>, "reason": <text>}`. The request
@@ -364,7 +364,7 @@ a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
 key of that profile (`agent_options::read_api_key`), and sets it as
 `AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
 client, and adds the tokens of each judge reply to the budget.
-`judge_model=` needs `success=` or `guard=judge`. The context summary uses
+`judge_model=` needs `success=` or `toolGuard=judge`. The context summary uses
 the model of the agent.
 
 The success judge gets the task, the criteria, the tool calls and results
@@ -374,7 +374,7 @@ fails with the error. The guard gets the guardrails, the tool name and the
 arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
-fails. `guard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
 
 ### Context compaction
 

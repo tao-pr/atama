@@ -1654,7 +1654,7 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
             "unknown option `max_step`, expected `model=`, `max_steps=`, `token_budget=`, \
              `max_context=`, `task=`, `thinking=`, `output_schema=`, `expertise=`, `max_output=`, \
              `max_iterations=`, `max_time=`, `success_check=`, `guardrails=`, `success=`, \
-             `guard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`",
         ),
     ];
     for (text, line, message) in cases {
@@ -1727,7 +1727,7 @@ fn rejects_an_invalid_judge_model() {
                 "",
                 "agent:autonomous model=p success_check=true judge_model=small",
             ),
-            "`judge_model=` needs a judge: `success=<criteria>` or `guard=judge`",
+            "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`",
         ),
         (
             judge_job("", "agent:coder model=p judge_model=small"),

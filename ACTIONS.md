@@ -345,16 +345,16 @@ It takes these options:
 | `max_iterations=<n>` | No | The most iterations, a number above 0. The default is 5. |
 | `max_time=<duration>` | No | The most wall clock time of the action, as in `90s`, `20m` or `1h`. The default is `30m`. The time counts from the start of the action. Atama examines the time before each request and each tool call. A `bash` call or a success check that still runs at the limit stops, with all its child processes. |
 | `guardrails="<text>"` | No | Rules that the agent must obey, in natural language. Atama puts them into the system prompt. |
-| `guard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
+| `toolGuard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
-| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `guard=judge`. |
+| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `toolGuard=judge`. |
 | `loop=<name>` | No | The name of a loop block with more options. See [Loop blocks](#loop-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
 model profile of the agent. For example, a small local model can judge the
 work of a large one. The API key of the judge profile comes from its own
 `api_key=` variable. The tokens of the judge and the guard count in the
-token budget of the action. With `guard=judge`, each tool call costs one
+token budget of the action. With `toolGuard=judge`, each tool call costs one
 more request to the model.
 
 With `--debug`, each header of a run with more than one iteration names
@@ -368,7 +368,7 @@ and with a model that you trust.
 ```markdown
 - actions:
   - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m guardrails="Do not change files in tests/."
-  - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." guard=judge
+  - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." toolGuard=judge
 ```
 
 #### Steps of a run
@@ -379,7 +379,7 @@ the types and functions in `src/agent_loop_openai_compat/`.
 1. The loop starts with the system prompt and the task. It makes the list of `FinalLoopCheck`s from the options: `SchemaCheck`, `CommandCheck`, then `SuccessJudge`.
 2. Before each step, `RunBudget` makes sure that the run still has steps, tokens and time. With `max_context=`, the loop compacts a conversation that is too long.
 3. The loop sends the conversation to the model. The model replies with tool calls or with a final text.
-4. With `guard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
+4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
 5. If the guard allows the call, the tool runs. The result goes into the conversation, and the loop goes back to step 2.
 6. A reply without tool calls goes through the `FinalLoopCheck`s in order. `SchemaCheck` and `CommandCheck` decide without a model.
 7. `SuccessJudge` asks the `Judge` with the criteria, the evidence and the reply. The `Verdict` becomes `Done` if `pass` is true, else `Retry` with its `reason`.
@@ -403,7 +403,7 @@ action selects it with `loop=<name>`:
 max_time: 20m
 success_check: cargo test --quiet
 success: All tests pass, and no test was deleted or ignored.
-guard: judge
+toolGuard: judge
 guardrails:
   - Do not change files in tests/.
   - Do not run git push or git reset.
@@ -425,7 +425,7 @@ tools:
 Each line is `<key>: <value>`. A key with no value starts a list, and each
 item of the list is a `- <item>` line after it. The keys are the options
 `task`, `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
-`max_time`, `success_check`, `success`, `guardrails`, `guard` and
+`max_time`, `success_check`, `success`, `guardrails`, `toolGuard` and
 `max_violations`, `judge_model`, and `tools`. A list of text, such as `guardrails:`, gives
 the agent one `- <item>` line for each item.
 

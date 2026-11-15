@@ -172,7 +172,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -386,7 +386,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `guard=`, `max_violations=`, `loop=`, `judge_model=`"
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`"
                 .into(),
         ),
         (
@@ -497,7 +497,7 @@ fn autonomous_reads_its_options_with_defaults() {
         "max_steps=7",
         "guardrails=Do not push.",
         "success=All tests pass.",
-        "guard=judge",
+        "toolGuard=judge",
         "max_violations=2",
     ])
     .unwrap();
@@ -520,13 +520,13 @@ fn autonomous_reads_its_options_with_defaults() {
         config.summary(),
         "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
          max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nsuccess: All tests pass.\n\
-         guardrails: Do not push.\nguard: judge\nmax_violations: 2\njudge_model: not set"
+         guardrails: Do not push.\ntoolGuard: judge\nmax_violations: 2\njudge_model: not set"
     );
-    let config = autonomous(&["model=m", "success=done", "guard=prompt"]).unwrap();
+    let config = autonomous(&["model=m", "success=done", "toolGuard=prompt"]).unwrap();
     assert!(
         config.summary().ends_with(
             "\nmax_time: 30m\nsuccess_check: not set\nsuccess: done\nguardrails: not set\n\
-             guard: prompt\nmax_violations: 3\njudge_model: not set"
+             toolGuard: prompt\nmax_violations: 3\njudge_model: not set"
         ),
         "{}",
         config.summary()
@@ -543,12 +543,12 @@ fn autonomous_rejects_invalid_options() {
              when the task is done",
         ),
         (
-            vec!["model=m", "success=x", "guard=strict"],
-            "`guard=strict` is not `prompt` or `judge`",
+            vec!["model=m", "success=x", "toolGuard=strict"],
+            "`toolGuard=strict` is not `prompt` or `judge`",
         ),
         (
-            vec!["model=m", "success=x", "guard=judge"],
-            "`guard=judge` needs `guardrails=<text>`",
+            vec!["model=m", "success=x", "toolGuard=judge"],
+            "`toolGuard=judge` needs `guardrails=<text>`",
         ),
         (
             vec!["model=m", "success=x", "max_violations=0"],
@@ -586,7 +586,7 @@ fn other_agents_reject_the_options_of_autonomous() {
             "success_check=true",
             "success=x",
             "guardrails=x",
-            "guard=judge",
+            "toolGuard=judge",
             "max_violations=1",
         ] {
             let key = option.split_once('=').unwrap().0;
@@ -670,7 +670,7 @@ fn autonomous_reads_judge_model() {
         "model=m",
         "success_check=true",
         "guardrails=g",
-        "guard=judge",
+        "toolGuard=judge",
         "judge_model=small",
     ])
     .unwrap();
