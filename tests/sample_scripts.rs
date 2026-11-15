@@ -40,6 +40,20 @@ fn write_by_key(dir: &Path, key: &str, input: &str) -> Output {
     )
 }
 
+/// Runs the write-by-key script with `dir`, `key` and `prefix` as its
+/// arguments and `input` on stdin.
+fn write_by_key_with_prefix(dir: &Path, key: &str, prefix: &str, input: &str) -> Output {
+    run(
+        WRITE_BY_KEY_SCRIPT,
+        &[
+            dir.as_os_str(),
+            std::ffi::OsStr::new(key),
+            std::ffi::OsStr::new(prefix),
+        ],
+        input,
+    )
+}
+
 /// Runs `script` with `args` and `input` on stdin.
 fn run(script: &str, args: &[&std::ffi::OsStr], input: &str) -> Output {
     let mut child = Command::new(script)
@@ -160,6 +174,36 @@ fn write_by_key_writes_each_object_to_the_file_that_its_key_names() {
         read_json(&new_york),
         json!({"city": "new_york-2", "minTemp": -1.5})
     );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn write_by_key_puts_the_prefix_before_each_file_name() {
+    if !has_jq() {
+        eprintln!("skipped: jq is not installed");
+        return;
+    }
+    let dir = temp_dir("by-key-prefix");
+    let input = "{\"provider\":\"openai\",\"models\":[]}\n";
+    let output = write_by_key_with_prefix(&dir, "provider", "models-", input);
+    assert!(output.status.success(), "{output:?}");
+    let file = dir.join("models-openai.json");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{}\n", file.display())
+    );
+    assert_eq!(
+        read_json(&file),
+        json!({"provider": "openai", "models": []})
+    );
+
+    let output = write_by_key_with_prefix(&dir, "provider", "../x-", input);
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "write_json_by_key.sh: `../x-` is not a file name prefix\n"
+    );
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
     fs::remove_dir_all(dir).unwrap();
 }
 

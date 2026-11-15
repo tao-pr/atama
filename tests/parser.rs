@@ -455,6 +455,63 @@ fn gives_the_agent_of_a_foreach_action_its_profile() {
 }
 
 #[test]
+fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
+    let job = parse_job(include_str!("../jobs/auto_model_research.md")).expect("job should parse");
+    let names: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Prepare",
+            "Providers",
+            "Generate Web Search Queries",
+            "Running websearch",
+            "Extract Models"
+        ]
+    );
+    for (task, schema) in [(2, "search_query"), (4, "models")] {
+        let action = &job.tasks[task].actions[usize::from(task == 4)];
+        let Actor::ForEach(inner) = action else {
+            panic!("expected foreach, got {action:?}");
+        };
+        let Actor::AgentTool {
+            agent,
+            profile,
+            output_schema,
+            ..
+        } = inner.as_ref()
+        else {
+            panic!("expected an agent, got {inner:?}");
+        };
+        assert_eq!(*agent, AgentType::Summarizer);
+        assert_eq!(
+            profile.as_ref().map(|p| p.name.as_str()),
+            Some("local-spark2")
+        );
+        assert!(
+            output_schema.as_ref().is_some_and(|s| s.name == schema),
+            "{output_schema:?}"
+        );
+    }
+    let actions = |task: usize| -> Vec<String> {
+        job.tasks[task]
+            .actions
+            .iter()
+            .map(|actor| actor.to_string())
+            .collect()
+    };
+    let search = actions(3);
+    assert_eq!(
+        search[1],
+        "foreach tavily_search max_results=5 include_answer=basic"
+    );
+    assert_eq!(search[3], "write_file ./output/model_research/search.jsonl");
+    assert_eq!(
+        actions(4).last().unwrap(),
+        "bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-"
+    );
+}
+
+#[test]
 fn sample_foreach_job_lists_items_and_runs_one_action_for_each() {
     let job = parse_job(include_str!("../jobs/sample_foreach.md")).expect("job should parse");
     let actions: Vec<String> = job
