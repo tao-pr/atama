@@ -61,6 +61,10 @@ must be unique.
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
 
+## Advanced Example Markdown Jobs
+
+- [`jobs/auto_model_research.md`](jobs/auto_model_research.md): research the frontier models of OpenAI, Hugging Face, Anthropic, Grok, Gemini, Nemotron, DeepSeek, Kimi and Mistral, and small GGUF models for Ollama on a CPU. The research is about tool calls, structured input and output, and text analysis. Needs Ollama with `local-spark2`, `OPENAI_API_KEY` for `openai-luna`, `TAVILY_API_KEY` and `jq`. The job can run on a CPU machine with Ollama.
+
 ## Actions
 
 An action is one line in the `- actions:` list of a task. The first word is

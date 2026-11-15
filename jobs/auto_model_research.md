@@ -109,8 +109,10 @@ cargo run -- jobs/auto_model_research.md
 
 ## Prepare
 
-Make an empty output directory.
+Make an empty output directory. The task does not run if `providers.txt`
+exists, because it deletes the output of the other tasks.
 
+- skip_if: exist(./output/model_research/providers.txt)
 - actions:
   - bash rm -rf ./output/model_research
   - bash mkdir -p ./output/model_research
@@ -119,6 +121,7 @@ Make an empty output directory.
 
 One model provider on each line. The names are also file names.
 
+- skip_if: exist(./output/model_research/providers.txt)
 - actions:
   - bash printf %s\n openai huggingface anthropic grok gemini nemotron deepseek kimi mistral
   - write_file ./output/model_research/providers.txt
@@ -128,6 +131,7 @@ One model provider on each line. The names are also file names.
 writes one query for each provider. The queries go to
 `queries.txt`, one on each line, in the order of the providers.
 
+- skip_if: exist(./output/model_research/queries.txt)
 - actions:
   - foreach agent:summarizer
     - model=local-spark2
@@ -146,6 +150,7 @@ One Tavily search for each query. `jq` adds the provider of each result,
 by its order, and keeps a short part. `search.jsonl` has one result on each
 line.
 
+- skip_if: exist(./output/model_research/search.jsonl)
 - actions:
   - read_file ./output/model_research/queries.txt
   - foreach tavily_search max_results=5 include_answer=basic
@@ -157,7 +162,9 @@ line.
 
 `local-spark2` reads the models of each provider. `jq` sets the provider
 again by its order, and each provider goes to `models-<provider>.json`.
+`model_files.txt` has the path of each file, one on each line.
 
+- skip_if: exist(./output/model_research/models-gemini.json)
 - actions:
   - read_file ./output/model_research/search.jsonl
   - foreach agent:summarizer
@@ -171,6 +178,7 @@ again by its order, and each provider goes to `models-<provider>.json`.
       that the result does not give.
   - bash jq -c -n --rawfile p ./output/model_research/providers.txt [($p|split("\n")),[inputs]]|transpose[]|select(.[1])|.[1]+{provider:.[0]}
   - bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-
+  - write_file ./output/model_research/model_files.txt
 
 ## Search Small GGUF Models for Ollama
 
