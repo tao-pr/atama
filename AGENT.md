@@ -185,16 +185,37 @@ Each param of an agent action is an option. Every agent needs
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
 `toolGuard=`, `max_violations=`, `protect=`, `loop=` and `judge_model=`. Other
-agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
-as in
-`task="Fix the failing test."`. The parser (`split_quoted` in
-`src/parser.rs`) splits the params of an `agent:` line at whitespace, but
-not inside quotes, and removes the quotes. Inside quotes, `\"` is a quote and
-`\\` is a backslash. Then `Values::read` in `agent_options.rs` reads each
-param for `AgentConfig::from_params`. It fails on a word without `=` and on
-an unknown key. `src/actor/display.rs` puts the quotes back when it writes
-an agent action as a line. The `websearch` action uses `split_quoted` in
-the same way.
+agent types fail on the options of another type (`only_for`).
+
+The options of an agent action are not on the line of the action. They are
+a list under it, one `- <key>=<value>` bullet on each line, indented more
+than the action:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Fix the failing test.
+      Then run the tests again.
+```
+
+`parse_job` in `src/parser.rs` keeps the action in a `PendingAction` until
+the next action, field or task, and adds each deeper bullet to its options.
+`indentation` counts a tab as 4 columns. An indented line without a bullet
+continues the last option, after a space. `flush` then calls `parse_action`
+with the options. An option on the line of the action is a parse error.
+A list under an action that is not `agent:<type>` or
+`foreach agent:<type>` is also a parse error. A value needs no quotes. If
+the whole value is in double quotes, `unquote_option` removes them with
+`split_quoted`. Inside quotes, `\"` is a quote and `\\` is a backslash.
+`str::parse` alone still reads the options from one line, for tests.
+
+`Values::read` in `agent_options.rs` reads each param for
+`AgentConfig::from_params`. It fails on a word without `=` and on an
+unknown key. `src/actor/display.rs` writes an agent action as one line for
+the log, with quotes around a value with spaces. The `websearch` action
+uses `split_quoted` for its options on the line of the action.
 
 ### Steps of one agent run
 

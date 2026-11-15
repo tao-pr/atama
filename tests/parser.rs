@@ -13,6 +13,41 @@ use atama::{Event, Hook, ParseError, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
+/// Writes an action as a job file has it. The options of an agent action,
+/// as in `agent:coder model=p task="Fix it."`, go in a list under the
+/// action, one `- <key>=<value>` bullet for each option. Another action does
+/// not change. The action bullet has 2 spaces before it.
+fn listed(action: &str) -> String {
+    let start = if action.starts_with("foreach agent:") {
+        "foreach ".len()
+    } else if action.starts_with("agent:") {
+        0
+    } else {
+        return action.to_string();
+    };
+    let (head, rest) = match action[start..].split_once(' ') {
+        Some((name, rest)) => (&action[..start + name.len()], rest),
+        None => (action, ""),
+    };
+    // Split the options at spaces, but not inside quotes.
+    let mut options = vec![String::new()];
+    let mut quoted = false;
+    for c in rest.chars() {
+        match c {
+            ' ' if !quoted => options.push(String::new()),
+            c => {
+                quoted ^= c == '"';
+                options.last_mut().unwrap().push(c);
+            }
+        }
+    }
+    let mut text = head.to_string();
+    for option in options.iter().filter(|option| !option.is_empty()) {
+        text.push_str(&format!("\n    - {option}"));
+    }
+    text
+}
+
 #[test]
 fn parses_example_job() {
     let job = parse_job(EXAMPLE_JOB).expect("example job should parse");
@@ -188,8 +223,8 @@ fn reads_model_profiles_from_the_config_block() {
          # Job\n\
          ## A\n\
          - actions:\n  \
-           - agent:coder model=local task=t\n  \
-           - agent:summarizer model=cloud\n",
+           - agent:coder\n    - model=local\n    - task=t\n  \
+           - agent:summarizer\n    - model=cloud\n",
     )
     .expect("job should parse");
     let profiles: Vec<ModelProfile> = job.tasks[0]
@@ -241,8 +276,9 @@ fn reads_the_token_budget_of_a_profile() {
 
 #[test]
 fn rejects_invalid_model_profiles() {
-    let job =
-        |config: &str, action: &str| format!("{config}# Job\n## A\n- actions:\n  - {action}\n");
+    let job = |config: &str, action: &str| {
+        format!("{config}# Job\n## A\n- actions:\n  - {}\n", listed(action))
+    };
     let profile = "```config\np: model=m, base_url=http://x.test\n```\n";
     let cases = [
         (
@@ -398,7 +434,7 @@ fn parses_foreach_actions() {
 fn gives_the_agent_of_a_foreach_action_its_profile() {
     let job = parse_job(
         "```config\np: model=m, base_url=http://x.test\n```\n\
-         # Job\n## A\n- actions:\n  - foreach agent:summarizer model=p\n",
+         # Job\n## A\n- actions:\n  - foreach agent:summarizer\n    - model=p\n",
     )
     .expect("job should parse");
     let Actor::ForEach(inner) = &job.tasks[0].actions[0] else {
@@ -409,7 +445,8 @@ fn gives_the_agent_of_a_foreach_action_its_profile() {
         "{inner:?}"
     );
 
-    let err = parse_job("# Job\n## A\n- actions:\n  - foreach agent:coder model=q\n").unwrap_err();
+    let err =
+        parse_job("# Job\n## A\n- actions:\n  - foreach agent:coder\n    - model=q\n").unwrap_err();
     assert_eq!(err.line, 4);
     assert!(
         err.message.starts_with("unknown model profile `q`"),
@@ -965,7 +1002,8 @@ fn treats_deeper_headings_as_description() {
 /// A job with `blocks` before its heading and one action.
 fn schema_job(blocks: &str, action: &str) -> String {
     format!(
-        "```config\np: model=m, base_url=http://x.test\n```\n{blocks}# Job\n## A\n- actions:\n  - {action}\n"
+        "```config\np: model=m, base_url=http://x.test\n```\n{blocks}# Job\n## A\n- actions:\n  - {}\n",
+        listed(action)
     )
 }
 
@@ -1675,7 +1713,8 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
 fn judge_job(blocks: &str, action: &str) -> String {
     format!(
         "```config\np: model=m, base_url=http://x.test\nsmall: model=s, base_url=http://y.test\n```\n\
-         {blocks}# Job\n## A\n- actions:\n  - {action}\n"
+         {blocks}# Job\n## A\n- actions:\n  - {}\n",
+        listed(action)
     )
 }
 
@@ -1782,4 +1821,119 @@ fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
         "{:?}",
         block.params
     );
+}
+
+// Options of an agent action as a list
+
+#[test]
+fn reads_the_options_of_an_agent_action_from_a_list() {
+    let job = parse_job(
+        "```config\np: model=m, base_url=http://x.test\n```\n\
+         # Job\n## A\n- actions:\n  \
+           - agent:summarizer\n    \
+             - model=p\n\n    \
+             - max_output=\"40%\"\n    \
+             - expertise=\"say \\\"hi\\\"\"\n    \
+             - task=Read the input.\n      \
+               Write a summary.\n  \
+           - foreach agent:coder\n\t- model=p\n  \
+           - bash ls\n\
+         - if_fail: die\n",
+    )
+    .expect("job should parse");
+    let actions = &job.tasks[0].actions;
+    assert_eq!(actions.len(), 3, "{actions:?}");
+    let Actor::AgentTool { params, .. } = &actions[0] else {
+        panic!("expected an agent, got {:?}", actions[0]);
+    };
+    assert_eq!(
+        params,
+        &[
+            "model=p",
+            "max_output=40%",
+            "expertise=say \"hi\"",
+            "task=Read the input. Write a summary.",
+        ]
+    );
+    let Actor::ForEach(inner) = &actions[1] else {
+        panic!("expected a foreach action, got {:?}", actions[1]);
+    };
+    assert!(
+        matches!(inner.as_ref(), Actor::AgentTool { params, .. } if params == &["model=p"]),
+        "{inner:?}"
+    );
+    assert_eq!(actions[2].to_string(), "bash ls");
+    assert_eq!(job.tasks[0].if_fail, Some(Hook::Die));
+}
+
+#[test]
+fn an_agent_action_at_the_end_of_the_job_gets_its_options() {
+    let job = parse_job(
+        "```config\np: model=m, base_url=http://x.test\n```\n\
+         # Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n## B\n\
+         - actions:\n  - agent:coder\n    - model=p\n    - task=t",
+    )
+    .expect("job should parse");
+    assert_eq!(job.tasks[0].actions[0].to_string(), "agent:coder model=p");
+    assert_eq!(
+        job.tasks[1].actions[0].to_string(),
+        "agent:coder model=p task=t"
+    );
+}
+
+#[test]
+fn rejects_options_that_are_not_in_a_list() {
+    let config = "```config\np: model=m, base_url=http://x.test\n```\n";
+    let cases = [
+        (
+            format!("{config}# Job\n## A\n- actions:\n  - agent:coder model=p\n"),
+            7,
+            "put the options of `agent:coder` in a list under the action, one \
+             `- <key>=<value>` bullet on each line, as in `- model=<profile>`",
+        ),
+        (
+            format!("{config}# Job\n## A\n- actions: foreach agent:summarizer model=p\n"),
+            6,
+            "put the options of `agent:summarizer` in a list under the action, one \
+             `- <key>=<value>` bullet on each line, as in `- model=<profile>`",
+        ),
+        (
+            format!("{config}# Job\n## A\n- actions:\n  - bash ls\n    - mock\n"),
+            8,
+            "`mock` is indented under an action that takes no list of options, only \
+             `agent:<type>` takes one. To add an action, indent its bullet as much as the \
+             other actions",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - task=\"a\\\"\n"
+            ),
+            9,
+            "a quote in `\"a\\\"` has no closing quote",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - task=\"a\" \"b\"\n"
+            ),
+            9,
+            "the value of `task` has text after its closing quote, in `task=\"a\" \"b\"`",
+        ),
+        (
+            format!(
+                "{config}# Job\n## A\n- actions:\n  - agent:coder\n    - model=p\n    - verbose\n"
+            ),
+            7,
+            "unexpected `verbose`, put the task in `task=\"...\"`",
+        ),
+    ];
+    for (text, line, message) in cases {
+        assert_eq!(
+            parse_job(&text),
+            Err(ParseError {
+                line,
+                message: message.into()
+            }),
+            "{text}"
+        );
+    }
 }

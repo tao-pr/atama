@@ -65,9 +65,21 @@ The sample jobs call helper scripts in `jobs/scripts/`.
 An action is one line in the `- actions:` list of a task. The first word is
 the action type, and the other words are its parameters. For example:
 
-- `bash npm ci`, `api_call GET https://example.com`,
-- `websearch topic="latest Rust release"` and
-- `agent:coder model=local-qwen task="Fix the failing test."`.
+- `bash npm ci`,
+- `api_call GET https://example.com`,
+- `websearch topic="latest Rust release"`.
+
+An `agent:<type>` action is different. Its options are not on the line of
+the action. They are a list under the action, one `- <key>=<value>` bullet
+for each option:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Fix the failing test.
+```
 
 Each action takes input from previous task/action, passes out its output to the next.
 
@@ -170,8 +182,8 @@ does not start.
 ### Token budget (optional)
 
 A token budget limits the tokens that one run of an agent uses. Set it on a
-model profile with `token_budget=<n>`, or on one action, as in
-`agent:coder model=local-qwen token_budget=50000`. The value of the action
+model profile with `token_budget=<n>`, or on one action with the option
+`- token_budget=50000` in the list of the action. The value of the action
 replaces the value of the profile.
 
 Atama adds up `usage.total_tokens` from each response of the server. Each
@@ -212,7 +224,9 @@ A schema block comes before the `# <name>` heading. Its fence is
 ## Summary
 
 - actions:
-  - agent:summarizer model=local-qwen output_schema=article
+  - agent:summarizer
+    - model=local-qwen
+    - output_schema=article
 ````
 
 The job does not start if a block is not a valid JSON schema, if a name is

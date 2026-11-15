@@ -128,7 +128,13 @@ makes the reply one JSON object with `city`, `minTemp` and `maxTemp`.
 CPU. The output is the JSON object of each city, one after the other.
 
 - actions:
-  - foreach agent:summarizer model=local-spark2 thinking=false output_schema=city_temperature task="Read the search result of one city. Find the lowest and the highest temperature of today in degrees Celsius. If the result gives degrees Fahrenheit, convert them to Celsius. Write the city name in lowercase."
+  - foreach agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - output_schema=city_temperature
+    - task=Read the search result of one city. Find the lowest and the highest
+      temperature of today in degrees Celsius. If the result gives degrees
+      Fahrenheit, convert them to Celsius. Write the city name in lowercase.
 
 ## Save cities
 

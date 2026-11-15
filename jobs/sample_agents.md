@@ -184,7 +184,17 @@ The output of the task is the summaries, one after the other.
 
 - actions:
   - bash xargs jq -c .
-  - foreach agent:summarizer model=local-spark2 thinking=false expertise="agentic AI engineering" max_output="40%" task="You are given one JSON object, which you will convert into markdown. The object has a title, a URL, and the page content, which you will convert into a heading (from title) and a summary of the content (from 'content' field). The summary text should still keep the URL on the top of the summary, then the summarized text below it. The summary should be concise, clear, and informative."
+  - foreach agent:summarizer
+    - model=local-spark2
+    - thinking=false
+    - expertise=agentic AI engineering
+    - max_output=40%
+    - task=You are given one JSON object, which you will convert into markdown.
+      The object has a title, a URL, and the page content, which you will
+      convert into a heading (from title) and a summary of the content (from
+      'content' field). The summary text should still keep the URL on the top of
+      the summary, then the summarized text below it. The summary should be
+      concise, clear, and informative.
 
 ## Save summary
 

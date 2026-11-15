@@ -956,7 +956,10 @@ fn act_with_debug_writes_agent_debug_output_only() {
     let mut out = Vec::new();
     assert!(actor.act_with("", Some(&mut out)).is_err());
     let out = String::from_utf8(out).unwrap();
-    assert!(out.contains("=== agent:coder (p) configuration ==="), "{out}");
+    assert!(
+        out.contains("=== agent:coder (p) configuration ==="),
+        "{out}"
+    );
     assert!(out.contains("=== agent:coder (p) step 1: request"), "{out}");
 
     let mut out = Vec::new();

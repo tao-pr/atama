@@ -32,9 +32,10 @@ Some actions accept a value in double quotes, so that the value can have
 spaces, as in `task="Fix the failing test."`. Inside quotes, `\"` is a quote
 and `\\` is a backslash. Atama removes the quotes before it uses the value.
 
-These actions accept quotes: `websearch`, `agent:<type>`, `read_file`,
-`list_files` and `write_file`. The other actions split the line at each space, and they keep
-quote characters as they are.
+These actions accept quotes: `websearch`, `read_file`, `list_files` and
+`write_file`. The options of `agent:<type>` also accept quotes, but they do
+not need them (see [`agent:<type>`](#agenttype)). The other actions split the
+line at each space, and they keep quote characters as they are.
 
 ## `bash`
 
@@ -232,7 +233,10 @@ number, or if the query is empty. A word with an unknown key, as in
 ## `agent:<type>`
 
 ```text
-agent:<type> model=<profile> [options...]
+agent:<type>
+  - model=<profile>
+  - <key>=<value>
+  - ...
 ```
 
 Sends a task to a chat model and runs the tools that the model asks for. The
@@ -243,9 +247,29 @@ The model must support tool calls. It must be on a server with an OpenAI
 compatible `/chat/completions` endpoint, such as OpenAI, Ollama, vLLM or LM
 Studio. To set up the model, see "Model profiles" in [README.md](README.md).
 
-Each word after `agent:<type>` is a `key=value` option. An unknown option, or
-a word without `=`, makes the action fail. Put a value with spaces in double
-quotes (see [Quotes in parameters](#quotes-in-parameters)).
+The options of an agent are a list under the action, one `- <key>=<value>`
+bullet on each line. Indent the bullets more than the bullet of the action.
+An option on the line of the action, as in `agent:coder model=local-qwen`,
+stops the job before it starts. An unknown option, or an item without `=`,
+also stops the job.
+
+A value can have spaces, and it needs no quotes. If the whole value is in
+double quotes, Atama removes them (see
+[Quotes in parameters](#quotes-in-parameters)). To write a long value on
+more than one line, indent the next lines more than the bullet. Atama joins
+the lines with one space:
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - max_steps=15
+    - task=Write a Python program that prints the first 10 prime numbers.
+      Save it to ./output/primes.py and run it with python3.
+```
+
+In a `foreach agent:<type>` action, the list goes under the `foreach` line
+in the same way.
 
 Options of every agent:
 
@@ -274,7 +298,9 @@ permissions. Use it only in a directory and with a model that you trust.
 
 ```markdown
 - actions:
-  - agent:coder model=local-qwen task="Fix the failing test."
+  - agent:coder
+    - model=local-qwen
+    - task=Fix the failing test.
 ```
 
 ### `agent:summarizer`
@@ -300,7 +326,10 @@ The size of `max_output=` is one of these:
 ```markdown
 - actions:
   - read_file ./notes.md
-  - agent:summarizer model=local-qwen expertise="software engineering" max_output="3 sentences"
+  - agent:summarizer
+    - model=local-qwen
+    - expertise=software engineering
+    - max_output=3 sentences
 ```
 
 ### `agent:autonomous`
@@ -373,8 +402,18 @@ the paths that you name, but it does not limit the other commands.
 
 ```markdown
 - actions:
-  - agent:autonomous model=local-qwen task="Make all tests pass." success_check="cargo test" max_time=20m protect="tests/**"
-  - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." toolGuard=judge
+  - agent:autonomous
+    - model=local-qwen
+    - task=Make all tests pass.
+    - success_check=cargo test
+    - max_time=20m
+    - protect=tests/**
+  - agent:autonomous
+    - model=local-qwen
+    - task=Write a README for this project.
+    - success=The README explains how to install, configure and run the tool.
+    - guardrails=Do not change source files.
+    - toolGuard=judge
 ```
 
 #### Steps of a run
@@ -433,7 +472,11 @@ fails before the first request. To use `protect=` on another system, remove
 
 ```markdown
 - actions:
-  - agent:autonomous model=local-qwen task="Fix the bug in the parser." success_check="cargo test" protect="tests/**,Cargo.toml,.env"
+  - agent:autonomous
+    - model=local-qwen
+    - task=Fix the bug in the parser.
+    - success_check=cargo test
+    - protect=tests/**,Cargo.toml,.env
 ```
 
 #### Loop blocks
@@ -466,7 +509,10 @@ tools:
 ## Fix
 
 - actions:
-  - agent:autonomous model=local-qwen loop=fix-tests task="Make all tests pass."
+  - agent:autonomous
+    - model=local-qwen
+    - loop=fix-tests
+    - task=Make all tests pass.
 ````
 
 Each line is `<key>: <value>`. A key with no value starts a list, and each

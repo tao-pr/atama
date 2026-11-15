@@ -9,8 +9,8 @@
 //! small-budget: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1, token_budget=50000
 //! ```
 //!
-//! An agent action then selects a profile by its name, as in
-//! `agent:coder model=local-qwen`. The job file never holds an API key:
+//! An agent action then selects a profile by its name, with the option
+//! `- model=local-qwen` in its list. The job file never holds an API key:
 //! `api_key=` is the name of the environment variable that holds the key.
 
 use std::collections::BTreeMap;

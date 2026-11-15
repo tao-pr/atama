@@ -35,10 +35,25 @@
 //!     is any other action, as in `foreach bash wc -c`.
 //!   - `mock fail` is [`Actor::MockFail`]. `mock` with any other parameters
 //!     is [`Actor::MockPlaceholder`].
-//!   - `agent:<type> model=<profile> [params...]` is [`Actor::AgentTool`].
-//!     The type is `coder` or `summarizer`. The profile must be in the
+//!   - `agent:<type>` is [`Actor::AgentTool`]. The type is `coder`,
+//!     `summarizer` or `autonomous`. The options of the agent are not on
+//!     the line of the action. They are a list under it, one
+//!     `- <key>=<value>` bullet for each option, indented more than the
+//!     action. A value can be in double quotes. An indented line without a
+//!     bullet continues the value of the option above it, after a space:
+//!
+//!     ```markdown
+//!     - actions:
+//!       - agent:coder
+//!         - model=local-qwen
+//!         - max_steps=15
+//!         - task=Fix the failing test.
+//!     ```
+//!
+//!     `model=<profile>` is necessary, and the profile must be in the
 //!     ```` ```config ```` block. If `output_schema=` has a name, not a
-//!     path, the job must have a schema block with that name.
+//!     path, the job must have a schema block with that name. A
+//!     `foreach agent:<type>` action has the list in the same way.
 //! - Lines inside ``` code fences are always treated as description text.
 
 use std::collections::{HashMap, HashSet};
@@ -90,6 +105,20 @@ enum Block {
     Loop(String),
 }
 
+/// An action of a task that the parser read, but did not parse yet,
+/// because the list of its options can follow on the next lines.
+struct PendingAction {
+    /// The text of the action bullet, without the bullet marker.
+    text: String,
+    /// The line number of the action bullet.
+    line: usize,
+    /// The indentation of the action bullet. A bullet with more
+    /// indentation is an option of the action.
+    indent: usize,
+    /// The line number and the text of each option bullet.
+    options: Vec<(usize, String)>,
+}
+
 struct ParsedTask {
     task: Task,
     description: Vec<String>,
@@ -106,6 +135,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut job_description: Vec<String> = Vec::new();
     let mut tasks: Vec<ParsedTask> = Vec::new();
     let mut in_actions = false;
+    let mut pending: Option<PendingAction> = None;
     let mut in_code_block = false;
     let mut profiles = Profiles::new();
     let mut schemas = Schemas::new();
@@ -198,6 +228,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 
         if !in_code_block {
             if let Some(id) = heading(line, "##") {
+                if let Some(current) = tasks.last_mut() {
+                    flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+                }
                 if name.is_none() {
                     return Err(ParseError::new(
                         line_no,
@@ -258,26 +291,45 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         };
 
         if in_code_block || line.trim_start().starts_with("```") {
+            flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
             in_actions = false;
             current.description.push(line.to_string());
             continue;
         }
 
         if in_actions {
-            let is_indented = line.starts_with(' ') || line.starts_with('\t');
-            if let Some(action) = bullet_text(line.trim_start()).filter(|_| is_indented) {
-                current.task.actions.push(parse_action(
-                    action.trim(),
-                    line_no,
-                    &profiles,
-                    &schemas,
-                    &loops,
-                )?);
+            let indent = indentation(line);
+            let deeper = pending
+                .as_ref()
+                .is_some_and(|action| indent > action.indent);
+            if let Some(item) = bullet_text(line.trim_start()).filter(|_| indent > 0) {
+                if let Some(action) = pending.as_mut().filter(|_| deeper) {
+                    action.options.push((line_no, item.trim().to_string()));
+                    continue;
+                }
+                flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+                pending = Some(PendingAction {
+                    text: item.trim().to_string(),
+                    line: line_no,
+                    indent,
+                    options: Vec::new(),
+                });
                 continue;
             }
             if line.trim().is_empty() {
                 continue;
             }
+            // An indented line without a bullet continues the last option.
+            if let Some((_, option)) = pending
+                .as_mut()
+                .filter(|_| deeper)
+                .and_then(|action| action.options.last_mut())
+            {
+                option.push(' ');
+                option.push_str(line.trim());
+                continue;
+            }
+            flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
             in_actions = false;
         }
 
@@ -314,10 +366,14 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     }
                     current.task.max_parallel = max;
                     if !value.is_empty() {
-                        current
-                            .task
-                            .actions
-                            .push(parse_action(value, line_no, &profiles, &schemas, &loops)?);
+                        current.task.actions.push(parse_action(
+                            value,
+                            line_no,
+                            &[],
+                            &profiles,
+                            &schemas,
+                            &loops,
+                        )?);
                     }
                     in_actions = true;
                 }
@@ -347,6 +403,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         current.description.push(line.to_string());
     }
 
+    if let Some(current) = tasks.last_mut() {
+        flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+    }
     if let Some((start, kind, _)) = open_block {
         let block = match kind {
             Block::Config => "```config".to_string(),
@@ -380,7 +439,33 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     })
 }
 
-/// Parses an action. An agent action also gets the model profile that its
+/// Parses the pending action, if there is one, and adds it to the actions
+/// of `task`.
+fn flush(
+    pending: &mut Option<PendingAction>,
+    task: &mut Task,
+    profiles: &Profiles,
+    schemas: &Schemas,
+    loops: &LoopBlocks,
+) -> Result<(), ParseError> {
+    if let Some(action) = pending.take() {
+        task.actions.push(parse_action(
+            &action.text,
+            action.line,
+            &action.options,
+            profiles,
+            schemas,
+            loops,
+        )?);
+    }
+    Ok(())
+}
+
+/// Parses an action and the list of its options. Only an agent action
+/// takes options, and only from the list, not from the line of the action.
+/// Each item of `options` is its line number and its text.
+///
+/// An agent action also gets the model profile that its
 /// `model=` names, the schema block that its `output_schema=` names, the
 /// loop block that its `loop=` names, and the model profile that its
 /// `judge_model=` names. Then the parser makes sure that the
@@ -389,6 +474,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 fn parse_action(
     value: &str,
     line: usize,
+    options: &[(usize, String)],
     profiles: &Profiles,
     schemas: &Schemas,
     loops: &LoopBlocks,
@@ -399,6 +485,35 @@ fn parse_action(
         Actor::ForEach(inner) => inner.as_mut(),
         other => other,
     };
+    match agent_actor {
+        Actor::AgentTool { agent, params, .. } => {
+            if !params.is_empty() {
+                return Err(ParseError::new(
+                    line,
+                    format!(
+                        "put the options of `agent:{agent}` in a list under the action, one \
+                         `- <key>=<value>` bullet on each line, as in `- model=<profile>`"
+                    ),
+                ));
+            }
+            *params = options
+                .iter()
+                .map(|(line, text)| unquote_option(text).map_err(|m| ParseError::new(*line, m)))
+                .collect::<Result<_, _>>()?;
+        }
+        _ => {
+            if let Some((option_line, text)) = options.first() {
+                return Err(ParseError::new(
+                    *option_line,
+                    format!(
+                        "`{text}` is indented under an action that takes no list of options, \
+                         only `agent:<type>` takes one. To add an action, indent its bullet as \
+                         much as the other actions"
+                    ),
+                ));
+            }
+        }
+    }
     if let Actor::AgentTool {
         agent,
         params,
@@ -469,6 +584,15 @@ fn validate(tasks: &[ParsedTask]) -> Result<(), ParseError> {
     }
 
     Ok(())
+}
+
+/// The indentation of a line in columns. A tab is 4 columns, as in
+/// Markdown, and any other whitespace character is 1 column.
+fn indentation(line: &str) -> usize {
+    line.chars()
+        .take_while(|c| c.is_whitespace())
+        .map(|c| if c == '\t' { 4 } else { 1 })
+        .sum()
 }
 
 /// Returns the text after a `- ` or `* ` bullet marker.
@@ -670,6 +794,28 @@ impl FromStr for Actor {
                 )),
             },
         }
+    }
+}
+
+/// Reads one item of the list of options of an agent action. If the value
+/// after `=` is all in double quotes, the quotes go away, with the same rules
+/// as in [`split_quoted`]. `max_output="40%"` becomes `max_output=40%`. Any
+/// other text does not change, so a value can have spaces without quotes.
+///
+/// Fails if the value has text after its closing quote.
+fn unquote_option(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    let Some((key, value)) = text.split_once('=') else {
+        return Ok(text.to_string());
+    };
+    if !(value.len() >= 2 && value.starts_with('"') && value.ends_with('"')) {
+        return Ok(text.to_string());
+    }
+    match split_quoted(value)?.as_slice() {
+        [value] => Ok(format!("{key}={value}")),
+        _ => Err(format!(
+            "the value of `{key}` has text after its closing quote, in `{text}`"
+        )),
     }
 }
 

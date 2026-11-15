@@ -50,8 +50,8 @@ fn colors_task_titles_and_hooks() {
 fn highlights_the_agent_type_of_agent_actions() {
     let job = parse_job(
         "```config\np: model=m, base_url=http://x.test\n```\n\
-         # Job\n## Research\n- actions:\n  - agent:summarizer model=p expertise=law\n  \
-         - foreach agent:coder model=p\n  - bash ls\n",
+         # Job\n## Research\n- actions:\n  - agent:summarizer\n    - model=p\n    - expertise=law\n  \
+         - foreach agent:coder\n    - model=p\n  - bash ls\n",
     )
     .expect("job should parse");
 
