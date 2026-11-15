@@ -409,6 +409,39 @@ pub fn run_bash(
     run_command(command, "bash", cmd, input, deadline_time)
 }
 
+/// Runs `cmd` in bash inside `sandbox-exec` with the sandbox profile
+/// `profile`, until `deadline_time`, and returns its stdout. The `bash`
+/// tool of an agent with `protect=` runs its commands so (see
+/// [`crate::protect::Protect::sandbox_profile`]).
+///
+/// Fails as [`run_command`] fails, for example if the sandbox denies a
+/// write and the command then exits with a non-zero status.
+#[cfg(target_os = "macos")]
+pub fn run_bash_in_sandbox(
+    cmd: &str,
+    profile: &str,
+    deadline_time: Option<Instant>,
+) -> Result<String, String> {
+    let mut command = Command::new("/usr/bin/sandbox-exec");
+    command
+        .arg("-p")
+        .arg(profile)
+        .arg("bash")
+        .arg("-c")
+        .arg(cmd);
+    run_command(command, "sandbox-exec", cmd, "", deadline_time)
+}
+
+/// Fails, because only macOS has `sandbox-exec`.
+#[cfg(not(target_os = "macos"))]
+pub fn run_bash_in_sandbox(
+    _cmd: &str,
+    _profile: &str,
+    _deadline_time: Option<Instant>,
+) -> Result<String, String> {
+    Err("`protect=` needs `sandbox-exec` for the `bash` tool, which only macOS has".to_string())
+}
+
 /// The macOS sandbox profile of [`Actor::BashSandbox`]: no network, no
 /// `sudo`, `su` or `login`, and files only in the working directory, which
 /// is the `CWD` parameter. The command can also read the system

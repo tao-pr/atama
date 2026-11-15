@@ -104,6 +104,7 @@ dependencies = [
  "clap",
  "jsonschema",
  "libc",
+ "regex",
  "serde_json",
  "ureq",
 ]

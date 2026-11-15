@@ -184,7 +184,7 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`toolGuard=`, `max_violations=`, `loop=` and `judge_model=`. Other
+`toolGuard=`, `max_violations=`, `protect=`, `loop=` and `judge_model=`. Other
 agent types fail on the options of another type (`only_for`). A value can be in double quotes, so that it can have spaces,
 as in
 `task="Fix the failing test."`. The parser (`split_quoted` in
@@ -346,8 +346,7 @@ time limit of the run is used". Tests of the deadline are in
 The debug headers of a run with more than one iteration name the
 iteration, as in `iteration 2 step 3`. With a time limit, the request
 header shows the used time, as in `41s of 30m`. Tests of the agent are in
-`tests/autonomous.rs`. The plan of the next phases is in
-`PLAN-autonomous-loop.md`.
+`tests/autonomous.rs`.
 
 ### Judges of the `autonomous` agent
 
@@ -375,6 +374,41 @@ arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
 fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Protected paths
+
+`protect=<patterns>` names the paths that the tools of an `autonomous`
+agent cannot write. The code is in `src/protect.rs`. Commas or new lines
+separate the patterns, so a loop block can have a `protect:` list.
+`parse_patterns` and `check_pattern` read them when the job is parsed.
+
+A pattern is a glob, relative to the working directory or absolute. `*`
+and `?` match in one part of the path, also a name that starts with `.`.
+`**` as a whole part matches any number of parts. A class, as in `[a-z]`
+or `[!x]`, can have only letters, digits, `-`, `_` and `.`. A pattern also
+protects the paths below the path that it matches.
+
+`run_loop_with_env` makes a `Protect` with `Protect::new`. It resolves each
+pattern against the working directory. The fixed part of the pattern, before
+its first glob, becomes a real path without symbolic links. Each pattern
+becomes one regular expression. `run_with` gives the `Protect` to each tool
+with `Tool::set_protect`, and adds `Protect::instruction` to the system
+prompt. Two tools use it:
+
+- `write_file` calls `Protect::check_write` before it writes. The check
+  resolves the real path of the target, so a symbolic link or a `..` does
+  not get past it.
+- `bash` runs its command with `actor::run_bash_in_sandbox`, inside
+  `sandbox-exec` with `Protect::sandbox_profile`. The profile allows all,
+  but denies writes to the protected paths. It also denies writes to the
+  directories above them, so a command cannot delete or rename a parent
+  directory. macOS enforces the profile, whatever the command is.
+
+Only macOS has `sandbox-exec`. On another system, `run_loop_with_env`
+fails if the agent has the `bash` tool and `protect=`. The success check
+runs without the sandbox, because the job, not the model, writes it.
+The sandbox does not stop a command that asks another process to write,
+for example a daemon or `osascript`. Tests are in `tests/protect.rs`.
 
 ### Context compaction
 

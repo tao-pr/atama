@@ -16,6 +16,26 @@ fn parse(lines: &[&str]) -> Result<LoopBlock, (usize, String)> {
 }
 
 #[test]
+fn a_protect_list_becomes_the_patterns_of_the_action() {
+    let block = parse(&[
+        "success_check: true",
+        "protect:",
+        "  - src/**",
+        "  - Cargo.toml",
+    ])
+    .unwrap();
+    assert_eq!(
+        block.params,
+        params(&["success_check=true", "protect=- src/**\n- Cargo.toml"])
+    );
+    let value = block.params[1].split_once('=').unwrap().1;
+    assert_eq!(
+        atama::protect::parse_patterns(value).unwrap(),
+        vec!["src/**", "Cargo.toml"]
+    );
+}
+
+#[test]
 fn reads_the_name_of_a_loop_fence() {
     assert_eq!(block_name("```loop:fix-tests"), Some("fix-tests"));
     assert_eq!(block_name("  ```loop: fix "), Some("fix"));
@@ -99,7 +119,8 @@ fn rejects_invalid_lines() {
             0,
             "unknown key `model` in loop block `fix`, expected `task`, `max_steps`, \
              `token_budget`, `max_context`, `thinking`, `max_iterations`, `max_time`, `success_check`, \
-             `success`, `guardrails`, `toolGuard`, `max_violations`, `judge_model` or `tools`",
+             `success`, `guardrails`, `toolGuard`, `max_violations`, `protect`, `judge_model` or \
+             `tools`",
         ),
         (
             &["success: a", "success: b"],

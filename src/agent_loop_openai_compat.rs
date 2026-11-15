@@ -38,6 +38,7 @@
 //! different port, change the URL.
 
 use std::io::Write;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -45,6 +46,7 @@ use serde_json::Value;
 use crate::actor::AgentType;
 use crate::loop_block::LoopBlock;
 use crate::profile::ModelProfile;
+use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};
 
 pub mod agent_options;
@@ -120,6 +122,10 @@ pub trait Tool {
     /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
     /// The default does nothing.
     fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
+    /// Sets the protected paths of the run, from `protect=`. A tool that
+    /// writes files must not write them, as `bash` and `write_file` do (see
+    /// [`crate::protect`]). The default does nothing.
+    fn set_protect(&mut self, _protect: Option<Arc<Protect>>) {}
 }
 
 /// A chat model that can call tools.
@@ -166,6 +172,8 @@ pub struct AgentToolLoop<'a> {
     guardrails: Option<String>,
     /// How the loop enforces the guardrails.
     guard: ToolGuard,
+    /// The paths that the tools must not write, if set.
+    protect: Option<Arc<Protect>>,
     /// The most tool calls that the guard blocks before the run fails.
     max_violations: u32,
     /// The most tokens that one run can use, if set.
@@ -210,6 +218,7 @@ impl<'a> AgentToolLoop<'a> {
             success: None,
             guardrails: None,
             guard: ToolGuard::Prompt,
+            protect: None,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             token_budget: None,
             max_context: None,
@@ -340,6 +349,14 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets the paths that the tools must not write (see [`crate::protect`]).
+    /// [`AgentToolLoop::run_with`] gives them to each tool, and tells the
+    /// model about them in the system prompt.
+    pub fn protect(mut self, protect: Option<Protect>) -> Self {
+        self.protect = protect.map(Arc::new);
+        self
+    }
+
     /// Sets the guardrails, rules in natural language that the loop puts
     /// into the system prompt.
     pub fn guardrails(mut self, guardrails: Option<String>) -> Self {
@@ -462,6 +479,19 @@ impl<'a> AgentToolLoop<'a> {
             self.guardrails = options.guardrails.clone();
             self.guard = options.guard;
             self.max_violations = options.max_violations;
+            if !options.protect.is_empty() {
+                let cwd = crate::protect::working_dir()?;
+                self.protect = Some(Arc::new(Protect::new(&options.protect, &cwd)?));
+                // Only `sandbox-exec` keeps a bash command from the paths.
+                #[cfg(not(target_os = "macos"))]
+                if self.tools.iter().any(|tool| tool.name() == "bash") {
+                    return Err(
+                        "`protect=` needs `sandbox-exec` for the `bash` tool, which only macOS \
+                         has. Remove `bash` from `tools:` of the loop block"
+                            .to_string(),
+                    );
+                }
+            }
         }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
@@ -557,6 +587,9 @@ impl<'a> AgentToolLoop<'a> {
                 "{system}\n\nGuardrails. You must obey these rules in all your work:\n{guardrails}"
             );
         }
+        if let Some(protect) = &self.protect {
+            system = format!("{system}\n\n{}", protect.instruction());
+        }
         if let Some(schema) = &self.output_schema {
             system = format!("{system}\n\n{}", schema.instruction());
         }
@@ -570,6 +603,7 @@ impl<'a> AgentToolLoop<'a> {
         let deadline_time = budget.deadline_time();
         for tool in &mut self.tools {
             tool.set_deadline_time(deadline_time);
+            tool.set_protect(self.protect.clone());
         }
         let mut checks: Vec<Box<dyn FinalLoopCheck>> = Vec::new();
         if let Some(schema) = &self.output_schema {

@@ -1654,7 +1654,7 @@ fn rejects_invalid_loop_blocks_and_agent_options() {
             "unknown option `max_step`, expected `model=`, `max_steps=`, `token_budget=`, \
              `max_context=`, `task=`, `thinking=`, `output_schema=`, `expertise=`, `max_output=`, \
              `max_iterations=`, `max_time=`, `success_check=`, `guardrails=`, `success=`, \
-             `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `toolGuard=`, `max_violations=`, `protect=`, `loop=`, `judge_model=`",
         ),
     ];
     for (text, line, message) in cases {

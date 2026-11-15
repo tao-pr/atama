@@ -172,7 +172,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`",
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `loop=`, `judge_model=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -386,7 +386,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `loop=`, `judge_model=`"
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `loop=`, `judge_model=`"
                 .into(),
         ),
         (
@@ -483,6 +483,7 @@ fn autonomous_reads_its_options_with_defaults() {
             guardrails: None,
             guard: ToolGuard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
+            protect: Vec::new(),
             loop_name: None,
             judge_model: None,
         })
@@ -499,6 +500,7 @@ fn autonomous_reads_its_options_with_defaults() {
         "success=All tests pass.",
         "toolGuard=judge",
         "max_violations=2",
+        "protect=src/**,Cargo.toml",
     ])
     .unwrap();
     assert_eq!(config.max_steps, 7);
@@ -512,6 +514,7 @@ fn autonomous_reads_its_options_with_defaults() {
             guardrails: Some("Do not push.".into()),
             guard: ToolGuard::Judge,
             max_violations: 2,
+            protect: vec!["src/**".into(), "Cargo.toml".into()],
             loop_name: None,
             judge_model: None,
         })
@@ -520,13 +523,14 @@ fn autonomous_reads_its_options_with_defaults() {
         config.summary(),
         "profile: m\nmodel: model-1\nbase_url: http://x.test/v1\nmax_steps: 7\napi key: not set\n\
          max_iterations: 2\nmax_time: 90s\nsuccess_check: true\nsuccess: All tests pass.\n\
-         guardrails: Do not push.\ntoolGuard: judge\nmax_violations: 2\njudge_model: not set"
+         guardrails: Do not push.\ntoolGuard: judge\nmax_violations: 2\n\
+         protect: src/**, Cargo.toml\njudge_model: not set"
     );
     let config = autonomous(&["model=m", "success=done", "toolGuard=prompt"]).unwrap();
     assert!(
         config.summary().ends_with(
             "\nmax_time: 30m\nsuccess_check: not set\nsuccess: done\nguardrails: not set\n\
-             toolGuard: prompt\nmax_violations: 3\njudge_model: not set"
+             toolGuard: prompt\nmax_violations: 3\nprotect: not set\njudge_model: not set"
         ),
         "{}",
         config.summary()
@@ -567,6 +571,11 @@ fn autonomous_rejects_invalid_options() {
             vec!["model=m", "success_check=true", "expertise=law"],
             "option `expertise` works only with `agent:summarizer`",
         ),
+        (
+            vec!["model=m", "success_check=true", "protect=src/a**"],
+            "the `protect` pattern `src/a**` has a `**` that is not a whole part of the path, \
+             as in `src/**/a.rs`",
+        ),
     ];
     for (words, expected) in cases {
         assert_eq!(
@@ -588,6 +597,7 @@ fn other_agents_reject_the_options_of_autonomous() {
             "guardrails=x",
             "toolGuard=judge",
             "max_violations=1",
+            "protect=src",
         ] {
             let key = option.split_once('=').unwrap().0;
             let err = AgentConfig::from_params(

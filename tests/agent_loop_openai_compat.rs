@@ -297,7 +297,7 @@ fn file_tools_write_read_and_list_files() {
     let path = dir.join("sub/a.txt");
     let path = path.to_str().unwrap();
 
-    let result = WriteFile
+    let result = WriteFile::default()
         .call(&json!({"path": path, "content": "héllo"}))
         .unwrap();
     assert_eq!(result, format!("wrote 5 characters to `{path}`"));
@@ -327,12 +327,12 @@ fn file_tools_fail_on_missing_or_wrong_arguments() {
             "missing string argument `path`",
         ),
         (
-            Box::new(WriteFile),
+            Box::new(WriteFile::default()),
             json!({"content": "x"}),
             "missing string argument `path`",
         ),
         (
-            Box::new(WriteFile),
+            Box::new(WriteFile::default()),
             json!({"path": "x"}),
             "missing string argument `content`",
         ),
@@ -1246,6 +1246,59 @@ fn run_loop_sends_thinking_false_to_the_server() {
     assert_eq!(request["reasoning_effort"], "none");
     let request = run(&["model=m", "task=t"]);
     assert!(request.get("reasoning_effort").is_none(), "{request}");
+}
+
+#[test]
+fn run_loop_puts_the_protected_paths_into_the_system_prompt() {
+    let (url, requests) = serve(vec![(200, text_response("done"))]);
+    let words = [
+        "model=m",
+        "task=t",
+        "success_check=true",
+        "protect=target/atama-protect-loop/**,Cargo.lock",
+    ];
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .run_loop_with_env(&params(&words), Some(&profile(&url)), "", &no_env)
+        .unwrap();
+    assert_eq!(output, "done");
+    let request = request_json(&requests.recv().unwrap());
+    let system = request["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.ends_with(
+            "A tool call that tries fails: `target/atama-protect-loop/**`, `Cargo.lock`"
+        ),
+        "{system}"
+    );
+}
+
+#[test]
+fn a_protected_write_file_call_gives_the_model_the_error() {
+    let dir = std::env::temp_dir().join(format!("atama-loop-protect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let target = format!("{}/keep/a.txt", dir.display());
+    let arguments = json!({"path": target, "content": "x"}).to_string();
+    let mut client = ScriptedClient::new(vec![
+        Ok(calls(&[("c1", "write_file", &arguments)])),
+        Ok(text("done")),
+    ]);
+    let protect = atama::protect::Protect::new(&["keep".to_string()], &dir).unwrap();
+    let output = AgentToolLoop::new(AgentType::Autonomous)
+        .protect(Some(protect))
+        .run_with(&mut client, "task", "")
+        .unwrap();
+    assert_eq!(output, "done");
+    let last = client.conversations.last().unwrap().last().unwrap();
+    assert_eq!(
+        last,
+        &Message::Tool {
+            call_id: "c1".into(),
+            content: format!(
+                "error: `{target}` is protected by `protect=keep`, so the agent cannot write it"
+            ),
+        }
+    );
+    assert!(!dir.join("keep").exists());
 }
 
 #[test]

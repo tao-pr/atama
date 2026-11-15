@@ -27,7 +27,7 @@ pub const DEFAULT_EXPERTISE: &str = "general";
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 18] = [
+const OPTION_KEYS: [&str; 19] = [
     "model",
     "max_steps",
     "token_budget",
@@ -44,6 +44,7 @@ const OPTION_KEYS: [&str; 18] = [
     "success",
     "toolGuard",
     "max_violations",
+    "protect",
     "loop",
     "judge_model",
 ];
@@ -137,6 +138,9 @@ pub struct AutonomousOptions {
     /// From `max_violations=<n>`: the most tool calls that the guard blocks
     /// before the run fails. The default is [`DEFAULT_MAX_VIOLATIONS`].
     pub max_violations: u32,
+    /// From `protect=<patterns>`: the globs of the paths that the tools
+    /// must not write (see [`crate::protect`]). Empty protects no path.
+    pub protect: Vec<String>,
     /// From `loop=<name>`: the name of the loop block of the action (see
     /// [`crate::loop_block`]).
     pub loop_name: Option<String>,
@@ -156,13 +160,14 @@ struct AutonomousValues {
     guardrails: Option<String>,
     guard: Option<String>,
     max_violations: Option<String>,
+    protect: Option<String>,
     loop_name: Option<String>,
     judge_model: Option<String>,
 }
 
 impl AutonomousValues {
     /// The key and the value of each option.
-    fn options(&self) -> [(&'static str, &Option<String>); 9] {
+    fn options(&self) -> [(&'static str, &Option<String>); 10] {
         [
             ("max_iterations", &self.max_iterations),
             ("max_time", &self.max_time),
@@ -171,6 +176,7 @@ impl AutonomousValues {
             ("guardrails", &self.guardrails),
             ("toolGuard", &self.guard),
             ("max_violations", &self.max_violations),
+            ("protect", &self.protect),
             ("loop", &self.loop_name),
             ("judge_model", &self.judge_model),
         ]
@@ -221,6 +227,10 @@ impl AutonomousOptions {
             max_violations: match values.max_violations {
                 None => DEFAULT_MAX_VIOLATIONS,
                 Some(value) => positive("max_violations", &value)?,
+            },
+            protect: match values.protect {
+                None => Vec::new(),
+                Some(value) => crate::protect::parse_patterns(&value)?,
             },
             loop_name: values.loop_name,
             judge_model: values.judge_model,
@@ -477,6 +487,7 @@ impl Values {
                 "guardrails" => &mut values.autonomous.guardrails,
                 "toolGuard" => &mut values.autonomous.guard,
                 "max_violations" => &mut values.autonomous.max_violations,
+                "protect" => &mut values.autonomous.protect,
                 "loop" => &mut values.autonomous.loop_name,
                 "judge_model" => &mut values.autonomous.judge_model,
                 _ => {
@@ -637,7 +648,7 @@ impl AgentConfig {
             let or_not_set = |value: &Option<String>| value.clone().unwrap_or("not set".into());
             summary.push_str(&format!(
                 "\nmax_iterations: {}\nmax_time: {}\nsuccess_check: {}\nsuccess: {}\n\
-                 guardrails: {}\ntoolGuard: {}\nmax_violations: {}\njudge_model: {}",
+                 guardrails: {}\ntoolGuard: {}\nmax_violations: {}\nprotect: {}\njudge_model: {}",
                 options.max_iterations,
                 format_duration(options.max_time),
                 or_not_set(&options.success_check),
@@ -645,6 +656,11 @@ impl AgentConfig {
                 or_not_set(&options.guardrails),
                 options.guard,
                 options.max_violations,
+                if options.protect.is_empty() {
+                    "not set".to_string()
+                } else {
+                    options.protect.join(", ")
+                },
                 or_not_set(&options.judge_model),
             ));
         }

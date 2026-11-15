@@ -34,7 +34,7 @@ use crate::agent_loop_openai_compat::tools::{
 use crate::schema::{MAX_NAME_CHARS, is_name};
 
 /// The options of an action that a loop block can set, besides `tools`.
-pub const BLOCK_KEYS: [&str; 13] = [
+pub const BLOCK_KEYS: [&str; 14] = [
     "task",
     "max_steps",
     "token_budget",
@@ -47,6 +47,7 @@ pub const BLOCK_KEYS: [&str; 13] = [
     "guardrails",
     "toolGuard",
     "max_violations",
+    "protect",
     "judge_model",
 ];
 
