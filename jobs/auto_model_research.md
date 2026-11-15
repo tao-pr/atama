@@ -1,6 +1,6 @@
 ```config
 local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
-openai-luna: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
+openai-luna: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY, thinking=false
 ```
 
 ```json:search_query
@@ -100,8 +100,9 @@ openai-luna: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENA
 Research the frontier models of OpenAI, Hugging Face, Anthropic, Grok,
 Gemini, Nemotron, DeepSeek, Kimi and Mistral, and small GGUF models for
 Ollama on a CPU. The research is about tool calls, structured input and
-output, and text analysis. Needs Ollama with `local-spark2`,
-`OPENAI_API_KEY` for `openai-luna`, `TAVILY_API_KEY` and `jq`.
+output, and text analysis. `gguf.md` lists the GGUF models at the end.
+Needs Ollama with `local-spark2`, `OPENAI_API_KEY` for `openai-luna`,
+`TAVILY_API_KEY`, `jq`, and macOS for `protect=`.
 
 ```bash
 cargo run -- jobs/auto_model_research.md
@@ -221,3 +222,36 @@ appends one line for each model to `gguf.jsonl`.
   - bash jq -c -n --slurpfile m ./output/model_research/models.jsonl [$m,[inputs]]|transpose[]|select(.[1])|.[0]+.[1]
   - bash tee -a ./output/model_research/gguf.jsonl
 - if_fail: retry=1
+
+## List All GGUF Models
+
+`join_gguf_models.sh` keeps the models of `gguf.jsonl` that have a GGUF
+model for Ollama, and adds the name, params, release date, short
+description and URL from the `models-*.json` files. `gguf_models.jsonl` has
+one model on each line. An `autonomous` agent then writes `gguf.md`, until
+`check_gguf_md.sh` finds each model and each GGUF name in it. The agent
+cannot change the checker or its input, because `protect=` blocks each
+write to them.
+
+- skip_if: exists-nonempty(./output/model_research/gguf.md)
+- actions:
+  - bash ./jobs/scripts/join_gguf_models.sh ./output/model_research
+  - write_file ./output/model_research/gguf_models.jsonl
+  - agent:autonomous
+    - model=openai-luna
+    - max_iterations=3
+    - max_time=5m
+    - success_check=./jobs/scripts/check_gguf_md.sh ./output/model_research/gguf_models.jsonl ./output/model_research/gguf.md
+    - task=Write ./output/model_research/gguf.md, a Markdown list of all GGUF
+      models for Ollama. The input, also in
+      ./output/model_research/gguf_models.jsonl, has one model on each line.
+      Start with a "# GGUF Models for Ollama" heading. Make one "##" section
+      for each model, grouped by provider, with the model name, the provider,
+      the number of parameters, the release date, the short description and
+      the URL of the model card. Write "unknown" for a value that is null or
+      0. Under each model, make a table of its GGUF models, with the Ollama
+      name in backticks and the URL of the page. Use only the data of the
+      input, and do not leave out a model or a GGUF model.
+    - protect=./jobs/scripts/check_gguf_md.sh, ./output/model_research/gguf_models.jsonl
+    - guardrails=Write files only in ./output/model_research/.
+  - read_file ./output/model_research/gguf.md

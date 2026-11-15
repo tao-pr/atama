@@ -17,6 +17,14 @@ const WRITE_BY_KEY_SCRIPT: &str = concat!(
     "/jobs/scripts/write_json_by_key.sh"
 );
 
+const JOIN_GGUF_SCRIPT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/jobs/scripts/join_gguf_models.sh"
+);
+
+const CHECK_GGUF_MD_SCRIPT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/jobs/scripts/check_gguf_md.sh");
+
 /// Whether `jq` is installed. The scripts need it.
 fn has_jq() -> bool {
     Command::new("jq")
@@ -258,4 +266,129 @@ fn write_by_key_fails_if_the_key_is_not_a_file_name() {
 /// The JSON text on one line, as `jq -c` writes it.
 fn compact(text: &str) -> String {
     serde_json::to_string(&serde_json::from_str::<Value>(text).unwrap()).unwrap()
+}
+
+/// Writes the `gguf.jsonl` and `models-*.json` files of the GGUF tests to
+/// a new directory: `a` has two GGUF models, `b` has none, and `c` has one
+/// but no entry in `models-x.json`.
+fn gguf_dir(name: &str) -> PathBuf {
+    let dir = temp_dir(name);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("gguf.jsonl"),
+        concat!(
+            r#"{"provider":"x","model":"a","gguf_models":[{"ollama_name":"hf.co/u/a-GGUF:Q4_K_M","url":"https://h.test/a"},{"ollama_name":"a:1b","url":"https://o.test/a"}]}"#,
+            "\n",
+            r#"{"provider":"x","model":"b","gguf_models":[]}"#,
+            "\n",
+            r#"{"provider":"y","model":"c","gguf_models":[{"ollama_name":"c:2b","url":"https://o.test/c"}]}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("models-x.json"),
+        json!({"provider": "x", "models": [
+            {"name": "b", "params": 1, "release_date": "2026-01-01",
+             "short_description": "B.", "url": "https://m.test/b"},
+            {"name": "a", "params": 7, "release_date": "2026-02-02",
+             "short_description": "A.", "url": "https://m.test/a", "capabilities": []}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn join_gguf_keeps_the_models_with_gguf_and_adds_their_details() {
+    if !has_jq() {
+        eprintln!("skipped: jq is not installed");
+        return;
+    }
+    let dir = gguf_dir("join-gguf");
+
+    let output = run(JOIN_GGUF_SCRIPT, &[dir.as_os_str()], "");
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            json!({"provider": "x", "name": "a", "params": 7, "release_date": "2026-02-02",
+                   "short_description": "A.", "url": "https://m.test/a",
+                   "gguf_models": [
+                       {"ollama_name": "hf.co/u/a-GGUF:Q4_K_M", "url": "https://h.test/a"},
+                       {"ollama_name": "a:1b", "url": "https://o.test/a"}]}),
+            json!({"provider": "y", "name": "c", "params": null, "release_date": null,
+                   "short_description": null, "url": null,
+                   "gguf_models": [{"ollama_name": "c:2b", "url": "https://o.test/c"}]}),
+        ]
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn join_gguf_works_without_models_files() {
+    if !has_jq() {
+        eprintln!("skipped: jq is not installed");
+        return;
+    }
+    let dir = gguf_dir("join-gguf-no-models");
+    fs::remove_file(dir.join("models-x.json")).unwrap();
+
+    let output = run(JOIN_GGUF_SCRIPT, &[dir.as_os_str()], "");
+    assert!(output.status.success(), "{output:?}");
+    let names: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap()["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("a"), json!("c")]);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn check_gguf_md_passes_only_if_each_name_is_in_the_file() {
+    if !has_jq() {
+        eprintln!("skipped: jq is not installed");
+        return;
+    }
+    let dir = gguf_dir("check-gguf-md");
+    let joined = run(JOIN_GGUF_SCRIPT, &[dir.as_os_str()], "");
+    let jsonl = dir.join("gguf_models.jsonl");
+    fs::write(&jsonl, joined.stdout).unwrap();
+    let md = dir.join("gguf.md");
+    let check = || {
+        let output = run(
+            CHECK_GGUF_MD_SCRIPT,
+            &[jsonl.as_os_str(), md.as_os_str()],
+            "",
+        );
+        (
+            output.status.code(),
+            String::from_utf8(output.stdout).unwrap(),
+        )
+    };
+
+    assert_eq!(
+        check(),
+        (Some(1), format!("{} is missing or empty\n", md.display()))
+    );
+
+    fs::write(&md, "## a\n`hf.co/u/a-GGUF:Q4_K_M`\n## c\n").unwrap();
+    assert_eq!(
+        check(),
+        (
+            Some(1),
+            format!("missing in {0}: a:1b\nmissing in {0}: c:2b\n", md.display())
+        )
+    );
+
+    fs::write(&md, "## a\n`hf.co/u/a-GGUF:Q4_K_M`, `a:1b`\n## c\n`c:2b`\n").unwrap();
+    assert_eq!(check(), (Some(0), String::new()));
+    fs::remove_dir_all(dir).unwrap();
 }

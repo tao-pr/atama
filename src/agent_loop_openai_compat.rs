@@ -466,11 +466,10 @@ impl<'a> AgentToolLoop<'a> {
             if let Some(name) = &options.judge_model {
                 let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
                 let api_key = agent_options::read_api_key(judge, env)?;
-                self.judge_client = Some(Box::new(openai::OpenAiClient::new(
-                    &judge.base_url,
-                    &judge.model,
-                    api_key,
-                )));
+                self.judge_client = Some(Box::new(
+                    openai::OpenAiClient::new(&judge.base_url, &judge.model, api_key)
+                        .with_thinking(judge.thinking),
+                ));
             }
             self.max_iterations = options.max_iterations;
             self.max_time = Some(options.max_time);

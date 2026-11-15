@@ -28,6 +28,7 @@ fn profile() -> ModelProfile {
         base_url: "http://x.test/v1".into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     }
 }
 
@@ -713,4 +714,19 @@ fn autonomous_reads_judge_model() {
     ])
     .unwrap();
     assert!(config.autonomous.unwrap().judge_model.is_some());
+}
+
+#[test]
+fn takes_thinking_from_the_profile_unless_the_action_sets_it() {
+    let profile = ModelProfile {
+        thinking: Some(false),
+        ..profile()
+    };
+    let thinking = |words: &[&str]| {
+        AgentConfig::from_params(AgentType::Coder, &params(words), Some(&profile), &no_env)
+            .unwrap()
+            .thinking
+    };
+    assert_eq!(thinking(&["model=m"]), Some(false));
+    assert_eq!(thinking(&["model=m", "thinking=true"]), Some(true));
 }

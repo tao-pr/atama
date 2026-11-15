@@ -172,7 +172,7 @@ A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -185,6 +185,9 @@ on one line of the `config` block:
 - `token_budget=<n>`: the most tokens that one run of an agent can use.
   An `_` between two digits separates groups of digits, as in `100_000`.
   Leave it out for no limit. See "Token budget" below.
+- `thinking=false`: send `"reasoning_effort": "none"` for each action that
+  uses the profile. Use it for a model such as `gpt-6-luna`, which takes
+  tools only without reasoning. A `thinking=` option of the action replaces it.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job

@@ -532,7 +532,11 @@ of each reply shows its tokens and the used budget.
 
 ### Model, debug output and tests
 
-`thinking=false` makes `AgentConfig::thinking` `Some(false)`. Then
+`thinking=false` makes `AgentConfig::thinking` `Some(false)`. A model
+profile can also set `thinking=`, and the option of the action replaces
+it, as with `token_budget=`. The judge client uses the `thinking` of its
+profile. For example, `gpt-6-luna` rejects tools on `/chat/completions`
+unless `reasoning_effort` is `none`, so its profile sets `thinking=false`. Then
 `openai::request_body` adds `"reasoning_effort": "none"`, which turns off
 the thinking of the model on Ollama. Without `thinking=`, or with
 `thinking=true`, the body has no `reasoning_effort`, and the server uses
@@ -540,7 +544,7 @@ its default.
 
 The model comes from a model profile (`src/profile.rs`). A job file can
 start with a ```` ```config ```` block, before the `# <name>` heading. Each
-line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>]`, and
+line is `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]`, and
 `ModelProfile::from_str` reads it. `parse_job` reads the block with
 `profile::parse_profiles`, and `parse_action` uses `profile::resolve` to
 put the profile that `model=<name>` names into `Actor::AgentTool::profile`.

@@ -83,9 +83,9 @@ pub struct AgentConfig {
     pub summarizer: Option<SummarizerOptions>,
     /// The task, the instruction for the model.
     pub task: String,
-    /// From `thinking=<true|false>`. `Some(false)` asks the server to turn
-    /// off the thinking of the model. `None` and `Some(true)` send nothing,
-    /// so the server uses its default.
+    /// From `thinking=<true|false>` of the action, else from the profile.
+    /// `Some(false)` asks the server to turn off the thinking of the model.
+    /// `None` and `Some(true)` send nothing, so the server uses its default.
     pub thinking: Option<bool>,
     /// From `output_schema=<name|path>`: the name of a schema block of the
     /// job, or the path of a JSON schema file (see [`crate::schema::load`]).
@@ -517,8 +517,8 @@ impl AgentConfig {
     /// Fails if a param is not a known option, an option is empty, set twice
     /// or invalid, the params have an option of another agent type, there is
     /// no `model=`, `profile` is not the profile that `model=` names, or the
-    /// environment variable of the API key is not set. `token_budget=` of
-    /// the action replaces the `token_budget` of the profile.
+    /// environment variable of the API key is not set. `token_budget=` and
+    /// `thinking=` of the action replace those of the profile.
     pub fn from_params(
         agent: AgentType,
         params: &[String],
@@ -568,11 +568,8 @@ impl AgentConfig {
             .map(crate::profile::parse_token_budget)
             .transpose()?;
         let thinking = thinking
-            .map(|value| match value.as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => Err(format!("`thinking={value}` is not `true` or `false`")),
-            })
+            .as_deref()
+            .map(crate::profile::parse_thinking)
             .transpose()?;
         let name = model.ok_or_else(|| crate::profile::missing_model(agent))?;
         let profile = named_profile(&name, profile)?;
@@ -587,7 +584,7 @@ impl AgentConfig {
             max_context,
             summarizer,
             task: task.unwrap_or_default(),
-            thinking,
+            thinking: thinking.or(profile.thinking),
             output_schema,
             autonomous,
         })

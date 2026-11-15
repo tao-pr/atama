@@ -119,6 +119,7 @@ fn profile(base_url: &str) -> ModelProfile {
         base_url: base_url.into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     }
 }
 
@@ -1104,6 +1105,7 @@ fn run_loop_sends_the_judge_requests_to_the_judge_model() {
         base_url: judge_url,
         api_key_env: Some("JUDGE_KEY".into()),
         token_budget: None,
+        thinking: None,
     };
     let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
     let mut out = Vec::new();
@@ -1250,6 +1252,27 @@ fn run_loop_sends_thinking_false_to_the_server() {
     let request = run(&["model=m", "task=t", "thinking=false"]);
     assert_eq!(request["reasoning_effort"], "none");
     let request = run(&["model=m", "task=t"]);
+    assert!(request.get("reasoning_effort").is_none(), "{request}");
+}
+
+#[test]
+fn run_loop_sends_thinking_false_of_the_profile_with_the_tools() {
+    let (url, requests) = serve(vec![(200, text_response("hi")), (200, text_response("hi"))]);
+    let profile = ModelProfile {
+        thinking: Some(false),
+        ..profile(&url)
+    };
+    let run = |words: &[&str]| {
+        AgentToolLoop::new(AgentType::Coder)
+            .run_loop_with_env(&params(words), Some(&profile), "", &no_env)
+            .unwrap();
+        request_json(&requests.recv().unwrap())
+    };
+    let request = run(&["model=m", "task=t"]);
+    assert_eq!(request["reasoning_effort"], "none");
+    assert!(request["tools"].is_array(), "{request}");
+    // `thinking=true` of the action replaces the profile, and sends nothing.
+    let request = run(&["model=m", "task=t", "thinking=true"]);
     assert!(request.get("reasoning_effort").is_none(), "{request}");
 }
 

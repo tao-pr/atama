@@ -247,6 +247,7 @@ fn reads_model_profiles_from_the_config_block() {
                 base_url: "http://localhost:11434/v1".into(),
                 api_key_env: None,
                 token_budget: None,
+                thinking: None,
             },
             ModelProfile {
                 name: "cloud".into(),
@@ -254,6 +255,7 @@ fn reads_model_profiles_from_the_config_block() {
                 base_url: "https://api.openai.com/v1".into(),
                 api_key_env: Some("OPENAI_API_KEY".into()),
                 token_budget: None,
+                thinking: None,
             },
         ]
     );
@@ -272,6 +274,24 @@ fn reads_the_token_budget_of_a_profile() {
     assert_eq!(profile.token_budget, Some(5000));
     let profile: ModelProfile = "p: model=m, base_url=http://x.test".parse().unwrap();
     assert_eq!(profile.token_budget, None);
+}
+
+#[test]
+fn reads_the_thinking_of_a_profile() {
+    let thinking = |line: &str| line.parse::<ModelProfile>().map(|profile| profile.thinking);
+    assert_eq!(thinking("p: model=m, base_url=http://x.test"), Ok(None));
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=false"),
+        Ok(Some(false))
+    );
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=true"),
+        Ok(Some(true))
+    );
+    assert_eq!(
+        thinking("p: model=m, base_url=http://x.test, thinking=no"),
+        Err("`thinking=no` is not `true` or `false` in profile `p`".to_string())
+    );
 }
 
 #[test]
@@ -320,8 +340,8 @@ fn rejects_invalid_model_profiles() {
         (
             job("```config\np: key=k\n```\n", "mock"),
             2,
-            "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=` \
-             or `token_budget=`",
+            "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=`, \
+             `token_budget=` or `thinking=`",
         ),
         (
             job(
@@ -998,6 +1018,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
             base_url: "http://localhost:11434/v1".into(),
             api_key_env: None,
             token_budget: None,
+            thinking: None,
         })
     );
     let no_env = |_: &str| None;
@@ -1842,6 +1863,7 @@ fn gives_the_profile_that_judge_model_names_to_the_agent() {
         base_url: "http://y.test".into(),
         api_key_env: None,
         token_budget: None,
+        thinking: None,
     };
     let job = parse_job(&judge_job(
         "",
