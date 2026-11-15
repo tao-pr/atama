@@ -371,6 +371,26 @@ and with a model that you trust.
   - agent:autonomous model=local-qwen task="Write a README for this project." success="The README explains how to install, configure and run the tool." guardrails="Do not change source files." guard=judge
 ```
 
+#### Steps of a run
+
+A run of an `autonomous` agent has these steps. The names in code font are
+the types and functions in `src/agent_loop_openai_compat/`.
+
+1. The loop starts with the system prompt and the task. It makes the list of `FinalLoopCheck`s from the options: `SchemaCheck`, `CommandCheck`, then `SuccessJudge`.
+2. Before each step, `RunBudget` makes sure that the run still has steps, tokens and time. With `max_context=`, the loop compacts a conversation that is too long.
+3. The loop sends the conversation to the model. The model replies with tool calls or with a final text.
+4. With `guard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
+5. If the guard allows the call, the tool runs. The result goes into the conversation, and the loop goes back to step 2.
+6. A reply without tool calls goes through the `FinalLoopCheck`s in order. `SchemaCheck` and `CommandCheck` decide without a model.
+7. `SuccessJudge` asks the `Judge` with the criteria, the evidence and the reply. The `Verdict` becomes `Done` if `pass` is true, else `Retry` with its `reason`.
+8. If all checks give `Done`, the run ends. The output of the last check is the output of the action.
+9. If a check gives `Retry`, the model gets its message, and the loop goes on. A failed `CommandCheck` or `SuccessJudge` also starts the next iteration.
+
+The `Judge` sends a separate request to the model, and the `Verdict` is its
+answer: `pass` and a `reason`. A `FinalLoopCheck` is a rule that the reply
+at the end of an iteration must pass. Of the checks, only `SuccessJudge`
+uses a `Verdict`.
+
 #### Loop blocks
 
 If the criteria or the guardrails have more than one line, or you want to
