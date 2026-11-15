@@ -21,7 +21,7 @@ pub use agent_loop_openai_compat::AgentToolLoop;
 pub use executor::{
     ActionRunner, ActorRunner, DryRunner, Executor, JobOutcome, JobReport, TaskReport, TaskStatus,
 };
-pub use job::{Event, Hook, Job, Task, Trigger};
+pub use job::{Event, Hook, Job, SkipIf, Task, Trigger};
 pub use parser::{ParseError, parse_job};
 pub use passer::Passer;
 pub use printer::{

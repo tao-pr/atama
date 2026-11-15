@@ -9,7 +9,7 @@ use atama::profile::ModelProfile;
 use atama::schema::OutputSchema;
 use atama::tavily::DEFAULT_BASE_URL;
 use atama::websearch::{DEFAULT_MAX_RESULTS, WebSearchOptions};
-use atama::{Event, Hook, ParseError, Trigger, parse_job};
+use atama::{Event, Hook, ParseError, SkipIf, Trigger, parse_job};
 
 const EXAMPLE_JOB: &str = include_str!("fixtures/example_job.md");
 
@@ -2047,6 +2047,50 @@ fn rejects_options_that_are_not_in_a_list() {
                 message: message.into()
             }),
             "{text}"
+        );
+    }
+}
+
+#[test]
+fn parses_the_skip_if_field() {
+    let job = parse_job(
+        "# Job\n## A\n- skip_if: exist( ./out/a.txt )\n- actions: mock\n## B\n- actions: mock\n",
+    )
+    .expect("job should parse");
+
+    assert_eq!(
+        job.tasks[0].skip_if,
+        Some(SkipIf::Exist("./out/a.txt".into()))
+    );
+    assert_eq!(job.tasks[0].actions, [Actor::MockPlaceholder]);
+    assert!(job.tasks[0].description.is_empty());
+    assert_eq!(job.tasks[1].skip_if, None);
+}
+
+#[test]
+fn rejects_invalid_skip_if_fields() {
+    let cases = [
+        ("- skip_if:\n", "`skip_if` has no value"),
+        (
+            "- skip_if: exist(a)\n- skip_if: exist(b)\n",
+            "duplicate `skip_if` field",
+        ),
+        ("- skip_if: exist()\n", "`exist()` needs a file name"),
+        (
+            "- skip_if: exist(a\n",
+            "missing `)` in `skip_if` condition `exist(a`",
+        ),
+        (
+            "- skip_if: missing(a)\n",
+            "unknown `skip_if` condition `missing`",
+        ),
+        ("- skip_if: a.txt\n", "unknown `skip_if` condition `a.txt`"),
+    ];
+    for (fields, message) in cases {
+        let error = parse_job(&format!("# Job\n## A\n{fields}")).expect_err(fields);
+        assert!(
+            error.to_string().contains(message),
+            "{fields:?} gave {error}, expected {message:?}"
         );
     }
 }

@@ -104,6 +104,13 @@ The tasks are generally executed in sequence unless the `begin_if` hook instruct
 - task(id) succeed or fail
 - task(id) begin 
 
+### Skip conditions
+
+`- skip_if: exist(<file>)` is optional (`Task::skip_if`, `SkipIf`). If the
+file exists, `Executor::run_pass` does not run the task. The task succeeds
+with the content of the file as its output, and no hook runs. If the file
+cannot be read, the task fails. Tests are in `tests/executor.rs`.
+
 ### Hook conditions
 
 Hooks are executed when the task fails or succeeds (or other criteria are met).

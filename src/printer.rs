@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::io::IsTerminal;
 
 use crate::actor::Actor;
-use crate::job::{Hook, Job};
+use crate::job::{Hook, Job, SkipIf};
 
 const BOLD: &str = "1";
 const TASK_TITLE: &str = "1;36";
@@ -96,6 +96,9 @@ pub fn format_job(job: &Job, color: bool) -> String {
         }
         if !actions.is_empty() {
             let _ = write!(out, " {}", actions.join("; "));
+        }
+        if let Some(SkipIf::Exist(path)) = &task.skip_if {
+            let _ = write!(out, " (skip if {path} exists)");
         }
         if let Some(hook) = &task.if_fail {
             let _ = write!(

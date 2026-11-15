@@ -22,6 +22,8 @@ pub struct Task {
     pub description: String,
     /// When the task starts. Defaults to `prev task succeed`.
     pub begin_if: Trigger,
+    /// When the task does not run, but succeeds with a file as its output.
+    pub skip_if: Option<SkipIf>,
     /// Actions to run, in order.
     pub actions: Vec<Actor>,
     /// From `actions-parallel:` instead of `actions:`. The actions run at the
@@ -50,6 +52,14 @@ impl Default for Trigger {
     fn default() -> Self {
         Trigger::PrevTask(Event::Succeed)
     }
+}
+
+/// A `skip_if` condition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipIf {
+    /// `exist(<path>)`: if the file exists, the task does not run. The
+    /// content of the file is the output of the task, and the task succeeds.
+    Exist(String),
 }
 
 /// The task event a trigger waits for.

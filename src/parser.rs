@@ -8,8 +8,9 @@
 //!   an output schema for agent actions (see [`crate::schema`]).
 //! - `# <name>` names the job; text after it is the job description.
 //! - `## <id>` starts a task; its heading text is the task id.
-//! - Top-level `- begin_if:`, `- actions:`, `- actions-parallel:`,
-//!   `- if_fail:` and `- if_succeed:` bullets in a task are fields.
+//! - Top-level `- begin_if:`, `- skip_if:`, `- actions:`,
+//!   `- actions-parallel:`, `- if_fail:` and `- if_succeed:` bullets in a
+//!   task are fields.
 //!   `- actions-parallel:max=<n>` limits how many actions run at the same
 //!   time. Indented
 //!   bullets under `- actions:` or `- actions-parallel:` are the actions. Any other text is part of the task description.
@@ -63,7 +64,7 @@ use std::str::FromStr;
 use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
 use crate::agent_loop_openai_compat::agent_options::AgentConfig;
 use crate::budget_block::{self, BudgetBlocks};
-use crate::job::{Event, Hook, Job, Task, Trigger};
+use crate::job::{Event, Hook, Job, SkipIf, Task, Trigger};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
 use crate::schema::{self, Schemas};
@@ -251,6 +252,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                         id: id.to_string(),
                         description: String::new(),
                         begin_if: Trigger::default(),
+                        skip_if: None,
                         actions: Vec::new(),
                         parallel: false,
                         max_parallel: None,
@@ -407,6 +409,12 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     }
                     current.task.begin_if = parse_value(value, line_no, key)?;
                     current.begin_if_line = Some(line_no);
+                }
+                "skip_if" => {
+                    if current.task.skip_if.is_some() {
+                        return Err(ParseError::new(line_no, "duplicate `skip_if` field"));
+                    }
+                    current.task.skip_if = Some(parse_value(value, line_no, key)?);
                 }
                 "if_fail" | "if_succeed" => {
                     let slot = if key == "if_fail" {
@@ -636,7 +644,7 @@ fn field(item: &str) -> Option<(&str, &str)> {
     let key = key.trim();
     matches!(
         key,
-        "begin_if" | "actions" | "actions-parallel" | "if_fail" | "if_succeed"
+        "begin_if" | "skip_if" | "actions" | "actions-parallel" | "if_fail" | "if_succeed"
     )
     .then_some((key, value))
 }
@@ -1050,5 +1058,28 @@ impl FromStr for Hook {
             };
         }
         Err(format!("unknown hook `{s}`"))
+    }
+}
+
+impl FromStr for SkipIf {
+    type Err = String;
+
+    /// Reads `exist(<path>)`. The path is trimmed and must not be empty.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (name, rest) = s.split_once('(').ok_or_else(|| {
+            format!("unknown `skip_if` condition `{s}`, expected `exist(<file>)`")
+        })?;
+        let arg = rest
+            .strip_suffix(')')
+            .ok_or_else(|| format!("missing `)` in `skip_if` condition `{s}`"))?
+            .trim();
+        match name.trim() {
+            "exist" if arg.is_empty() => Err("`exist()` needs a file name".to_string()),
+            "exist" => Ok(SkipIf::Exist(arg.to_string())),
+            other => Err(format!(
+                "unknown `skip_if` condition `{other}`, expected `exist(<file>)`"
+            )),
+        }
     }
 }

@@ -3,7 +3,7 @@
 Atama runs automation pipelines that you write in markdown. You describe the
 tasks in a markdown file, and Atama runs them. You can mix agent-based task with non-agent tasks.
 
-## Pipeline format
+## Pipeline format (markdown)
 
 The top-level heading names the pipeline. Each second-level heading is a
 task:
@@ -18,6 +18,7 @@ description of the pipeline
 description
 
 - begin_if: <trigger condition>
+- skip_if: exist(<file>)
 - actions:
   - action1
   - action2
@@ -44,17 +45,17 @@ openai-gpt5: model=gpt-5, base_url=https://api.openai.com/v1, api_key=OPENAI_API
 The task id is its heading text, so `## Build` is `task(Build)`. Task ids
 must be unique.
 
-Examples:
+## Basic Example Markdown Jobs
 
-- `tests/fixtures/example_job.md`: a full job.
-- `jobs/sample_api_calls.md`: every action type.
-- `jobs/sample_agents.md`: a `websearch` action and a `summarizer` agent.
-- `jobs/sample_foreach.md`: the `foreach` prefix.
-- `jobs/sample_agent_with_structured_output.md`: an agent with
+- [`tests/fixtures/example_job.md`](tests/fixtures/example_job.md): a full job.
+- [`jobs/sample_api_calls.md`](jobs/sample_api_calls.md): every action type.
+- [`jobs/sample_agents.md`](jobs/sample_agents.md): a `websearch` action and a `summarizer` agent.
+- [`jobs/sample_foreach.md`](jobs/sample_foreach.md): the `foreach` prefix.
+- [`jobs/sample_agent_with_structured_output.md`](jobs/sample_agent_with_structured_output.md): an agent with
   `output_schema=`.
-- `jobs/sample_coder.md`: a `coder` agent that writes a Python program, and
+- [`jobs/sample_coder.md`](jobs/sample_coder.md): a `coder` agent that writes a Python program, and
   a `summarizer` agent that explains it.
-- `jobs/sample_autonomous.md`: an `autonomous` agent that works until a
+- [`jobs/sample_autonomous.md`](jobs/sample_autonomous.md): an `autonomous` agent that works until a
   check script accepts its report.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
@@ -131,6 +132,9 @@ The `if_fail` and `if_succeed` hooks run when a task finishes:
 - `write_error_file(...)`: write stderr to a file.
 
 Atama makes a graph of the tasks from their `begin_if` conditions.
+
+`skip_if: exist(<file>)` is optional. If the file exists, the task does not
+run. The task succeeds, and the content of the file is its output.
 
 ## Agents
 

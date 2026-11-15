@@ -125,7 +125,7 @@ One model provider on each line. The names are also file names.
 
 ## Generate Web Search Queries
 
-`local-spark2` writes one query for each provider. The queries go to
+writes one query for each provider. The queries go to
 `queries.txt`, one on each line, in the order of the providers.
 
 - actions:
@@ -175,7 +175,7 @@ again by its order, and each provider goes to `models-<provider>.json`.
 ## Search Small GGUF Models for Ollama
 
 Empty `gguf.jsonl`, and read the provider and the name of each model from
-the `models-*.json` files. `local-spark2` writes one query for each model,
+the `models-*.json` files. `openai-luna` writes one query for each model,
 and Tavily searches it. `openai-luna` then reads the GGUF names for Ollama
 from each result. `jq` adds the provider and the model by their order, and
 appends one line for each model to `gguf.jsonl`.
@@ -187,7 +187,7 @@ appends one line for each model to `gguf.jsonl`.
   - bash jq -c {provider,model:.models[].name}
   - write_file ./output/model_research/models.jsonl
   - foreach agent:summarizer
-    - model=local-spark2
+    - model=openai-luna
     - thinking=false
     - output_schema=search_query
     - task=The input is a JSON object with a model provider and a model
