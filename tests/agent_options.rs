@@ -7,7 +7,7 @@ use std::time::Duration;
 use atama::agent_loop_openai_compat::agent_options::{
     AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
     DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS,
-    DEFAULT_SUMMARIZER_PROMPT, Guard, MaxOutput, SummarizerOptions, format_duration,
+    DEFAULT_SUMMARIZER_PROMPT, MaxOutput, SummarizerOptions, ToolGuard, format_duration,
     parse_duration,
 };
 use atama::profile::ModelProfile;
@@ -481,7 +481,7 @@ fn autonomous_reads_its_options_with_defaults() {
             success_check: Some("cargo test".into()),
             success: None,
             guardrails: None,
-            guard: Guard::Prompt,
+            guard: ToolGuard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             loop_name: None,
             judge_model: None,
@@ -510,7 +510,7 @@ fn autonomous_reads_its_options_with_defaults() {
             success_check: Some("true".into()),
             success: Some("All tests pass.".into()),
             guardrails: Some("Do not push.".into()),
-            guard: Guard::Judge,
+            guard: ToolGuard::Judge,
             max_violations: 2,
             loop_name: None,
             judge_model: None,

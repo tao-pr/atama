@@ -96,7 +96,7 @@ pub struct AgentConfig {
 
 /// How an `autonomous` agent enforces its guardrails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Guard {
+pub enum ToolGuard {
     /// `guard=prompt`: the guardrails are only in the system prompt.
     #[default]
     Prompt,
@@ -105,11 +105,11 @@ pub enum Guard {
     Judge,
 }
 
-impl std::fmt::Display for Guard {
+impl std::fmt::Display for ToolGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Guard::Prompt => "prompt",
-            Guard::Judge => "judge",
+            ToolGuard::Prompt => "prompt",
+            ToolGuard::Judge => "judge",
         })
     }
 }
@@ -132,8 +132,8 @@ pub struct AutonomousOptions {
     /// From `guardrails=<text>`: rules that the agent must obey, in natural
     /// language. The loop puts them into the system prompt.
     pub guardrails: Option<String>,
-    /// From `guard=<prompt|judge>`. The default is [`Guard::Prompt`].
-    pub guard: Guard,
+    /// From `guard=<prompt|judge>`. The default is [`ToolGuard::Prompt`].
+    pub guard: ToolGuard,
     /// From `max_violations=<n>`: the most tool calls that the guard blocks
     /// before the run fails. The default is [`DEFAULT_MAX_VIOLATIONS`].
     pub max_violations: u32,
@@ -192,14 +192,14 @@ impl AutonomousOptions {
             );
         }
         let guard = match values.guard.as_deref() {
-            None | Some("prompt") => Guard::Prompt,
-            Some("judge") => Guard::Judge,
+            None | Some("prompt") => ToolGuard::Prompt,
+            Some("judge") => ToolGuard::Judge,
             Some(other) => return Err(format!("`guard={other}` is not `prompt` or `judge`")),
         };
-        if guard == Guard::Judge && values.guardrails.is_none() {
+        if guard == ToolGuard::Judge && values.guardrails.is_none() {
             return Err("`guard=judge` needs `guardrails=<text>`".to_string());
         }
-        if values.judge_model.is_some() && values.success.is_none() && guard != Guard::Judge {
+        if values.judge_model.is_some() && values.success.is_none() && guard != ToolGuard::Judge {
             return Err(
                 "`judge_model=` needs a judge: `success=<criteria>` or `guard=judge`".to_string(),
             );

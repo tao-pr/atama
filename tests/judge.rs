@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use atama::AgentToolLoop;
 use atama::actor::AgentType;
-use atama::agent_loop_openai_compat::agent_options::Guard;
+use atama::agent_loop_openai_compat::agent_options::ToolGuard;
 use atama::agent_loop_openai_compat::checks::{CheckResult, FinalLoopCheck};
 use atama::agent_loop_openai_compat::judge::{
     Judge, MAX_EVIDENCE_CHARS, SuccessJudge, Verdict, evidence, review, verdict_schema,
@@ -379,7 +379,7 @@ fn the_guard_blocks_a_call_that_breaks_a_guardrail() {
     let output = autonomous()
         .success_check(Some("true".into()))
         .guardrails(Some("Do not push.".into()))
-        .guard(Guard::Judge)
+        .guard(ToolGuard::Judge)
         .with_tools(vec![tool])
         .debug(&mut out)
         .run_with(&mut client, "Fix it.", "")
@@ -412,7 +412,7 @@ fn the_run_fails_after_max_violations_blocked_calls() {
     let err = autonomous()
         .success_check(Some("true".into()))
         .guardrails(Some("Do not push.".into()))
-        .guard(Guard::Judge)
+        .guard(ToolGuard::Judge)
         .max_violations(2)
         .with_tools(vec![tool])
         .run_with(&mut client, "Fix it.", "")
@@ -451,7 +451,7 @@ fn the_tokens_of_the_judges_count_in_the_budget() {
         .token_budget(Some(100))
         .success(Some("All tests pass.".into()))
         .guardrails(Some("Do not push.".into()))
-        .guard(Guard::Judge)
+        .guard(ToolGuard::Judge)
         .with_tools(vec![tool])
         .run_with(&mut client, "Fix it.", "")
         .unwrap_err();
@@ -473,7 +473,7 @@ fn a_judge_reply_without_tokens_fails_a_run_with_a_budget() {
         .token_budget(Some(100))
         .success_check(Some("true".into()))
         .guardrails(Some("Do not push.".into()))
-        .guard(Guard::Judge)
+        .guard(ToolGuard::Judge)
         .with_tools(vec![tool])
         .run_with(&mut client, "Fix it.", "")
         .unwrap_err();
@@ -504,7 +504,7 @@ fn the_judges_use_the_judge_client_if_it_is_set() {
         .token_budget(Some(1000))
         .success(Some("All tests pass.".into()))
         .guardrails(Some("Do not push.".into()))
-        .guard(Guard::Judge)
+        .guard(ToolGuard::Judge)
         .judge_client(judges)
         .with_tools(vec![tool])
         .run_with(&mut agent, "Fix it.", "")

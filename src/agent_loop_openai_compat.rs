@@ -56,7 +56,7 @@ pub mod openai;
 pub mod tools;
 
 use agent_options::{
-    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, Guard, format_duration,
+    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, ToolGuard, format_duration,
 };
 use budget::{RunBudget, StopReason};
 use checks::{CommandCheck, FinalLoopCheck, Rejection, SchemaCheck};
@@ -165,7 +165,7 @@ pub struct AgentToolLoop<'a> {
     /// The guardrails for the system prompt, if set.
     guardrails: Option<String>,
     /// How the loop enforces the guardrails.
-    guard: Guard,
+    guard: ToolGuard,
     /// The most tool calls that the guard blocks before the run fails.
     max_violations: u32,
     /// The most tokens that one run can use, if set.
@@ -209,7 +209,7 @@ impl<'a> AgentToolLoop<'a> {
             success_check: None,
             success: None,
             guardrails: None,
-            guard: Guard::Prompt,
+            guard: ToolGuard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             token_budget: None,
             max_context: None,
@@ -326,10 +326,10 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
-    /// Sets how the loop enforces the guardrails. With [`Guard::Judge`], a
+    /// Sets how the loop enforces the guardrails. With [`ToolGuard::Judge`], a
     /// judge examines each tool call before it runs, and the loop blocks a
     /// call that breaks a guardrail (see [`judge::review`]).
-    pub fn guard(mut self, guard: Guard) -> Self {
+    pub fn guard(mut self, guard: ToolGuard) -> Self {
         self.guard = guard;
         self
     }
@@ -515,7 +515,7 @@ impl<'a> AgentToolLoop<'a> {
     /// tool calls ends an iteration. If the check fails, the model gets the
     /// reason, and the next iteration starts. The guardrails (see
     /// [`AgentToolLoop::guardrails`]) are in the system prompt. With
-    /// [`Guard::Judge`], a judge examines each tool call before it runs. A
+    /// [`ToolGuard::Judge`], a judge examines each tool call before it runs. A
     /// blocked call does not run, and the model gets the reason. The tokens
     /// of the judges count in the token budget.
     ///
@@ -526,7 +526,7 @@ impl<'a> AgentToolLoop<'a> {
     /// used the budget before the final reply. It fails if the summary
     /// request fails. With a time limit, it fails
     /// if the run used the time before a request or a tool call. With
-    /// [`Guard::Judge`], it fails if the guard blocks `max_violations`
+    /// [`ToolGuard::Judge`], it fails if the guard blocks `max_violations`
     /// calls.
     pub fn run_with(
         &mut self,
@@ -585,8 +585,8 @@ impl<'a> AgentToolLoop<'a> {
         }
         // The guardrails that the guard enforces, if the guard is on.
         let guarded = match self.guard {
-            Guard::Judge => self.guardrails.clone(),
-            Guard::Prompt => None,
+            ToolGuard::Judge => self.guardrails.clone(),
+            ToolGuard::Prompt => None,
         };
         // The index of the check that failed last, and its error.
         let mut last_failure: Option<(usize, String)> = None;
