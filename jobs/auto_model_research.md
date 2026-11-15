@@ -1,5 +1,6 @@
 ```config
 local-spark2: model=hf.co/XHToken/Spark-X2.6-1.7B-GGUF:Q4_K_M, base_url=http://localhost:11434/v1
+openai-luna: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY
 ```
 
 ```json:search_query
@@ -100,7 +101,7 @@ Research the frontier models of OpenAI, Hugging Face, Anthropic, Grok,
 Gemini, Nemotron, DeepSeek, Kimi and Mistral, and small GGUF models for
 Ollama on a CPU. The research is about tool calls, structured input and
 output, and text analysis. Needs Ollama with `local-spark2`,
-`TAVILY_API_KEY` and `jq`.
+`OPENAI_API_KEY` for `openai-luna`, `TAVILY_API_KEY` and `jq`.
 
 ```bash
 cargo run -- jobs/auto_model_research.md
@@ -175,7 +176,7 @@ again by its order, and each provider goes to `models-<provider>.json`.
 
 Empty `gguf.jsonl`, and read the provider and the name of each model from
 the `models-*.json` files. `local-spark2` writes one query for each model,
-and Tavily searches it. `local-spark2` then reads the GGUF names for Ollama
+and Tavily searches it. `openai-luna` then reads the GGUF names for Ollama
 from each result. `jq` adds the provider and the model by their order, and
 appends one line for each model to `gguf.jsonl`.
 
@@ -199,8 +200,7 @@ appends one line for each model to `gguf.jsonl`.
   - bash jq -c -n --slurpfile m ./output/model_research/models.jsonl [$m,[inputs]]|transpose[]|select(.[1])|.[0]+{query:.[1].query,answer:.[1].answer,results:[.[1].results[]|{title,url,content}]}
   - write_file ./output/model_research/gguf_search.jsonl
   - foreach agent:summarizer
-    - model=local-spark2
-    - thinking=false
+    - model=openai-luna
     - output_schema=gguf
     - task=The input is the web search result of one model. List each GGUF
       version of the model in the result that Ollama can pull. For a model
