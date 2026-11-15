@@ -340,16 +340,15 @@ the agent replies without tool calls, which means "I am done". Then the
 success checks run. If a check fails, the agent gets the reason, and the
 next iteration starts.
 
-There are two success checks. You must give one of them, and you can give
-both:
+There are two success checks. You must give one of them or both:
 
 - `success_check=` is a bash command. Exit status 0 means that the task is done.
-- `success=` is success criteria in natural language. A separate request to the model of the agent, the judge, decides whether the work meets them. The judge gets the task, the criteria, the tool calls of the agent with their results, and its last reply. If the tool calls and results are longer than 10,000 characters, the judge gets only their end.
+- `success=` is success criteria in natural language. A separate request to the model of the agent, the `judge,` decides whether the work meets them.
 
 If you give both, the command runs first, and the judge runs only if the
 command passes.
 
-A step is one request to the model and its one reply. For example, the
+**A step is one request to the model and its one reply.** For example, the
 agent reads a file, edits it, runs the tests and says that it is done. That
 is 4 steps in iteration 1. `max_iterations=` limits how many times the agent
 can say that it is done and try again. `max_steps=` limits the steps of the
@@ -378,7 +377,7 @@ It takes these options:
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
 | `protect="<patterns>"` | No | Globs of the paths that the tools cannot write, separated by commas, as in `protect="src/**,Cargo.toml"`. See [Protected paths](#protected-paths). |
 | `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `toolGuard=judge`. |
-| `loop=<name>` | No | The name of a loop block with more options. See [Loop blocks](#loop-blocks). |
+| `budget=<name>` | No | The name of a budget block with the general limits and tools of the agent. See [Budget blocks](#budget-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
 model profile of the agent. For example, a small local model can judge the
@@ -463,7 +462,7 @@ call counts as a failed call of the tool, not as a violation of the guard.
 If you use `protect=` and the agent has the `bash` tool, the action needs
 macOS, because only macOS has `sandbox-exec`. On another system, the action
 fails before the first request. To use `protect=` on another system, remove
-`bash` from `tools:` of the loop block.
+`bash` from `tools:` of the budget block.
 
 `protect=` has these limits:
 
@@ -479,24 +478,23 @@ fails before the first request. To use `protect=` on another system, remove
     - protect=tests/**,Cargo.toml,.env
 ```
 
-#### Loop blocks
+#### Budget blocks
 
-If the criteria or the guardrails have more than one line, or you want to
-select the tools, put the options into a loop block. A loop block is a
-```` ```loop:<name> ```` block before the `# <name>` heading of the job. The
-action selects it with `loop=<name>`:
+A budget block holds the general configuration of an `autonomous` agent,
+for example its limits and its tools. Many actions can use the same block.
+A budget block is a ```` ```budget:<name> ```` block before the `# <name>`
+heading of the job. The action selects it with `budget=<name>`.
+
+The details of one action are options of the action, not of the block.
+These options are `task=`, `protect=` and `guardrails=`. A budget block with
+`task:`, `protect:` or `guardrails:` stops the job with an error.
 
 ````markdown
-```loop:fix-tests
+```budget:standard
+max_iterations: 5
 max_time: 20m
-success_check: cargo test --quiet
-success: All tests pass, and no test was deleted or ignored.
+token_budget: 200000
 toolGuard: judge
-guardrails:
-  - Do not run git push or git reset.
-protect:
-  - tests/**
-  - Cargo.toml
 tools:
   - read_file
   - list_files
@@ -511,20 +509,22 @@ tools:
 - actions:
   - agent:autonomous
     - model=local-qwen
-    - loop=fix-tests
+    - budget=standard
     - task=Make all tests pass.
+    - success_check=cargo test --quiet
+    - protect=tests/**,Cargo.toml
+    - guardrails=Do not run git push or git reset.
 ````
 
 Each line is `<key>: <value>`. A key with no value starts a list, and each
 item of the list is a `- <item>` line after it. The keys are the options
-`task`, `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
-`max_time`, `success_check`, `success`, `guardrails`, `toolGuard`,
-`max_violations`, `protect`, `judge_model`, and `tools`. A list of text, such as `guardrails:`, gives
-the agent one `- <item>` line for each item. A `protect:` list gives one
-pattern for each item.
+`max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
+`max_time`, `success_check`, `success`, `toolGuard`, `max_violations`,
+`judge_model`, and `tools`. A list of text, such as `success:`, gives the
+agent one `- <item>` line for each item.
 
-An option on the action line replaces the same option of the block. The
-action needs `model=` on its line.
+An option of the action replaces the same option of the block. The action
+needs `model=` in its options.
 
 `tools:` selects the tools of the agent from `bash`, `read_file`,
 `write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most

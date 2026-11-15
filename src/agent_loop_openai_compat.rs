@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::actor::AgentType;
-use crate::loop_block::LoopBlock;
+use crate::budget_block::BudgetBlock;
 use crate::profile::ModelProfile;
 use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};
@@ -187,8 +187,8 @@ pub struct AgentToolLoop<'a> {
     schema_block: Option<OutputSchema>,
     /// The schema that the final reply must match, if set.
     output_schema: Option<OutputSchema>,
-    /// The loop block of the job that `loop=<name>` names.
-    loop_block: Option<LoopBlock>,
+    /// The budget block of the job that `budget=<name>` names.
+    budget_block: Option<BudgetBlock>,
     /// The model profile of the job that `judge_model=<name>` names.
     judge_profile: Option<ModelProfile>,
     /// The client of the judges, if they do not use the client of the
@@ -225,7 +225,7 @@ impl<'a> AgentToolLoop<'a> {
             reasoning_effort: None,
             schema_block: None,
             output_schema: None,
-            loop_block: None,
+            budget_block: None,
             judge_profile: None,
             judge_client: None,
             debug: None,
@@ -258,12 +258,12 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
-    /// Sets the loop block of the job that the `loop=<name>` of the action
+    /// Sets the budget block of the job that the `budget=<name>` of the action
     /// names. [`AgentToolLoop::run_loop`] reads the options of the block
     /// with the options of the action, and takes the tools of the block
-    /// (see [`LoopBlock::merge`] and [`LoopBlock::make_tools`]).
-    pub fn loop_block(mut self, block: Option<LoopBlock>) -> Self {
-        self.loop_block = block;
+    /// (see [`BudgetBlock::merge`] and [`BudgetBlock::make_tools`]).
+    pub fn budget_block(mut self, block: Option<BudgetBlock>) -> Self {
+        self.budget_block = block;
         self
     }
 
@@ -336,7 +336,7 @@ impl<'a> AgentToolLoop<'a> {
     }
 
     /// Sets how the loop enforces the guardrails. With [`ToolGuard::Judge`], a
-    /// judge examines each tool call before it runs, and the loop blocks a
+    /// judge examines each tool call before it runs, and the budget blocks a
     /// call that breaks a guardrail (see [`judge::review`]).
     pub fn guard(mut self, guard: ToolGuard) -> Self {
         self.guard = guard;
@@ -433,12 +433,12 @@ impl<'a> AgentToolLoop<'a> {
     /// `output_schema=`, the reply must match the schema (see
     /// [`schema::load`]).
     ///
-    /// With a loop block (see [`AgentToolLoop::loop_block`]), the options
+    /// With a budget block (see [`AgentToolLoop::budget_block`]), the options
     /// of the block come before the options of the action, and the tools of
     /// the block replace the default tools.
     ///
     /// Fails if the configuration is invalid, the output schema cannot be
-    /// loaded, `loop=` names no loop block, or a `summarizer` agent has no
+    /// loaded, `budget=` names no budget block, or a `summarizer` agent has no
     /// input.
     pub fn run_loop_with_env(
         &mut self,
@@ -448,19 +448,19 @@ impl<'a> AgentToolLoop<'a> {
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<String, String> {
         self.started = Some((self.clock)());
-        let params = match &self.loop_block {
+        let params = match &self.budget_block {
             Some(block) => block.merge(params),
             None => params.to_vec(),
         };
         let config = AgentConfig::from_params(self.agent, &params, profile, env)?;
         self.profile = Some(config.profile.clone());
         if let Some(options) = &config.autonomous {
-            if let Some(name) = &options.loop_name
-                && self.loop_block.is_none()
+            if let Some(name) = &options.budget_name
+                && self.budget_block.is_none()
             {
-                return Err(format!("loop block `{name}` is not defined in the job"));
+                return Err(format!("budget block `{name}` is not defined in the job"));
             }
-            if let Some(tools) = self.loop_block.as_ref().and_then(LoopBlock::make_tools) {
+            if let Some(tools) = self.budget_block.as_ref().and_then(BudgetBlock::make_tools) {
                 self.tools = tools;
             }
             if let Some(name) = &options.judge_model {
@@ -487,7 +487,7 @@ impl<'a> AgentToolLoop<'a> {
                 if self.tools.iter().any(|tool| tool.name() == "bash") {
                     return Err(
                         "`protect=` needs `sandbox-exec` for the `bash` tool, which only macOS \
-                         has. Remove `bash` from `tools:` of the loop block"
+                         has. Remove `bash` from `tools:` of the budget block"
                             .to_string(),
                     );
                 }

@@ -148,8 +148,9 @@ agent types:
   [macOS sandbox](ACTIONS.md#protected-paths) for `bash`.
 
 [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
-```` ```loop:<name> ```` block can hold the options of an `autonomous`
-agent (see [Loop blocks](ACTIONS.md#loop-blocks)). This section describes
+```` ```budget:<name> ```` block can hold the general limits and tools of
+an `autonomous` agent, so that many actions can use them (see
+[Budget blocks](ACTIONS.md#budget-blocks)). This section describes
 the parts of the job file that agents use.
 
 If you use `agent:coder` or `agent:autonomous`, the model can run any

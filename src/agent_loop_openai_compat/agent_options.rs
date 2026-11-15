@@ -45,7 +45,7 @@ const OPTION_KEYS: [&str; 19] = [
     "toolGuard",
     "max_violations",
     "protect",
-    "loop",
+    "budget",
     "judge_model",
 ];
 
@@ -141,9 +141,9 @@ pub struct AutonomousOptions {
     /// From `protect=<patterns>`: the globs of the paths that the tools
     /// must not write (see [`crate::protect`]). Empty protects no path.
     pub protect: Vec<String>,
-    /// From `loop=<name>`: the name of the loop block of the action (see
-    /// [`crate::loop_block`]).
-    pub loop_name: Option<String>,
+    /// From `budget=<name>`: the name of the budget block of the action (see
+    /// [`crate::budget_block`]).
+    pub budget_name: Option<String>,
     /// From `judge_model=<profile>`: the model profile of the judges, from
     /// the ```` ```config ```` block. `None` uses the model of the agent.
     pub judge_model: Option<String>,
@@ -161,7 +161,7 @@ struct AutonomousValues {
     guard: Option<String>,
     max_violations: Option<String>,
     protect: Option<String>,
-    loop_name: Option<String>,
+    budget_name: Option<String>,
     judge_model: Option<String>,
 }
 
@@ -177,7 +177,7 @@ impl AutonomousValues {
             ("toolGuard", &self.guard),
             ("max_violations", &self.max_violations),
             ("protect", &self.protect),
-            ("loop", &self.loop_name),
+            ("budget", &self.budget_name),
             ("judge_model", &self.judge_model),
         ]
     }
@@ -232,7 +232,7 @@ impl AutonomousOptions {
                 None => Vec::new(),
                 Some(value) => crate::protect::parse_patterns(&value)?,
             },
-            loop_name: values.loop_name,
+            budget_name: values.budget_name,
             judge_model: values.judge_model,
         })
     }
@@ -488,7 +488,7 @@ impl Values {
                 "toolGuard" => &mut values.autonomous.guard,
                 "max_violations" => &mut values.autonomous.max_violations,
                 "protect" => &mut values.autonomous.protect,
-                "loop" => &mut values.autonomous.loop_name,
+                "budget" => &mut values.autonomous.budget_name,
                 "judge_model" => &mut values.autonomous.judge_model,
                 _ => {
                     return Err(format!(

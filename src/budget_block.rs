@@ -1,19 +1,18 @@
-//! Loop blocks: the configuration of an `autonomous` agent in a fenced
-//! block of the job file, so that criteria and guardrails can have more
-//! than one line, and the job can select tools and their limits.
+//! Budget blocks: the general configuration of an `autonomous` agent in a
+//! fenced block of the job file. Many actions can use one block for the
+//! same limits and tools. The details of one action, `task=`, `protect=`
+//! and `guardrails=`, are options of the action, not of the block (see
+//! [`ACTION_KEYS`]).
 //!
-//! A ```` ```loop:<name> ```` block comes before the `# <name>` heading. An
-//! `agent:autonomous` action selects it with `loop=<name>`. Each line is
+//! A ```` ```budget:<name> ```` block comes before the `# <name>` heading. An
+//! `agent:autonomous` action selects it with `budget=<name>`. Each line is
 //! `<key>: <value>`. A key with no value starts a list, and each list item
 //! is a `- <item>` line after it:
 //!
 //! ````markdown
-//! ```loop:fix-tests
+//! ```budget:fix-tests
 //! max_time: 20m
-//! success_check: cargo test --quiet
-//! guardrails:
-//!   - Do not change files in tests/.
-//!   - Do not run git push.
+//! token_budget: 200000
 //! tools:
 //!   - read_file
 //!   - bash max_calls=40 max_failures=5
@@ -21,9 +20,9 @@
 //! ````
 //!
 //! The keys are options of the action (see [`BLOCK_KEYS`]), and `tools`. A
-//! list of text, such as `guardrails:`, becomes one value with one
+//! list of text, such as `success:`, becomes one value with one
 //! `- <item>` line for each item. An option of the action replaces the same
-//! option of the block (see [`LoopBlock::merge`]).
+//! option of the block (see [`BudgetBlock::merge`]).
 
 use std::collections::BTreeMap;
 
@@ -33,9 +32,8 @@ use crate::agent_loop_openai_compat::tools::{
 };
 use crate::schema::{MAX_NAME_CHARS, is_name};
 
-/// The options of an action that a loop block can set, besides `tools`.
-pub const BLOCK_KEYS: [&str; 14] = [
-    "task",
+/// The options of an action that a budget block can set, besides `tools`.
+pub const BLOCK_KEYS: [&str; 11] = [
     "max_steps",
     "token_budget",
     "max_context",
@@ -44,19 +42,21 @@ pub const BLOCK_KEYS: [&str; 14] = [
     "max_time",
     "success_check",
     "success",
-    "guardrails",
     "toolGuard",
     "max_violations",
-    "protect",
     "judge_model",
 ];
 
-/// The loop blocks of a job, by name.
-pub type LoopBlocks = BTreeMap<String, LoopBlock>;
+/// The options that only the action can set, because they change with
+/// each action. A budget block with one of them is an error.
+pub const ACTION_KEYS: [&str; 3] = ["task", "protect", "guardrails"];
 
-/// One ```` ```loop:<name> ```` block.
+/// The budget blocks of a job, by name.
+pub type BudgetBlocks = BTreeMap<String, BudgetBlock>;
+
+/// One ```` ```budget:<name> ```` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoopBlock {
+pub struct BudgetBlock {
     pub name: String,
     /// The options of the block as `key=value` params, in order.
     pub params: Vec<String>,
@@ -74,22 +74,22 @@ pub struct ToolLimits {
     pub max_failures: u32,
 }
 
-/// The name of a loop block from its opening fence, as in `fix-tests` from
-/// ```` ```loop:fix-tests ````. Returns `None` if the line is not such a
+/// The name of a budget block from its opening fence, as in `fix-tests` from
+/// ```` ```budget:fix-tests ````. Returns `None` if the line is not such a
 /// fence.
 pub fn block_name(line: &str) -> Option<&str> {
-    line.trim().strip_prefix("```loop:").map(str::trim)
+    line.trim().strip_prefix("```budget:").map(str::trim)
 }
 
-/// Makes sure that `name`, from a ```` ```loop:<name> ```` fence, can name
-/// a loop block.
+/// Makes sure that `name`, from a ```` ```budget:<name> ```` fence, can name
+/// a budget block.
 pub fn check_name(name: &str) -> Result<(), String> {
     if is_name(name) {
         Ok(())
     } else {
         Err(format!(
-            "`{name}` is not a loop block name, use 1 to {MAX_NAME_CHARS} letters, digits, \
-             `_` or `-`, as in ```loop:fix-tests"
+            "`{name}` is not a budget block name, use 1 to {MAX_NAME_CHARS} letters, digits, \
+             `_` or `-`, as in ```budget:fix-tests"
         ))
     }
 }
@@ -99,7 +99,7 @@ pub fn check_name(name: &str) -> Result<(), String> {
 /// Fails with the index of the line and a message if a key is unknown or
 /// set twice, a value is invalid, an item does not follow a key with no
 /// value, a key has no value and no items, or a tool is unknown.
-pub fn parse_block(name: &str, lines: &[&str]) -> Result<LoopBlock, (usize, String)> {
+pub fn parse_block(name: &str, lines: &[&str]) -> Result<BudgetBlock, (usize, String)> {
     // Each key, its index of line, its value, and the items of its list.
     let mut entries: Vec<(&str, usize, &str, Vec<&str>)> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
@@ -115,7 +115,7 @@ pub fn parse_block(name: &str, lines: &[&str]) -> Result<LoopBlock, (usize, Stri
                         index,
                         format!(
                             "the item `{line}` needs a key with no value before it, as in \
-                             `guardrails:`"
+                             `tools:`"
                         ),
                     ));
                 }
@@ -126,12 +126,21 @@ pub fn parse_block(name: &str, lines: &[&str]) -> Result<LoopBlock, (usize, Stri
             return Err((index, format!("expected `<key>: <value>`, found `{line}`")));
         };
         let key = key.trim();
+        if ACTION_KEYS.contains(&key) {
+            return Err((
+                index,
+                format!(
+                    "`{key}` cannot be in budget block `{name}`, set `{key}=` in the options \
+                     of the action"
+                ),
+            ));
+        }
         if key != "tools" && !BLOCK_KEYS.contains(&key) {
             let keys: Vec<String> = BLOCK_KEYS.iter().map(|key| format!("`{key}`")).collect();
             return Err((
                 index,
                 format!(
-                    "unknown key `{key}` in loop block `{name}`, expected {} or `tools`",
+                    "unknown key `{key}` in budget block `{name}`, expected {} or `tools`",
                     keys.join(", ")
                 ),
             ));
@@ -142,7 +151,7 @@ pub fn parse_block(name: &str, lines: &[&str]) -> Result<LoopBlock, (usize, Stri
         entries.push((key, index, value.trim(), Vec::new()));
     }
 
-    let mut block = LoopBlock {
+    let mut block = BudgetBlock {
         name: name.to_string(),
         params: Vec::new(),
         tools: None,
@@ -204,7 +213,7 @@ fn parse_tool(item: &str) -> Result<ToolLimits, String> {
     Ok(tool)
 }
 
-impl LoopBlock {
+impl BudgetBlock {
     /// The params of the block and of the action, for one action. An option
     /// of the action replaces the same option of the block. The options of
     /// the block come first.
@@ -235,22 +244,24 @@ impl LoopBlock {
     }
 }
 
-/// The name in the `loop=<name>` param of an action, if it has one.
-pub fn loop_name(params: &[String]) -> Option<&str> {
-    params.iter().find_map(|param| param.strip_prefix("loop="))
+/// The name in the `budget=<name>` param of an action, if it has one.
+pub fn budget_name(params: &[String]) -> Option<&str> {
+    params
+        .iter()
+        .find_map(|param| param.strip_prefix("budget="))
 }
 
-/// Finds the block that the `loop=<name>` param of an action names.
-/// Returns `None` if the action has no `loop=`.
+/// Finds the block that the `budget=<name>` param of an action names.
+/// Returns `None` if the action has no `budget=`.
 ///
 /// Fails if `blocks` has no block with that name.
-pub fn resolve(params: &[String], blocks: &LoopBlocks) -> Result<Option<LoopBlock>, String> {
-    let Some(name) = loop_name(params) else {
+pub fn resolve(params: &[String], blocks: &BudgetBlocks) -> Result<Option<BudgetBlock>, String> {
+    let Some(name) = budget_name(params) else {
         return Ok(None);
     };
     blocks
         .get(name)
         .cloned()
         .map(Some)
-        .ok_or_else(|| format!("loop block `{name}` is not defined in the job"))
+        .ok_or_else(|| format!("budget block `{name}` is not defined in the job"))
 }

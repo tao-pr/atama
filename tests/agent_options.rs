@@ -172,7 +172,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `loop=`, `judge_model=`",
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -386,7 +386,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `loop=`, `judge_model=`"
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`"
                 .into(),
         ),
         (
@@ -484,7 +484,7 @@ fn autonomous_reads_its_options_with_defaults() {
             guard: ToolGuard::Prompt,
             max_violations: DEFAULT_MAX_VIOLATIONS,
             protect: Vec::new(),
-            loop_name: None,
+            budget_name: None,
             judge_model: None,
         })
     );
@@ -515,7 +515,7 @@ fn autonomous_reads_its_options_with_defaults() {
             guard: ToolGuard::Judge,
             max_violations: 2,
             protect: vec!["src/**".into(), "Cargo.toml".into()],
-            loop_name: None,
+            budget_name: None,
             judge_model: None,
         })
     );

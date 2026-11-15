@@ -62,8 +62,8 @@ use std::str::FromStr;
 
 use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
 use crate::agent_loop_openai_compat::agent_options::AgentConfig;
+use crate::budget_block::{self, BudgetBlocks};
 use crate::job::{Event, Hook, Job, Task, Trigger};
-use crate::loop_block::{self, LoopBlocks};
 use crate::passer::Passer;
 use crate::profile::{self, Profiles};
 use crate::schema::{self, Schemas};
@@ -101,8 +101,8 @@ enum Block {
     Config,
     /// ```` ```json:<name> ````: an output schema.
     Schema(String),
-    /// ```` ```loop:<name> ````: a loop block.
-    Loop(String),
+    /// ```` ```budget:<name> ````: a budget block.
+    Budget(String),
 }
 
 /// An action of a task that the parser read, but did not parse yet,
@@ -139,8 +139,8 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     let mut in_code_block = false;
     let mut profiles = Profiles::new();
     let mut schemas = Schemas::new();
-    let mut loops = LoopBlocks::new();
-    // The open ```config, ```json:<name> or ```loop:<name> block: the line
+    let mut budgets = BudgetBlocks::new();
+    // The open ```config, ```json:<name> or ```budget:<name> block: the line
     // number of its fence, its kind, and the lines after the fence.
     let mut open_block: Option<(usize, Block, Vec<&str>)> = None;
     let mut has_config = false;
@@ -164,30 +164,30 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     let parsed = schema::parse_block(name, &lines.join("\n")).map_err(at)?;
                     schemas.insert(name.to_string(), parsed);
                 }
-                Block::Loop(name) => {
-                    let parsed = loop_block::parse_block(name, lines).map_err(at)?;
-                    loops.insert(name.to_string(), parsed);
+                Block::Budget(name) => {
+                    let parsed = budget_block::parse_block(name, lines).map_err(at)?;
+                    budgets.insert(name.to_string(), parsed);
                 }
             }
             open_block = None;
             continue;
         }
-        if let Some(loop_name) = loop_block::block_name(line).filter(|_| !in_code_block) {
+        if let Some(budget_name) = budget_block::block_name(line).filter(|_| !in_code_block) {
             if name.is_some() {
                 return Err(ParseError::new(
                     line_no,
-                    "the ```loop:<name> block must come before the `# <job name>` heading",
+                    "the ```budget:<name> block must come before the `# <job name>` heading",
                 ));
             }
-            loop_block::check_name(loop_name)
+            budget_block::check_name(budget_name)
                 .map_err(|message| ParseError::new(line_no, message))?;
-            if loops.contains_key(loop_name) {
+            if budgets.contains_key(budget_name) {
                 return Err(ParseError::new(
                     line_no,
-                    format!("loop block `{loop_name}` is defined twice"),
+                    format!("budget block `{budget_name}` is defined twice"),
                 ));
             }
-            open_block = Some((line_no, Block::Loop(loop_name.to_string()), Vec::new()));
+            open_block = Some((line_no, Block::Budget(budget_name.to_string()), Vec::new()));
             continue;
         }
         if let Some(schema_name) = schema::block_name(line).filter(|_| !in_code_block) {
@@ -229,7 +229,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         if !in_code_block {
             if let Some(id) = heading(line, "##") {
                 if let Some(current) = tasks.last_mut() {
-                    flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+                    flush(
+                        &mut pending,
+                        &mut current.task,
+                        &profiles,
+                        &schemas,
+                        &budgets,
+                    )?;
                 }
                 if name.is_none() {
                     return Err(ParseError::new(
@@ -291,7 +297,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         };
 
         if in_code_block || line.trim_start().starts_with("```") {
-            flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+            flush(
+                &mut pending,
+                &mut current.task,
+                &profiles,
+                &schemas,
+                &budgets,
+            )?;
             in_actions = false;
             current.description.push(line.to_string());
             continue;
@@ -307,7 +319,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     action.options.push((line_no, item.trim().to_string()));
                     continue;
                 }
-                flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+                flush(
+                    &mut pending,
+                    &mut current.task,
+                    &profiles,
+                    &schemas,
+                    &budgets,
+                )?;
                 pending = Some(PendingAction {
                     text: item.trim().to_string(),
                     line: line_no,
@@ -329,7 +347,13 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 option.push_str(line.trim());
                 continue;
             }
-            flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+            flush(
+                &mut pending,
+                &mut current.task,
+                &profiles,
+                &schemas,
+                &budgets,
+            )?;
             in_actions = false;
         }
 
@@ -372,7 +396,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                             &[],
                             &profiles,
                             &schemas,
-                            &loops,
+                            &budgets,
                         )?);
                     }
                     in_actions = true;
@@ -404,13 +428,19 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
     }
 
     if let Some(current) = tasks.last_mut() {
-        flush(&mut pending, &mut current.task, &profiles, &schemas, &loops)?;
+        flush(
+            &mut pending,
+            &mut current.task,
+            &profiles,
+            &schemas,
+            &budgets,
+        )?;
     }
     if let Some((start, kind, _)) = open_block {
         let block = match kind {
             Block::Config => "```config".to_string(),
             Block::Schema(name) => format!("```json:{name}"),
-            Block::Loop(name) => format!("```loop:{name}"),
+            Block::Budget(name) => format!("```budget:{name}"),
         };
         return Err(ParseError::new(
             start,
@@ -446,7 +476,7 @@ fn flush(
     task: &mut Task,
     profiles: &Profiles,
     schemas: &Schemas,
-    loops: &LoopBlocks,
+    budgets: &BudgetBlocks,
 ) -> Result<(), ParseError> {
     if let Some(action) = pending.take() {
         task.actions.push(parse_action(
@@ -455,7 +485,7 @@ fn flush(
             &action.options,
             profiles,
             schemas,
-            loops,
+            budgets,
         )?);
     }
     Ok(())
@@ -467,9 +497,9 @@ fn flush(
 ///
 /// An agent action also gets the model profile that its
 /// `model=` names, the schema block that its `output_schema=` names, the
-/// loop block that its `loop=` names, and the model profile that its
+/// budget block that its `budget=` names, and the model profile that its
 /// `judge_model=` names. Then the parser makes sure that the
-/// options of the agent action, with the options of its loop block, are
+/// options of the agent action, with the options of its budget block, are
 /// valid (see [`AgentConfig::check`]).
 fn parse_action(
     value: &str,
@@ -477,7 +507,7 @@ fn parse_action(
     options: &[(usize, String)],
     profiles: &Profiles,
     schemas: &Schemas,
-    loops: &LoopBlocks,
+    budgets: &BudgetBlocks,
 ) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
     // The agent of a `foreach` action needs its profile too.
@@ -519,23 +549,23 @@ fn parse_action(
         params,
         profile,
         output_schema,
-        loop_block,
+        budget_block,
         judge_profile,
     } = agent_actor
     {
         let error = |message| ParseError::new(line, message);
         *profile = Some(profile::resolve(*agent, params, profiles).map_err(error)?);
         *output_schema = schema::resolve(params, schemas).map_err(error)?;
-        // Only an `autonomous` agent takes `loop=`. For another agent,
+        // Only an `autonomous` agent takes `budget=`. For another agent,
         // `AgentConfig::check` names the option.
         if *agent == AgentType::Autonomous {
-            *loop_block = loop_block::resolve(params, loops).map_err(error)?;
+            *budget_block = budget_block::resolve(params, budgets).map_err(error)?;
         }
-        let merged = match loop_block {
+        let merged = match budget_block {
             Some(block) => block.merge(params),
             None => params.clone(),
         };
-        // `judge_model=` can come from the loop block. For another agent,
+        // `judge_model=` can come from the budget block. For another agent,
         // `AgentConfig::check` names the option.
         if *agent == AgentType::Autonomous
             && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
@@ -784,7 +814,7 @@ impl FromStr for Actor {
                     params: split_quoted(rest)?,
                     profile: None,
                     output_schema: None,
-                    loop_block: None,
+                    budget_block: None,
                     judge_profile: None,
                 }),
                 None => Err(format!(

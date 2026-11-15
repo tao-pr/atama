@@ -37,8 +37,8 @@ pub struct Protect {
 }
 
 /// Reads the patterns of `protect=<patterns>`. Commas and new lines
-/// separate the patterns. A loop block writes a list as `- <item>` lines,
-/// so a leading `- ` is not part of a pattern.
+/// separate the patterns. A leading `- ` is not part of a pattern, so a
+/// value can also be a list of `- <item>` lines.
 ///
 /// Fails if there is no pattern, or a pattern is invalid (see
 /// [`check_pattern`]).

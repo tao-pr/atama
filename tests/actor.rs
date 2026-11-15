@@ -930,7 +930,7 @@ fn agent_tool_runs_the_agent_loop_with_its_params_and_input() {
         params: vec!["model=p".into(), "task=find it".into()],
         profile: Some(profile(&url)),
         output_schema: None,
-        loop_block: None,
+        budget_block: None,
         judge_profile: None,
     };
     assert_eq!(actor.act("the input"), Ok("done".to_string()));
@@ -950,7 +950,7 @@ fn act_with_debug_writes_agent_debug_output_only() {
         params: vec!["model=p".into(), "task=t".into()],
         profile: Some(profile(&url)),
         output_schema: None,
-        loop_block: None,
+        budget_block: None,
         judge_profile: None,
     };
     let mut out = Vec::new();
@@ -978,7 +978,7 @@ fn agent_tool_fails_when_the_model_server_is_unreachable() {
         params: vec!["model=p".into(), "task=t".into()],
         profile: Some(profile(&url)),
         output_schema: None,
-        loop_block: None,
+        budget_block: None,
         judge_profile: None,
     };
     let err = actor.act("").unwrap_err();
@@ -1090,7 +1090,7 @@ fn foreach_gives_the_debug_output_to_each_run() {
         params: vec!["model=p".into()],
         profile: Some(profile(&url)),
         output_schema: None,
-        loop_block: None,
+        budget_block: None,
         judge_profile: None,
     });
     let mut out = Vec::new();

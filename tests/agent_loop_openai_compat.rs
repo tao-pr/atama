@@ -996,14 +996,12 @@ fn run_loop_runs_the_judges_of_an_autonomous_agent() {
 }
 
 #[test]
-fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
-    let block = atama::loop_block::parse_block(
+fn run_loop_takes_the_options_and_tools_of_the_budget_block() {
+    let block = atama::budget_block::parse_block(
         "fix",
         &[
             "max_iterations: 7",
             "success_check: false",
-            "guardrails:",
-            "- Do not push.",
             "tools:",
             "- read_file max_calls=2",
         ],
@@ -1012,11 +1010,18 @@ fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
     let (url, requests) = serve(vec![(200, text_response("done"))]);
     let mut out = Vec::new();
     let output = AgentToolLoop::new(AgentType::Autonomous)
-        .loop_block(Some(block))
+        .budget_block(Some(block))
         .debug(&mut out)
         .run_loop_with_env(
-            // The action replaces the success check of the block.
-            &params(&["model=m", "task=t", "loop=fix", "success_check=true"]),
+            // The action replaces the success check of the block, and
+            // sets the guardrails.
+            &params(&[
+                "model=m",
+                "task=t",
+                "budget=fix",
+                "success_check=true",
+                "guardrails=- Do not push.",
+            ]),
             Some(&profile(&url)),
             "",
             &no_env,
@@ -1042,16 +1047,16 @@ fn run_loop_takes_the_options_and_tools_of_the_loop_block() {
 }
 
 #[test]
-fn run_loop_fails_if_loop_names_no_block() {
+fn run_loop_fails_if_budget_names_no_block() {
     let err = AgentToolLoop::new(AgentType::Autonomous)
         .run_loop_with_env(
-            &params(&["model=m", "loop=fix", "success=x"]),
+            &params(&["model=m", "budget=fix", "success=x"]),
             Some(&profile("http://x.test")),
             "",
             &no_env,
         )
         .unwrap_err();
-    assert_eq!(err, "loop block `fix` is not defined in the job");
+    assert_eq!(err, "budget block `fix` is not defined in the job");
 }
 
 #[test]

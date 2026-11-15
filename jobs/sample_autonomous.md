@@ -2,21 +2,10 @@
 claude-haiku: model=claude-haiku-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY
 ```
 
-```loop:report
+```budget:report
 max_iterations: 4
 max_time: 10m
 token_budget: 200000
-success_check: python3 ./output/autonomous/check_report.py ./output/autonomous/report.json
-task:
-  - Write ./output/autonomous/report.json with the release cycles of python, nodejs and postgresql that are not end of life today.
-  - Find an API with JSON end-of-life data in the search results in ./output/autonomous/search.json.
-  - Download the JSON of each product into ./output/autonomous/data/.
-  - Write ./output/autonomous/build_report.py, which reads the downloaded files and writes the report. Run it.
-  - Report format, as JSON. Top level keys generated (today, YYYY-MM-DD) and products. products maps each product to a list of cycles, in the order of the source. Each cycle has the keys cycle, latest, eol (the date of the source, or false) and days_left (the days from today to eol, or null if eol is false).
-protect:
-  - ./output/autonomous/check_report.py
-guardrails:
-  - Write files only in ./output/autonomous/.
 ```
 
 # Autonomous sample
@@ -25,7 +14,7 @@ Which release cycles of Python, Node.js and PostgreSQL are still supported?
 A `coder` agent writes a checker that knows the answer. Then an
 `autonomous` agent searches, downloads and parses the data, and writes a
 Python script, until the checker accepts its report. The agent cannot
-change the checker, because `protect:` blocks each write to it. Needs
+change the checker, because `protect=` blocks each write to it. Needs
 macOS, `python3`, `CLAUDE_API_KEY` and `TAVILY_API_KEY`. The agents run
 commands with your permissions. Every file goes into `./output/autonomous/`.
 
@@ -68,4 +57,18 @@ cargo run -- jobs/sample_autonomous.md
 - actions:
   - agent:autonomous
     - model=claude-haiku
-    - loop=report
+    - budget=report
+    - success_check=python3 ./output/autonomous/check_report.py ./output/autonomous/report.json
+    - task=Write ./output/autonomous/report.json with the release cycles of
+      python, nodejs and postgresql that are not end of life today. Find an
+      API with JSON end-of-life data in the search results in
+      ./output/autonomous/search.json. Download the JSON of each product into
+      ./output/autonomous/data/. Write ./output/autonomous/build_report.py,
+      which reads the downloaded files and writes the report. Run it. Report
+      format, as JSON. Top level keys generated (today, YYYY-MM-DD) and
+      products. products maps each product to a list of cycles, in the order
+      of the source. Each cycle has the keys cycle, latest, eol (the date of
+      the source, or false) and days_left (the days from today to eol, or null
+      if eol is false).
+    - protect=./output/autonomous/check_report.py
+    - guardrails=Write files only in ./output/autonomous/.

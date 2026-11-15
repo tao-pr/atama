@@ -190,7 +190,7 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`toolGuard=`, `max_violations=`, `protect=`, `loop=` and `judge_model=`. Other
+`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. Other
 agent types fail on the options of another type (`only_for`).
 
 The options of an agent action are not on the line of the action. They are
@@ -410,7 +410,8 @@ fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
 
 `protect=<patterns>` names the paths that the tools of an `autonomous`
 agent cannot write. The code is in `src/protect.rs`. Commas or new lines
-separate the patterns, so a loop block can have a `protect:` list.
+separate the patterns. `protect=` is an option of the action, not of a
+budget block.
 `parse_patterns` and `check_pattern` read them when the job is parsed.
 
 A pattern is a glob, relative to the working directory or absolute. `*`
@@ -457,24 +458,28 @@ the compacted conversation. A failed summary request fails the run.
 `judge::evidence` includes the summary, so the success judge sees the
 earlier work. Tests are in `tests/context.rs`.
 
-### Loop blocks
+### Budget blocks
 
-`src/loop_block.rs` reads ```` ```loop:<name> ```` blocks. `parse_job`
-reads each block with `loop_block::parse_block` into a `LoopBlock`: its
-options as `key=value` params (`LoopBlock::params`) and its `tools:` as
+`src/budget_block.rs` reads ```` ```budget:<name> ```` blocks. `parse_job`
+reads each block with `budget_block::parse_block` into a `BudgetBlock`: its
+options as `key=value` params (`BudgetBlock::params`) and its `tools:` as
 `ToolLimits`. A list of text becomes one value with a `- <item>` line for
 each item. `BLOCK_KEYS` are the keys that a block can set, besides `tools`.
+A budget block holds only the general configuration that many actions use,
+for example limits and tools. `ACTION_KEYS` (`task`, `protect` and
+`guardrails`) change with each action, so they are options of the action
+only. `parse_block` fails on them.
 
-For an `autonomous` action, `parse_action` uses `loop_block::resolve` to
-put the block that `loop=<name>` names into `Actor::AgentTool::loop_block`.
-`AgentToolLoop::run_loop_with_env` reads `LoopBlock::merge`, the options of
+For an `autonomous` action, `parse_action` uses `budget_block::resolve` to
+put the block that `budget=<name>` names into `Actor::AgentTool::budget_block`.
+`AgentToolLoop::run_loop_with_env` reads `BudgetBlock::merge`, the options of
 the block and then the options of the action, so that an option of the
-action replaces the option of the block. `LoopBlock::make_tools` makes the
+action replaces the option of the block. `BudgetBlock::make_tools` makes the
 tools of `tools:`, each in a `Limited`, and they replace the default
-tools. Tests are in `tests/loop_block.rs`.
+tools. Tests are in `tests/budget_block.rs`.
 
 `parse_action` also calls `AgentConfig::check` for each agent action, with
-the options of its loop block. It reads the options as
+the options of its budget block. It reads the options as
 `AgentConfig::from_params` does, but it does not read the API key. So an
 invalid option stops the job before it starts.
 

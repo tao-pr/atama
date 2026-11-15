@@ -11,8 +11,8 @@ use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
 use crate::agent_loop_openai_compat::AgentToolLoop;
+use crate::budget_block::BudgetBlock;
 use crate::http::{agent, read_response};
-use crate::loop_block::LoopBlock;
 use crate::passer::Passer;
 use crate::profile::ModelProfile;
 use crate::schema::OutputSchema;
@@ -74,11 +74,11 @@ pub enum Actor {
         /// `output_schema=`, its value is a path, or the action is parsed on
         /// its own.
         output_schema: Option<OutputSchema>,
-        /// The loop block that `loop=<name>` names. The job parser sets it
-        /// from the ```` ```loop:<name> ```` blocks of the job (see
-        /// [`crate::loop_block`]). It is `None` if the action has no
-        /// `loop=`, or the action is parsed on its own.
-        loop_block: Option<LoopBlock>,
+        /// The budget block that `budget=<name>` names. The job parser sets it
+        /// from the ```` ```budget:<name> ```` blocks of the job (see
+        /// [`crate::budget_block`]). It is `None` if the action has no
+        /// `budget=`, or the action is parsed on its own.
+        budget_block: Option<BudgetBlock>,
         /// The model profile that `judge_model=` names. The job parser sets
         /// it from the ```` ```config ```` block of the job. It is `None` if
         /// the action has no `judge_model=`, or it is parsed on its own. It
@@ -264,12 +264,12 @@ impl Actor {
                 params,
                 profile,
                 output_schema,
-                loop_block,
+                budget_block,
                 judge_profile,
             } => {
                 let mut agent_loop = AgentToolLoop::new(*agent)
                     .schema_block(output_schema.clone())
-                    .loop_block(loop_block.clone())
+                    .budget_block(budget_block.clone())
                     .judge_profile(judge_profile.as_deref().cloned());
                 match debug {
                     Some(debug) => {
