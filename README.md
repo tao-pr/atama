@@ -317,3 +317,12 @@ cargo test --test cli
 
 Integration tests are in `tests/`, one file per test crate. The tests never
 call a real model or the real Tavily API, so `cargo test` needs no network.
+
+## Utilities / Scripts
+
+If you run local LLM via Ollama, list the models and params with:
+
+```bash
+./ollama-list-models.sh
+./ollama-list-params.sh <hostname>
+```
