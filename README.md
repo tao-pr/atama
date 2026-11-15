@@ -131,6 +131,9 @@ agent types:
   is a bash command, criteria for a judge model, or both. Limits on
   iterations, steps, tokens and time stop the run. Guardrails tell the agent
   what it must not do, and a judge can block a tool call that breaks them.
+  Protected paths (`protect=`) are paths that the agent cannot write. Atama
+  enforces them without a model, with the
+  [macOS sandbox](ACTIONS.md#protected-paths) for `bash`.
 
 [ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
 ```` ```loop:<name> ```` block can hold the options of an `autonomous`
