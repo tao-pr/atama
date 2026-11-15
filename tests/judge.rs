@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use atama::AgentToolLoop;
 use atama::actor::AgentType;
 use atama::agent_loop_openai_compat::agent_options::Guard;
-use atama::agent_loop_openai_compat::checks::{CheckResult, FinalCheck};
+use atama::agent_loop_openai_compat::checks::{CheckResult, FinalLoopCheck};
 use atama::agent_loop_openai_compat::judge::{
     Judge, MAX_EVIDENCE_CHARS, SuccessJudge, Verdict, evidence, review, verdict_schema,
 };

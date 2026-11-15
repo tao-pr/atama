@@ -11,7 +11,7 @@ use serde_json::json;
 
 use atama::AgentToolLoop;
 use atama::actor::{AgentType, run_bash, run_process};
-use atama::agent_loop_openai_compat::checks::{CheckResult, CommandCheck, FinalCheck};
+use atama::agent_loop_openai_compat::checks::{CheckResult, CommandCheck, FinalLoopCheck};
 use atama::agent_loop_openai_compat::judge::Judge;
 use atama::agent_loop_openai_compat::tools::{Bash, Limited};
 use atama::agent_loop_openai_compat::{ChatClient, Message, Reply, Tool, ToolCall};

@@ -19,7 +19,7 @@ use crate::schema::OutputSchema;
 /// summary last.
 pub const MAX_CHECK_CHARS: usize = 5_000;
 
-/// The result of a [`FinalCheck`].
+/// The result of a [`FinalLoopCheck`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckResult {
     /// The reply passes. The value is the output, which can be different
@@ -31,22 +31,15 @@ pub enum CheckResult {
     Retry { message: String, error: String },
 }
 
-/// A rule that a reply without tool calls must pass.
-pub trait FinalCheck {
-    /// Examines `reply`, the text of a reply without tool calls. A check
-    /// that asks a model uses `judge`. `messages` is the conversation so
-    /// far, without the reply.
+/// A rule that a fianl loop reply without tool calls must pass.
+pub trait FinalLoopCheck {
+    /// Checks the final `reply` against the conversation `messages`, with `judge` for model checks.
     fn check(&mut self, reply: &str, judge: &mut Judge, messages: &[Message]) -> CheckResult;
-    /// Says what failed, for the debug header of a failed check, as in
-    /// "reply does not match output schema `article`".
+    /// What failed, for the debug output.
     fn rejection(&self) -> String;
-    /// Says what the run did not do if the last failed check is this one,
-    /// as in "did not reply with JSON that matches output schema `article`".
+    /// What the run did not do, for the error of a failed run.
     fn failure(&self) -> String;
-    /// Whether a failed check ends the iteration, so that the next one
-    /// starts. A check of the form of a reply, such as [`SchemaCheck`],
-    /// does not end it. A check of the work, such as [`CommandCheck`], ends
-    /// it.
+    /// Whether a failure starts the next iteration.
     fn ends_iteration(&self) -> bool {
         false
     }
@@ -69,7 +62,7 @@ pub struct Rejection {
 ///
 /// Fails at the first check that gives [`CheckResult::Retry`].
 pub fn run_checks(
-    checks: &mut [Box<dyn FinalCheck>],
+    checks: &mut [Box<dyn FinalLoopCheck>],
     reply: &str,
     judge: &mut Judge,
     messages: &[Message],
@@ -102,7 +95,7 @@ impl SchemaCheck {
     }
 }
 
-impl FinalCheck for SchemaCheck {
+impl FinalLoopCheck for SchemaCheck {
     fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         match self.schema.check_reply(reply) {
             Ok(json) => CheckResult::Done(json),
@@ -174,7 +167,7 @@ impl CommandCheck {
     }
 }
 
-impl FinalCheck for CommandCheck {
+impl FinalLoopCheck for CommandCheck {
     fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         match self.run() {
             Ok(()) => CheckResult::Done(reply.to_string()),

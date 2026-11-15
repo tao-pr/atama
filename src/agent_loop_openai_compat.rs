@@ -59,7 +59,7 @@ use agent_options::{
     AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, Guard, format_duration,
 };
 use budget::{RunBudget, StopReason};
-use checks::{CommandCheck, FinalCheck, Rejection, SchemaCheck};
+use checks::{CommandCheck, FinalLoopCheck, Rejection, SchemaCheck};
 use judge::{Judge, SuccessJudge};
 
 /// One message of the conversation with the model.
@@ -571,7 +571,7 @@ impl<'a> AgentToolLoop<'a> {
         for tool in &mut self.tools {
             tool.set_deadline_time(deadline_time);
         }
-        let mut checks: Vec<Box<dyn FinalCheck>> = Vec::new();
+        let mut checks: Vec<Box<dyn FinalLoopCheck>> = Vec::new();
         if let Some(schema) = &self.output_schema {
             checks.push(Box::new(SchemaCheck::new(schema.clone())));
         }
@@ -778,7 +778,7 @@ impl<'a> AgentToolLoop<'a> {
     fn stop_error(
         &self,
         reason: &StopReason,
-        checks: &[Box<dyn FinalCheck>],
+        checks: &[Box<dyn FinalLoopCheck>],
         last_failure: Option<(usize, String)>,
     ) -> String {
         let label = self.label();

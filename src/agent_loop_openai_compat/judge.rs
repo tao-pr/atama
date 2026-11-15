@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use super::checks::{CheckResult, FinalCheck, tail};
+use super::checks::{CheckResult, FinalLoopCheck, tail};
 use super::context::SUMMARY_HEADER;
 use super::{ChatClient, Message, ToolCall};
 use crate::schema::OutputSchema;
@@ -106,7 +106,7 @@ impl SuccessJudge {
     }
 }
 
-impl FinalCheck for SuccessJudge {
+impl FinalLoopCheck for SuccessJudge {
     fn check(&mut self, reply: &str, judge: &mut Judge, messages: &[Message]) -> CheckResult {
         let question = format!(
             "Task:\n{}\n\nSuccess criteria:\n{}\n\nThe tool calls of the agent and their \

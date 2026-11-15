@@ -163,7 +163,7 @@ The code of the loop is in six files:
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
 - `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
 - `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
-- `src/agent_loop_openai_compat/checks.rs` has the `FinalCheck` trait and `SchemaCheck`.
+- `src/agent_loop_openai_compat/checks.rs` has the `FinalLoopCheck` trait and `SchemaCheck`.
 
 A step is one request to the model and its one reply. An iteration is one
 attempt at the whole task. It ends when the agent replies without tool
@@ -325,7 +325,7 @@ agent types fail on them (`only_for`). `parse_duration` reads `90s`, `20m`
 or `1h`, and `format_duration` writes it back.
 
 `checks::CommandCheck` runs the success check with `bash -c`. It is a
-`FinalCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
+`FinalLoopCheck` whose `ends_iteration` is true. If it fails, `run_with` calls
 `RunBudget::next_iteration`, and gives the model the exit status and the
 end of stdout and stderr (`checks::tail`, `MAX_CHECK_CHARS`). The output
 schema check runs first, and its failure does not end the iteration.
