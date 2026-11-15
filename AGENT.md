@@ -50,7 +50,9 @@ description
 - actions:
   - action1
   - action2
-  - action3
+  - agent:<type>
+    - model=<profile name>
+    - <key>=<value>
 - if_fail: <hook action>
 - if_succeed: <hook action>
 
@@ -72,7 +74,9 @@ description
 ````
 
 The optional `config` block defines model profiles for agent actions (see
-"Model, debug output and tests" below).
+"Model, debug output and tests" below). The options of an agent action are a
+list under the action, one `- <key>=<value>` bullet for each option (see
+"Options of an agent action" below).
 
 ### Parallel actions
 
@@ -120,9 +124,11 @@ with the begin hook.
 ## Actors
 
 An actor is the code that carries out one action of a task. The `Actor` enum
-is in `src/actor.rs`. The parser makes one actor from each action line. The
-first word of the line selects the variant. `src/actor/display.rs` writes an
-actor back as an action line.
+is in `src/actor.rs`. The parser makes one actor from each action bullet.
+The first word of the bullet selects the variant. An agent action also takes
+the option bullets under it. `src/actor/display.rs` writes an actor back as
+one line, with the options of an agent on the same line, for the log and
+the `--dry-run` summary.
 
 Each actor gets the output of the previous action as its input, and returns
 its own output. The main actor types are:
@@ -131,7 +137,7 @@ its own output. The main actor types are:
 - `BashSandbox` (`bash-sandbox <cmd> [args...]`) runs a command in bash inside `sandbox-exec`, on macOS only. The profile, `src/actor/bash_sandbox.sb`, denies the network, `sudo`, `su` and `login`, and files outside the working directory, except the system directories that programs need. `run_bash_sandbox` in `src/actor.rs` sets `PATH` to `SANDBOX_PATH` and stops if the user is root.
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
-- `AgentTool` (`agent:<type> ...`) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
+- `AgentTool` (`agent:<type>`, with its options in a list under it) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -205,11 +211,15 @@ the next action, field or task, and adds each deeper bullet to its options.
 `indentation` counts a tab as 4 columns. An indented line without a bullet
 continues the last option, after a space. `flush` then calls `parse_action`
 with the options. An option on the line of the action is a parse error.
+An action on the line of the `- actions:` field takes no list, so an agent
+action must be in its own bullet.
 A list under an action that is not `agent:<type>` or
 `foreach agent:<type>` is also a parse error. A value needs no quotes. If
 the whole value is in double quotes, `unquote_option` removes them with
 `split_quoted`. Inside quotes, `\"` is a quote and `\\` is a backslash.
 `str::parse` alone still reads the options from one line, for tests.
+Tests of the list are in `tests/parser.rs`. Its `listed` helper writes a
+one-line agent action of a test as a list, for `parse_job`.
 
 `Values::read` in `agent_options.rs` reads each param for
 `AgentConfig::from_params`. It fails on a word without `=` and on an
