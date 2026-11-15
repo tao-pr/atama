@@ -266,7 +266,7 @@ fn reads_model_profiles_from_the_config_block() {
 
 #[test]
 fn reads_the_token_budget_of_a_profile() {
-    let profile: ModelProfile = "p: model=m, base_url=http://x.test, token_budget=5000"
+    let profile: ModelProfile = "p: model=m, base_url=http://x.test, token_budget=5_000"
         .parse()
         .unwrap();
     assert_eq!(profile.token_budget, Some(5000));
@@ -1823,7 +1823,7 @@ fn sample_autonomous_job_checks_the_agent_with_the_script_of_the_coder() {
         .expect("the agent has its budget block");
     assert_eq!(
         block.params,
-        ["max_iterations=4", "max_time=10m", "token_budget=200000"]
+        ["max_iterations=4", "max_time=10m", "token_budget=100_000"]
     );
     for param in [
         "success_check=python3 ./output/autonomous/check_report.py \

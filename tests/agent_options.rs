@@ -73,6 +73,14 @@ fn the_token_budget_of_the_action_replaces_the_budget_of_the_profile() {
     assert_eq!(budget(&["model=m"], Some(9000)), Some(9000));
     assert_eq!(budget(&["model=m", "token_budget=500"], None), Some(500));
     assert_eq!(
+        budget(&["model=m", "token_budget=100_000"], None),
+        Some(100_000)
+    );
+    assert_eq!(
+        budget(&["model=m", "token_budget=1_000_000"], None),
+        Some(1_000_000)
+    );
+    assert_eq!(
         budget(&["model=m", "token_budget=500"], Some(9000)),
         Some(500)
     );
@@ -192,6 +200,26 @@ fn rejects_invalid_configuration() {
         (
             vec!["model=m", "token_budget=-5"],
             "`token_budget=-5` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=_100"],
+            "`token_budget=_100` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=100_"],
+            "`token_budget=100_` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=1__000"],
+            "`token_budget=1__000` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=_"],
+            "`token_budget=_` is not a positive number",
+        ),
+        (
+            vec!["model=m", "token_budget=0_000"],
+            "`token_budget=0_000` is not a positive number",
         ),
     ];
     for (input, message) in cases {

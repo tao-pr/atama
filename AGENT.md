@@ -510,6 +510,7 @@ data before Atama stops, so that the coverage of these tests counts.
 `token_budget=<n>` limits the tokens of one run. A model profile can set
 it, and the option of the action replaces the value of the profile
 (`AgentConfig::from_params`). `profile::parse_token_budget` reads both.
+An `_` between two digits separates groups of digits, as in `100_000`.
 `openai::parse_reply` reads `usage.total_tokens` into `Reply::tokens`.
 
 `RunBudget::add_tokens` adds up the tokens of each reply. Before each

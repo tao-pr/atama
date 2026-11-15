@@ -278,7 +278,7 @@ Options of every agent:
 | `model=<profile>` | Yes | The name of a model profile in the `config` block. An unknown name stops the job before it starts. |
 | `task="<text>"` | No | The instruction. The input of the action goes below it. The action fails if it has no task and no input. |
 | `max_steps=<n>` | No | The most model replies in one run, a number above 0. The default is 10, and 50 for `autonomous`. |
-| `token_budget=<n>` | No | The most tokens in one run, a number above 0. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
+| `token_budget=<n>` | No | The most tokens in one run, a number above 0. An `_` between two digits separates groups of digits, as in `100_000`. It replaces the `token_budget=` of the model profile. Without both, there is no limit. See "Token budget" in [README.md](README.md). |
 | `max_context=<n>` | No | The most tokens of the conversation, a number above 0. Before a request that is over it, Atama asks the model for a summary of the work so far, and sends the request with the system prompt, the task and the summary only. The summary costs tokens of the budget. Atama estimates 4 characters for one token. Without this option, Atama never summarizes. |
 | `thinking=<true\|false>` | No | `false` sends `"reasoning_effort": "none"`, which turns off the thinking of the model on Ollama. Other servers can reject it. `true` is the same as no option. |
 | `output_schema=<name\|path>` | No | Makes the output a JSON value that matches a schema. See "Output schemas" in [README.md](README.md). |
@@ -493,7 +493,7 @@ These options are `task=`, `protect=` and `guardrails=`. A budget block with
 ```budget:standard
 max_iterations: 5
 max_time: 20m
-token_budget: 200000
+token_budget: 200_000
 toolGuard: judge
 tools:
   - read_file

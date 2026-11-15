@@ -36,15 +36,29 @@ pub struct ModelProfile {
     pub token_budget: Option<u64>,
 }
 
-/// Reads the value of `token_budget=`, a positive number of tokens.
+/// Reads the value of `token_budget=`, a positive number of tokens. An
+/// `_` between two digits separates groups of digits, as in `100_000`.
 ///
-/// Fails if `value` is not a positive whole number.
+/// Fails if `value` is not a positive whole number, or an `_` is not
+/// between two digits.
 pub fn parse_token_budget(value: &str) -> Result<u64, String> {
+    let error = || format!("`token_budget={value}` is not a positive number");
+    let bytes = value.as_bytes();
+    let separators_ok = bytes.iter().enumerate().all(|(index, byte)| {
+        *byte != b'_'
+            || (index > 0
+                && bytes[index - 1].is_ascii_digit()
+                && bytes.get(index + 1).is_some_and(u8::is_ascii_digit))
+    });
+    if !separators_ok {
+        return Err(error());
+    }
     value
+        .replace('_', "")
         .parse()
         .ok()
         .filter(|tokens| *tokens > 0)
-        .ok_or_else(|| format!("`token_budget={value}` is not a positive number"))
+        .ok_or_else(error)
 }
 
 /// Reads one profile line:

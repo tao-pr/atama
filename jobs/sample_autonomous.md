@@ -5,7 +5,7 @@ claude-haiku: model=claude-haiku-5-5, base_url=https://api.anthropic.com/v1, api
 ```budget:report
 max_iterations: 4
 max_time: 10m
-token_budget: 200000
+token_budget: 100_000
 ```
 
 # Autonomous sample
