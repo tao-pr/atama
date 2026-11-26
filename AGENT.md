@@ -506,6 +506,24 @@ the options of its budget block. It reads the options as
 `AgentConfig::from_params` does, but it does not read the API key. So an
 invalid option stops the job before it starts.
 
+## Claude agent (in progress)
+
+`src/agent_loop_claude.rs` is the start of the `claude-agent` agent type.
+It runs a Claude Managed Agent with the Managed Agents API (`/v1/agents`,
+`/v1/environments`, `/v1/sessions`), not with `/chat/completions`. It does
+not change the OpenAI compatible loop. `PLAN-claude-agent.md` has the plan
+and the status of each phase. No job file can use the agent type yet.
+
+The modules are:
+
+- `src/agent_loop_claude/api.rs` has the `AgentsApi` trait, its HTTP client `HttpAgentsApi`, and `ApiError`. Each request sends `x-api-key`, `anthropic-version` (`API_VERSION`) and `anthropic-beta` (`BETA`).
+- `src/agent_loop_claude/sse.rs` has `SseReader`, which reads the server-sent events of the event stream.
+- `src/agent_loop_claude/events.rs` has `SessionEvent` and `parse_event`. An unknown event type becomes `SessionEvent::Other`. `Usage` reads the cumulative usage of a `session.usage` event.
+
+Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs` and
+`tests/claude_events.rs`. Tests must not call the real API. Use a local
+mock server, as `tests/claude_api.rs` does, or a mock `AgentsApi`.
+
 ## Signals
 
 `actor::run_process` runs every command in its own process group, and puts

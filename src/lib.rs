@@ -1,6 +1,7 @@
 //! Atama: automation pipeline as code, defined in markdown.
 
 pub mod actor;
+pub mod agent_loop_claude;
 pub mod agent_loop_openai_compat;
 pub mod budget_block;
 pub mod executor;
