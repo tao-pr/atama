@@ -14,6 +14,7 @@ pub mod protect;
 pub mod schema;
 pub mod signals;
 pub mod tavily;
+pub mod tools;
 pub mod websearch;
 
 pub use actor::Actor;

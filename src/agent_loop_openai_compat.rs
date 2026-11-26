@@ -102,31 +102,9 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// A tool that the model can call.
-pub trait Tool {
-    /// The name that the model uses to call the tool.
-    fn name(&self) -> &str;
-    /// Tells the model what the tool does.
-    fn description(&self) -> &str;
-    /// JSON schema of the arguments.
-    fn parameters(&self) -> Value;
-    /// Runs the tool and returns its result for the model.
-    fn call(&mut self, arguments: &Value) -> Result<String, String>;
-    /// Whether the model can call the tool now. A request offers only the
-    /// available tools. A tool at its call limit is not available (see
-    /// [`tools::Limited`]).
-    fn available(&self) -> bool {
-        true
-    }
-    /// Sets the deadline of the run. A tool that runs a command stops it
-    /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
-    /// The default does nothing.
-    fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
-    /// Sets the protected paths of the run, from `protect=`. A tool that
-    /// writes files must not write them, as `bash` and `write_file` do (see
-    /// [`crate::protect`]). The default does nothing.
-    fn set_protect(&mut self, _protect: Option<Arc<Protect>>) {}
-}
+/// A tool that the model can call. The trait is in the shared tool layer,
+/// [`crate::tools`], so that every agent loop can use the same tools.
+pub use crate::tools::Tool;
 
 /// A chat model that can call tools.
 pub trait ChatClient {

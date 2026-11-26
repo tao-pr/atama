@@ -173,10 +173,10 @@ the model replies without a tool call, that reply is the output.
 
 The code of the loop is in six files:
 
-- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `Tool` and `ChatClient` traits.
+- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `ChatClient` trait. It re-exports the `Tool` trait of `src/tools.rs`.
 - `src/agent_loop_openai_compat/agent_options.rs` has the options of an agent action: `AgentConfig`, `WebSearchOptions`, `SummarizerOptions`, `MaxOutput`, and the defaults and environment variable names of the options.
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
-- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/tools.rs` has the tools of each `AgentType`. It re-exports the shared tools of `src/tools.rs` at their old paths.
 - `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
 - `src/agent_loop_openai_compat/checks.rs` has the `FinalLoopCheck` trait and `SchemaCheck`.
 
@@ -287,12 +287,25 @@ model gets the error text as the tool result, and it can try again.
 
 ### Tools of each agent type
 
+The tools are in a shared tool layer, `src/tools.rs`, so that every agent
+loop can use them. It does not depend on an API. The files are:
+
+- `src/tools.rs` has the `Tool` trait, `MAX_RESULT_CHARS` and `truncate`.
+- `src/tools/registry.rs` has the registry, `TOOL_NAMES` and `tool_by_name`.
+- `src/tools/limited.rs` has `Limited`, `DEFAULT_MAX_CALLS` and `DEFAULT_MAX_FAILURES`.
+- `src/tools/bash.rs` has `Bash`.
+- `src/tools/files.rs` has `ReadFile`, `WriteFile` and `ListFiles`.
+
+`src/agent_loop_openai_compat/tools.rs` re-exports these items, so that
+the old paths, as in `agent_loop_openai_compat::tools::Bash`, still work.
+
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
 The registry (`tools::tool_by_name` and `tools::TOOL_NAMES`) makes each
-tool by its name: `bash`, `read_file`, `write_file` and `list_files`.
-`tools::default_tool_names` names the tools of each agent type, and
-`tools::default_tools` makes them:
+tool by its name: `bash`, `read_file`, `write_file` and `list_files`. Each
+call makes a new tool, so two agents do not share the state of a tool.
+`agent_loop_openai_compat::tools::default_tool_names` names the tools of
+each agent type, and `default_tools` makes them:
 
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
@@ -317,11 +330,12 @@ The model of an agent can call only the tools that `default_tools` gives to
 its agent type. For example, a `summarizer` agent cannot run `bash`. To give an
 agent type a new tool, do these steps:
 
-1. Write a type that implements `Tool` in `tools.rs`.
-2. Add the tool to `TOOL_NAMES` and `tool_by_name`.
+1. Write a type that implements `Tool` in a file of `src/tools/`.
+2. Add the tool to `TOOL_NAMES` and `tool_by_name` in `src/tools/registry.rs`.
 3. Add its name to the match arm of the agent type in `default_tool_names`.
 4. If the model must know when to use the tool, tell it in `system_prompt`.
-5. Add tests to `tests/agent_loop_openai_compat.rs`.
+5. Add tests of the tool to `tests/tools.rs`, and tests of the loop to
+   `tests/agent_loop_openai_compat.rs`.
 
 Tests of the options are in `tests/agent_options.rs`. Tests that run the
 loop are in `tests/agent_loop_openai_compat.rs`. Tests of `RunBudget` are
