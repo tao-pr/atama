@@ -2,7 +2,7 @@
 //! action, its options, the ```` ```claude-env:<name> ```` blocks, `effort=`
 //! on a model profile, and the warnings.
 
-use atama::actor::{Actor, CLAUDE_AGENT, CLAUDE_AGENT_NOT_READY};
+use atama::actor::{Actor, CLAUDE_AGENT};
 use atama::agent_loop_claude::definition::{EnvironmentDefinition, Networking};
 use atama::profile::{EFFORT_LEVELS, ModelProfile, parse_effort};
 use atama::{ParseWarning, parse_job, parse_job_with_warnings};
@@ -287,9 +287,22 @@ fn warns_when_an_agent_ignores_effort() {
 }
 
 #[test]
-fn a_claude_agent_cannot_run_yet() {
+fn a_claude_agent_runs_with_the_key_of_its_profile() {
+    // The test process has no `CLAUDE_KEY`, so the run stops before it
+    // sends a request.
     let action = first_action(&job("  - agent:claude-agent\n    - model=claude\n"));
-    assert_eq!(action.act("input").unwrap_err(), CLAUDE_AGENT_NOT_READY);
+    assert_eq!(
+        action.act("input").unwrap_err(),
+        "agent:claude-agent (claude): model profile `claude` needs the API key in `CLAUDE_KEY`, \
+         but `CLAUDE_KEY` is not set"
+    );
+    let mut debug = Vec::new();
+    assert!(
+        action
+            .act_with("input", Some(&mut debug))
+            .unwrap_err()
+            .contains("`CLAUDE_KEY` is not set")
+    );
     assert_eq!(CLAUDE_AGENT, "agent:claude-agent");
     // An action parsed on its own has no profile and no default name.
     let alone: Actor = "agent:claude-agent model=claude".parse().unwrap();
@@ -297,4 +310,75 @@ fn a_claude_agent_cannot_run_yet() {
         alone,
         Actor::ClaudeAgent { profile: None, ref default_name, .. } if default_name.is_empty()
     ));
+}
+
+#[test]
+fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners() {
+    let job = parse_job(include_str!("../jobs/sample_claude_agent.md")).expect("job should parse");
+    let names: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Prepare", "Search", "Last Results", "Form of the Winners"]
+    );
+    let actions = |task: usize| -> Vec<String> {
+        job.tasks[task]
+            .actions
+            .iter()
+            .map(|action| action.to_string())
+            .collect()
+    };
+    assert_eq!(
+        actions(1),
+        [
+            "websearch topic=\"Premier League results this week final scores\" max_results=10",
+            "write_file ./output/claude_agent/search.json",
+        ]
+    );
+
+    let agent = |task: usize| match &job.tasks[task].actions[1] {
+        Actor::ClaudeAgent {
+            params,
+            profile,
+            output_schema,
+            environment,
+            ..
+        } => (
+            params.clone(),
+            profile.clone().unwrap(),
+            output_schema.as_ref().map(|schema| schema.name.clone()),
+            environment.clone(),
+        ),
+        other => panic!("expected a claude agent, got {other:?}"),
+    };
+    for task in [2, 3] {
+        let (params, profile, _, environment) = agent(task);
+        assert_eq!(profile.model, "claude-opus-5-5");
+        assert_eq!(profile.api_key_env.as_deref(), Some("CLAUDE_API_KEY"));
+        assert_eq!(profile.effort.as_deref(), Some("high"));
+        // The agents only read the search results: no tools, the default
+        // environment.
+        assert!(
+            !params.iter().any(
+                |param| param.starts_with("native_tools=") || param.starts_with("local_tools=")
+            ),
+            "{params:?}"
+        );
+        assert!(environment.is_none());
+        assert!(params.contains(&"max_cost_usd=0.50".to_string()));
+    }
+    assert_eq!(agent(2).2.as_deref(), Some("matches"));
+    assert_eq!(agent(3).2, None);
+    assert_eq!(actions(2)[0], "read_file ./output/claude_agent/search.json");
+    assert_eq!(
+        actions(2)[2],
+        "write_file ./output/claude_agent/matches.json"
+    );
+    assert_eq!(
+        actions(3)[0],
+        "bash cat ./output/claude_agent/matches.json ./output/claude_agent/search.json"
+    );
+    assert_eq!(
+        actions(3)[2],
+        "write_file ./output/claude_agent/winners_form.md"
+    );
 }

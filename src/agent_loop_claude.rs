@@ -22,6 +22,8 @@
 //! - [`env_block`] reads the ```` ```claude-env:<name> ```` blocks.
 //! - [`lock`] keeps the IDs of the agents and environments in
 //!   `.atama/claude-lock.json`.
+//! - [`run`] has [`ClaudeAgentRun`], one run of an action: the session,
+//!   its events, the tool calls and the reply.
 //!
 //! `PLAN-claude-agent.md` describes the plan of the agent type.
 
@@ -33,4 +35,7 @@ pub mod events;
 pub mod lock;
 pub mod native_tools;
 pub mod options;
+pub mod run;
 pub mod sse;
+
+pub use run::ClaudeAgentRun;

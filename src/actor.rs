@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
+use crate::agent_loop_claude::ClaudeAgentRun;
 use crate::agent_loop_claude::definition::EnvironmentDefinition;
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::budget_block::BudgetBlock;
@@ -88,9 +89,8 @@ pub enum Actor {
         /// is in a box, so that it does not make every `Actor` larger.
         judge_profile: Option<Box<ModelProfile>>,
     },
-    /// Runs a Claude Managed Agent (`agent:claude-agent`). See
-    /// [`crate::agent_loop_claude`]. It cannot run yet: the run comes in
-    /// phase 5 of `PLAN-claude-agent.md`.
+    /// Runs a Claude Managed Agent (`agent:claude-agent`) with
+    /// [`ClaudeAgentRun`]. Carries the last message of the agent as output.
     ClaudeAgent {
         /// Options of the agent, in order, such as `task=Fix the tests`.
         params: Vec<String>,
@@ -165,10 +165,6 @@ pub enum ApiVerb {
     PATCH,
     HEAD,
 }
-
-/// The error of an [`Actor::ClaudeAgent`] until its run exists.
-pub const CLAUDE_AGENT_NOT_READY: &str =
-    "`agent:claude-agent` cannot run yet, the run comes in phase 5 of PLAN-claude-agent.md";
 
 /// The type of agent that an [`Actor::AgentTool`] runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,7 +303,21 @@ impl Actor {
                     None => agent_loop.run_loop(params, profile.as_ref(), input),
                 }
             }
-            Actor::ClaudeAgent { .. } => Err(CLAUDE_AGENT_NOT_READY.to_string()),
+            Actor::ClaudeAgent {
+                params,
+                profile,
+                output_schema,
+                environment,
+                default_name,
+            } => {
+                let run = ClaudeAgentRun::new(default_name)
+                    .schema_block(output_schema.clone())
+                    .environment_block(environment.clone());
+                match debug {
+                    Some(debug) => run.debug(debug).run(params, profile.as_ref(), input),
+                    None => run.run(params, profile.as_ref(), input),
+                }
+            }
             Actor::TavilySearch { params } => {
                 SearchConfig::from_params(params, input, |name| std::env::var(name).ok())?.search()
             }

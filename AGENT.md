@@ -147,7 +147,7 @@ its own output. The main actor types are:
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
 - `AgentTool` (`agent:<type>`, with its options in a list under it) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
-- `ClaudeAgent` (`agent:claude-agent`, with its options in a list under it) runs a Claude Managed Agent. It cannot run yet (`CLAUDE_AGENT_NOT_READY`). The parser sets its profile, its schema block, its ```` ```claude-env:<name> ```` block and its `default_name`, `atama-<job>-<task>-<n>` (`Place::agent_name` in `src/parser.rs`). See "Claude agent (in progress)" below.
+- `ClaudeAgent` (`agent:claude-agent`, with its options in a list under it) runs a Claude Managed Agent. `ClaudeAgentRun` runs it. The parser sets its profile, its schema block, its ```` ```claude-env:<name> ```` block and its `default_name`, `atama-<job>-<task>-<n>` (`Place::agent_name` in `src/parser.rs`). See "Claude agent" below.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -507,14 +507,14 @@ the options of its budget block. It reads the options as
 `AgentConfig::from_params` does, but it does not read the API key. So an
 invalid option stops the job before it starts.
 
-## Claude agent (in progress)
+## Claude agent
 
 `src/agent_loop_claude.rs` is the start of the `claude-agent` agent type.
 It runs a Claude Managed Agent with the Managed Agents API (`/v1/agents`,
 `/v1/environments`, `/v1/sessions`), not with `/chat/completions`. It does
 not change the OpenAI compatible loop. `PLAN-claude-agent.md` has the plan
 and the status of each phase. A job file can have an `agent:claude-agent`
-action, but its run fails until phase 5.
+action, and `ClaudeAgentRun` (`src/agent_loop_claude/run.rs`) runs it.
 
 The modules are:
 
@@ -526,6 +526,7 @@ The modules are:
 - `src/agent_loop_claude/custom_tools.rs` has `LocalTools`. Each local tool of `local_tools=` comes from the shared registry, in a `Limited` and an `Approval`, and has the API name `local_<name>`.
 - `src/agent_loop_claude/definition.rs` has `AgentDefinition` and `EnvironmentDefinition`, and writes their JSON with a fixed order of keys. `check_existing_agent` makes sure that the local tools answer each custom tool of an agent of `agent_id=`.
 - `src/agent_loop_claude/env_block.rs` reads the ```` ```claude-env:<name> ```` blocks. Each line is `<key>: <value>`.
+- `src/agent_loop_claude/run.rs` has `ClaudeAgentRun`, one run of an action. It gets the agent and the environment through the lock file (or uses `agent_id=` and `environment_id=`), creates the session, opens the stream before it sends the first `user.message`, and reads the events on the main thread from a channel. A second thread reads the stream (`open_stream_for`). It runs each `agent.custom_tool_use` with `LocalTools`, and answers each `agent.tool_use` that waits (`evaluated_permission: ask`) with the `Approver`. At `end_turn`, the last `agent.message` is the output, after the output schema check, which can ask again up to `max_turns`. It fails at the deadline, at a signal, over the token budget, at `budget_reached`, `retries_exhausted` or `session.status_terminated`, and sends `user.interrupt` when it stops the session itself. If the stream ends too early, `Session::reconnect` opens it again and reads `list_events`, and the run skips the events that it handled. The builder methods (`api`, `lock_path`, `approver`, `with_tools`, `clock`, `poll_interval`, `debug`) replace the parts of a run in tests.
 - `src/agent_loop_claude/lock.rs` has `AgentLock`, which keeps the IDs of the agents and the environments in `.atama/claude-lock.json`. It creates an agent once, uses it while its body is the same, and updates it with the stored version when the body changes.
 
 `autonomy=<no_ask|ask_if_risky|always_ask>` sets when a tool call waits for
@@ -549,7 +550,7 @@ red with `print_warning`, and the job runs. Tests of the parser are in
 Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs`,
 `tests/claude_events.rs`, `tests/claude_options.rs`,
 `tests/claude_native_tools.rs`, `tests/claude_definition.rs` and
-`tests/claude_lock.rs`. Tests of `approval.rs` are in `tests/tools.rs`. Tests must not call the real API. Use a local
+`tests/claude_lock.rs`. Tests of a whole run are in `tests/claude_agent.rs`, with a mock `AgentsApi` and scripted streams. Tests of `approval.rs` are in `tests/tools.rs`. Tests must not call the real API. Use a local
 mock server, as `tests/claude_api.rs` does, or a mock `AgentsApi`.
 
 ## Signals

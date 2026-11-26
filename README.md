@@ -57,6 +57,10 @@ must be unique.
   a `summarizer` agent that explains it.
 - [`jobs/sample_autonomous.md`](jobs/sample_autonomous.md): an `autonomous` agent that works until a
   check script accepts its report.
+- [`jobs/sample_claude_agent.md`](jobs/sample_claude_agent.md): a `websearch` action finds the last
+  Premier League results, and two `claude-agent` steps read only the search results. One lists the
+  matches as JSON, and one writes the form of each winner in Markdown. Needs `TAVILY_API_KEY` and
+  `CLAUDE_API_KEY`.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
@@ -193,12 +197,12 @@ Atama supports three kinds of agent tasks. Each kind needs a model profile
    Anthropic runs the loop. The native tools of Claude, such as
    `web_search`, run in the cloud, and the local tools of Atama run on your
    machine. `effort=` sets how much the model thinks. The other agents
-   ignore `effort=`, and Atama warns in red if they get it. This agent type
-   is in progress: Atama reads and checks the action, but cannot run it yet
-   (see [PLAN-claude-agent.md](PLAN-claude-agent.md)).
+   ignore `effort=`, and Atama warns in red if they get it. The options are
+   in [ACTIONS.md](ACTIONS.md#agentclaude-agent), and the design is in
+   [PLAN-claude-agent.md](PLAN-claude-agent.md).
 
    ```config
-   claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=ANTHROPIC_API_KEY, effort=high
+   claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY, effort=high
    ```
 
 The job file never holds an API key. `api_key=` names the environment

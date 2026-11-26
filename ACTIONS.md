@@ -551,11 +551,19 @@ agent:claude-agent
 ```
 
 Runs a Claude Managed Agent with the Anthropic Managed Agents API, not
-with `/chat/completions`. This action is in progress: Atama reads it and
-makes sure of its options before the job starts, and `--dry-run` shows it,
-but a run fails with "`agent:claude-agent` cannot run yet". See
-[PLAN-claude-agent.md](PLAN-claude-agent.md) for the options, the rules
-between them and the status.
+with `/chat/completions`. Anthropic runs the agent loop. Atama creates the
+agent and the environment once, and keeps their IDs in
+`.atama/claude-lock.json`. Then it starts a session, sends the task and the
+input, runs the local tools that the agent calls, and answers each native
+tool call that waits for approval. The output is the last message of the
+agent. See [PLAN-claude-agent.md](PLAN-claude-agent.md) for the options and
+the rules between them.
+
+The run fails at `max_time=`, at `max_cost_usd=`, over `token_budget=`, or
+if the session fails. Then Atama sends `user.interrupt` to the session when
+it can. Atama does not delete the session, so that you can read it in the
+Claude Console. With `--debug`, Atama writes the link of the session and
+each event to stderr.
 
 The options are a list under the action, as for `agent:<type>`. The model
 profile needs `api_key=`, and cannot have `thinking=`. `effort=` of the
