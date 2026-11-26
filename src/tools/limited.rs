@@ -96,4 +96,8 @@ impl Tool for Limited {
     fn set_protect(&mut self, protect: Option<Arc<Protect>>) {
         self.tool.set_protect(protect);
     }
+
+    fn read_only(&self) -> bool {
+        self.tool.read_only()
+    }
 }

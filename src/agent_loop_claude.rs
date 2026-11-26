@@ -13,9 +13,24 @@
 //! - [`api`] has the [`api::AgentsApi`] trait and its HTTP client.
 //! - [`sse`] reads the server-sent events of the event stream.
 //! - [`events`] reads one event into a [`events::SessionEvent`].
+//! - [`options`] reads the options of the action into
+//!   [`options::ClaudeAgentConfig`].
+//! - [`native_tools`] writes the toolset of the native tools.
+//! - [`custom_tools`] has the local tools, which the agent gets as custom
+//!   tools named `local_<name>`.
+//! - [`definition`] writes the JSON of an agent and of an environment.
+//! - [`env_block`] reads the ```` ```claude-env:<name> ```` blocks.
+//! - [`lock`] keeps the IDs of the agents and environments in
+//!   `.atama/claude-lock.json`.
 //!
 //! `PLAN-claude-agent.md` describes the plan of the agent type.
 
 pub mod api;
+pub mod custom_tools;
+pub mod definition;
+pub mod env_block;
 pub mod events;
+pub mod lock;
+pub mod native_tools;
+pub mod options;
 pub mod sse;

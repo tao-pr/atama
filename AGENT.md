@@ -519,9 +519,24 @@ The modules are:
 - `src/agent_loop_claude/api.rs` has the `AgentsApi` trait, its HTTP client `HttpAgentsApi`, and `ApiError`. Each request sends `x-api-key`, `anthropic-version` (`API_VERSION`) and `anthropic-beta` (`BETA`).
 - `src/agent_loop_claude/sse.rs` has `SseReader`, which reads the server-sent events of the event stream.
 - `src/agent_loop_claude/events.rs` has `SessionEvent` and `parse_event`. An unknown event type becomes `SessionEvent::Other`. `Usage` reads the cumulative usage of a `session.usage` event.
+- `src/agent_loop_claude/options.rs` has `ClaudeAgentConfig`. `from_params` reads the options of the action and makes sure of the rules between them. `check` reads them without the API key. `parse_usd_cents` reads `max_cost_usd=`.
+- `src/agent_loop_claude/native_tools.rs` has `NativeTool`, `NativeToolset`, `PermissionPolicy` and `DomainFilter`. `NativeToolset::to_json` writes the `agent_toolset_20260401` entry: each tool off, except the tools of `native_tools=`.
+- `src/agent_loop_claude/custom_tools.rs` has `LocalTools`. Each local tool of `local_tools=` comes from the shared registry, in a `Limited` and an `Approval`, and has the API name `local_<name>`.
+- `src/agent_loop_claude/definition.rs` has `AgentDefinition` and `EnvironmentDefinition`, and writes their JSON with a fixed order of keys. `check_existing_agent` makes sure that the local tools answer each custom tool of an agent of `agent_id=`.
+- `src/agent_loop_claude/env_block.rs` reads the ```` ```claude-env:<name> ```` blocks. Each line is `<key>: <value>`.
+- `src/agent_loop_claude/lock.rs` has `AgentLock`, which keeps the IDs of the agents and the environments in `.atama/claude-lock.json`. It creates an agent once, uses it while its body is the same, and updates it with the stored version when the body changes.
 
-Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs` and
-`tests/claude_events.rs`. Tests must not call the real API. Use a local
+`autonomy=<no_ask|ask_if_risky|always_ask>` sets when a tool call waits for
+approval, and `on_ask=<prompt|deny>` sets who answers. The levels are in
+the shared tool layer, `src/tools/approval.rs`: `Autonomy`, the `Approver`
+trait with `PromptApprover` and `DenyApprover`, and the `Approval` wrapper.
+With `ask_if_risky`, a tool waits unless `Tool::read_only` is true.
+`read_file` and `list_files` are read-only.
+
+Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs`,
+`tests/claude_events.rs`, `tests/claude_options.rs`,
+`tests/claude_native_tools.rs`, `tests/claude_definition.rs` and
+`tests/claude_lock.rs`. Tests of `approval.rs` are in `tests/tools.rs`. Tests must not call the real API. Use a local
 mock server, as `tests/claude_api.rs` does, or a mock `AgentsApi`.
 
 ## Signals

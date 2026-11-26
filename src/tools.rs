@@ -20,11 +20,13 @@ use serde_json::Value;
 
 use crate::protect::Protect;
 
+mod approval;
 mod bash;
 mod files;
 mod limited;
 mod registry;
 
+pub use approval::{Approval, Approver, Autonomy, DenyApprover, PromptApprover};
 pub use bash::Bash;
 pub use files::{ListFiles, ReadFile, WriteFile};
 pub use limited::{DEFAULT_MAX_CALLS, DEFAULT_MAX_FAILURES, Limited};
@@ -54,6 +56,13 @@ pub trait Tool {
     /// writes files must not write them, as `bash` and `write_file` do (see
     /// [`crate::protect`]). The default does nothing.
     fn set_protect(&mut self, _protect: Option<Arc<Protect>>) {}
+    /// Whether the tool only reads, and changes nothing. With
+    /// `autonomy=ask_if_risky`, a call of a tool that is not read-only
+    /// waits for approval (see [`Approval`]). The default is `false`, so a
+    /// new tool waits for approval until its author marks it.
+    fn read_only(&self) -> bool {
+        false
+    }
 }
 
 /// Most characters of a tool result that the model gets. A longer result is

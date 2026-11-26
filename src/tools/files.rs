@@ -37,6 +37,10 @@ impl Tool for ReadFile {
         .act("")?;
         Ok(truncate(output))
     }
+
+    fn read_only(&self) -> bool {
+        true
+    }
 }
 
 /// `write_file`: writes text to a file, and makes the missing parent
@@ -127,5 +131,9 @@ impl Tool for ListFiles {
         }
         .act("")?;
         Ok(truncate(output))
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 }
