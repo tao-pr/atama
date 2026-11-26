@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
+use crate::agent_loop_claude::definition::EnvironmentDefinition;
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::budget_block::BudgetBlock;
 use crate::http::{agent, read_response};
@@ -21,6 +22,8 @@ use crate::websearch::WebSearchOptions;
 
 mod display;
 pub mod list_files;
+
+pub use display::CLAUDE_AGENT;
 
 /// One action of a task, and how to carry it out.
 ///
@@ -85,6 +88,26 @@ pub enum Actor {
         /// is in a box, so that it does not make every `Actor` larger.
         judge_profile: Option<Box<ModelProfile>>,
     },
+    /// Runs a Claude Managed Agent (`agent:claude-agent`). See
+    /// [`crate::agent_loop_claude`]. It cannot run yet: the run comes in
+    /// phase 5 of `PLAN-claude-agent.md`.
+    ClaudeAgent {
+        /// Options of the agent, in order, such as `task=Fix the tests`.
+        params: Vec<String>,
+        /// The model profile that `model=` names. The job parser sets it.
+        /// An action parsed on its own has `None`.
+        profile: Option<ModelProfile>,
+        /// The schema block that `output_schema=<name>` names, as for
+        /// [`Actor::AgentTool`].
+        output_schema: Option<OutputSchema>,
+        /// The ```` ```claude-env:<name> ```` block that `environment=<name>`
+        /// names. The job parser sets it.
+        environment: Option<EnvironmentDefinition>,
+        /// The name of the agent without `name=`, as in
+        /// `atama-my-job-search-1`. The job parser makes it from the names
+        /// of the job and the task, and the number of the action.
+        default_name: String,
+    },
     /// Searches the web with the Tavily API.
     /// Carries the search response as JSON as output
     TavilySearch {
@@ -142,6 +165,10 @@ pub enum ApiVerb {
     PATCH,
     HEAD,
 }
+
+/// The error of an [`Actor::ClaudeAgent`] until its run exists.
+pub const CLAUDE_AGENT_NOT_READY: &str =
+    "`agent:claude-agent` cannot run yet, the run comes in phase 5 of PLAN-claude-agent.md";
 
 /// The type of agent that an [`Actor::AgentTool`] runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +307,7 @@ impl Actor {
                     None => agent_loop.run_loop(params, profile.as_ref(), input),
                 }
             }
+            Actor::ClaudeAgent { .. } => Err(CLAUDE_AGENT_NOT_READY.to_string()),
             Actor::TavilySearch { params } => {
                 SearchConfig::from_params(params, input, |name| std::env::var(name).ok())?.search()
             }

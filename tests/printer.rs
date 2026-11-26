@@ -3,7 +3,8 @@
 use std::ffi::OsStr;
 
 use atama::{
-    TIMESTAMP_FORMAT, color_allowed, format_error, format_job, local_timestamp, parse_job,
+    TIMESTAMP_FORMAT, color_allowed, format_error, format_job, format_warning, local_timestamp,
+    parse_job,
 };
 use chrono::{Local, NaiveDateTime};
 
@@ -134,5 +135,31 @@ fn shows_the_exists_nonempty_condition() {
     assert_eq!(
         format_job(&job, false),
         "Job: Job\n  - A: mock (skip if a.txt exists and is not empty)\n"
+    );
+}
+
+#[test]
+fn formats_a_warning_in_red() {
+    assert_eq!(
+        format_warning("x is ignored", false),
+        "warning: x is ignored"
+    );
+    assert_eq!(
+        format_warning("x is ignored", true),
+        "\x1b[31mwarning: x is ignored\x1b[0m"
+    );
+}
+
+#[test]
+fn highlights_a_claude_agent_action() {
+    let job = parse_job(
+        "```config\nc: model=m, base_url=http://x.test, api_key=K\n```\n\
+         # Job\n## Find\n- actions:\n  - agent:claude-agent\n    - model=c\n",
+    )
+    .expect("job should parse");
+    assert_eq!(
+        format_job(&job, true),
+        "\x1b[1mJob: Job\x1b[0m\n  - \x1b[1;36mFind:\x1b[0m \
+         \x1b[30;47magent:claude-agent\x1b[0m model=c\n"
     );
 }

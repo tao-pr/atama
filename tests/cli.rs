@@ -617,3 +617,42 @@ fn no_task_starts_after_a_signal_even_if_the_command_succeeds() {
     assert!(took >= atama::signals::GRACE, "{took:?}");
     assert!(!still_runs(child), "the child process {child} still runs");
 }
+
+#[test]
+fn warns_when_an_agent_ignores_effort() {
+    let (dir, job) = job_in_temp_dir(
+        "effort",
+        "```config\np: model=m, base_url=http://localhost:1/v1, effort=high\n```\n\
+         # Job\n## Sum\n- actions:\n  - agent:summarizer\n    - model=p\n",
+    );
+    let output = run_atama(&["--dry-run", &job]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr was: {stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "warning: {job}: line 7: model profile `p` sets `effort=high`, but \
+             `agent:summarizer` ignores it. Only `agent:claude-agent` uses `effort=`\n"
+        )
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn colors_a_warning_red_in_a_terminal() {
+    let (dir, job) = job_in_temp_dir(
+        "effort-terminal",
+        "```config\np: model=m, base_url=http://localhost:1/v1, effort=low\n```\n\
+         # Job\n## Sum\n- actions:\n  - agent:coder\n    - model=p\n",
+    );
+    let output = run_atama_in_terminal(&["--dry-run", &job], &[]);
+    assert!(
+        output.contains(&format!(
+            "\x1b[31mwarning: {job}: line 7: model profile `p` sets `effort=low`, but \
+             `agent:coder` ignores it. Only `agent:claude-agent` uses `effort=`\x1b[0m"
+        )),
+        "output was: {output:?}"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

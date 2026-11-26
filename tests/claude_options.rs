@@ -22,6 +22,7 @@ fn profile() -> ModelProfile {
         api_key_env: Some("CLAUDE_KEY".into()),
         token_budget: Some(50_000),
         thinking: None,
+        effort: None,
     }
 }
 

@@ -147,6 +147,7 @@ its own output. The main actor types are:
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
 - `AgentTool` (`agent:<type>`, with its options in a list under it) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
+- `ClaudeAgent` (`agent:claude-agent`, with its options in a list under it) runs a Claude Managed Agent. It cannot run yet (`CLAUDE_AGENT_NOT_READY`). The parser sets its profile, its schema block, its ```` ```claude-env:<name> ```` block and its `default_name`, `atama-<job>-<task>-<n>` (`Place::agent_name` in `src/parser.rs`). See "Claude agent (in progress)" below.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -512,7 +513,8 @@ invalid option stops the job before it starts.
 It runs a Claude Managed Agent with the Managed Agents API (`/v1/agents`,
 `/v1/environments`, `/v1/sessions`), not with `/chat/completions`. It does
 not change the OpenAI compatible loop. `PLAN-claude-agent.md` has the plan
-and the status of each phase. No job file can use the agent type yet.
+and the status of each phase. A job file can have an `agent:claude-agent`
+action, but its run fails until phase 5.
 
 The modules are:
 
@@ -532,6 +534,17 @@ the shared tool layer, `src/tools/approval.rs`: `Autonomy`, the `Approver`
 trait with `PromptApprover` and `DenyApprover`, and the `Approval` wrapper.
 With `ask_if_risky`, a tool waits unless `Tool::read_only` is true.
 `read_file` and `list_files` are read-only.
+
+`parse_job` reads the ```` ```claude-env:<name> ```` blocks with
+`env_block::parse_block`, and calls `ClaudeAgentConfig::check` for each
+`agent:claude-agent` action. `effort=<low|medium|high|xhigh|max>` of a
+model profile (`ModelProfile::effort`, `profile::parse_effort`) goes to
+the agent definition. The other agents ignore it, so `parse_action` adds a
+`ParseWarning` when a profile with `effort=` is the `model=` or the
+`judge_model=` of an `agent:<type>` action. `parse_job_with_warnings`
+returns the warnings, and `parse_job` drops them. `main` prints each one in
+red with `print_warning`, and the job runs. Tests of the parser are in
+`tests/claude_parser.rs`.
 
 Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs`,
 `tests/claude_events.rs`, `tests/claude_options.rs`,

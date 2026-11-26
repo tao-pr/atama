@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use atama::{
-    ActionRunner, ActorRunner, DryRunner, Executor, Job, local_timestamp, parse_job, print_error,
-    print_job, use_color,
+    ActionRunner, ActorRunner, DryRunner, Executor, Job, local_timestamp, parse_job_with_warnings,
+    print_error, print_job, print_warning, use_color,
 };
 use clap::Parser;
 
@@ -38,13 +38,16 @@ fn main() -> ExitCode {
         }
     };
 
-    let job = match parse_job(&input) {
-        Ok(job) => job,
+    let (job, warnings) = match parse_job_with_warnings(&input) {
+        Ok(parsed) => parsed,
         Err(err) => {
             print_error(&format!("{}: {err}", path.display()));
             return ExitCode::FAILURE;
         }
     };
+    for warning in warnings {
+        print_warning(&format!("{}: {warning}", path.display()));
+    }
 
     print_job(&job);
     println!();

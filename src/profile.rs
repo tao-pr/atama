@@ -40,6 +40,27 @@ pub struct ModelProfile {
     /// for example for a model that takes tools only without reasoning.
     /// `None` sends nothing, and the server uses its default.
     pub thinking: Option<bool>,
+    /// The effort level of a Claude model, from `effort=<level>`, as in
+    /// `high` (see [`EFFORT_LEVELS`]). Only a `claude-agent` action uses it.
+    /// The parser warns if another agent uses a profile with `effort=`.
+    /// `None` uses the default of the model.
+    pub effort: Option<String>,
+}
+
+/// The values of `effort=`.
+pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Reads the value of `effort=`, one of [`EFFORT_LEVELS`].
+///
+/// Fails on any other value.
+pub fn parse_effort(value: &str) -> Result<String, String> {
+    if EFFORT_LEVELS.contains(&value) {
+        Ok(value.to_string())
+    } else {
+        Err(format!(
+            "`effort={value}` is not `low`, `medium`, `high`, `xhigh` or `max`"
+        ))
+    }
 }
 
 /// Reads the value of `thinking=`, `true` or `false`.
@@ -79,12 +100,13 @@ pub fn parse_token_budget(value: &str) -> Result<u64, String> {
 }
 
 /// Reads one profile line:
-/// `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]`.
+/// `<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>][, effort=<level>]`.
 ///
 /// Fails if the line has no `:`, the name is empty or has whitespace, a
 /// setting is not `key=value`, a key is unknown, empty or set twice, or
 /// `model` or `base_url` is missing, `token_budget` is not a positive
-/// number, or `thinking` is not `true` or `false`.
+/// number, `thinking` is not `true` or `false`, or `effort` is not one of
+/// [`EFFORT_LEVELS`].
 impl FromStr for ModelProfile {
     type Err = String;
 
@@ -103,6 +125,7 @@ impl FromStr for ModelProfile {
         let mut api_key_env = None;
         let mut token_budget = None;
         let mut thinking = None;
+        let mut effort = None;
         for setting in settings.split(',') {
             let setting = setting.trim();
             let Some((key, value)) = setting.split_once('=') else {
@@ -116,10 +139,11 @@ impl FromStr for ModelProfile {
                 "api_key" => &mut api_key_env,
                 "token_budget" => &mut token_budget,
                 "thinking" => &mut thinking,
+                "effort" => &mut effort,
                 other => {
                     return Err(format!(
                         "unknown setting `{other}` in profile `{name}`, expected `model=`, \
-                         `base_url=`, `api_key=`, `token_budget=` or `thinking=`"
+                         `base_url=`, `api_key=`, `token_budget=`, `thinking=` or `effort=`"
                     ));
                 }
             };
@@ -148,6 +172,11 @@ impl FromStr for ModelProfile {
             .map(parse_thinking)
             .transpose()
             .map_err(|err| format!("{err} in profile `{name}`"))?;
+        let effort = effort
+            .as_deref()
+            .map(parse_effort)
+            .transpose()
+            .map_err(|err| format!("{err} in profile `{name}`"))?;
         Ok(ModelProfile {
             name: name.to_string(),
             model: model.ok_or_else(|| missing("model"))?,
@@ -155,6 +184,7 @@ impl FromStr for ModelProfile {
             api_key_env,
             token_budget,
             thinking,
+            effort,
         })
     }
 }

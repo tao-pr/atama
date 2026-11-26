@@ -7,6 +7,9 @@
 use std::fmt;
 
 use super::{Actor, AgentType, Auth, list_files};
+
+/// The action name of an [`Actor::ClaudeAgent`].
+pub const CLAUDE_AGENT: &str = "agent:claude-agent";
 use crate::{tavily, websearch};
 
 /// Writes the action statement that parses back into this actor, for
@@ -53,6 +56,13 @@ impl fmt::Display for Actor {
             }
             Actor::AgentTool { agent, params, .. } => {
                 write!(f, "agent:{agent}")?;
+                for param in params {
+                    write!(f, " {}", quote_param(param))?;
+                }
+                Ok(())
+            }
+            Actor::ClaudeAgent { params, .. } => {
+                write!(f, "{CLAUDE_AGENT}")?;
                 for param in params {
                     write!(f, " {}", quote_param(param))?;
                 }

@@ -29,6 +29,7 @@ fn profile() -> ModelProfile {
         api_key_env: None,
         token_budget: None,
         thinking: None,
+        effort: None,
     }
 }
 

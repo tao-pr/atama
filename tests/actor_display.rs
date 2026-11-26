@@ -36,6 +36,9 @@ fn writes_actions_back_as_statements() {
         "foreach list_files pattern=[a-c]*",
         "bash-sandbox python3 ./solution.py",
         "write_file \"my out.txt\"",
+        "agent:claude-agent",
+        "agent:claude-agent model=claude task=\"Find papers.\"",
+        "foreach agent:claude-agent model=claude",
     ];
     for statement in statements {
         let actor: Actor = statement.parse().expect(statement);

@@ -917,6 +917,7 @@ fn profile(base_url: &str) -> ModelProfile {
         api_key_env: None,
         token_budget: None,
         thinking: None,
+        effort: None,
     }
 }
 

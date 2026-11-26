@@ -120,6 +120,7 @@ fn profile(base_url: &str) -> ModelProfile {
         api_key_env: None,
         token_budget: None,
         thinking: None,
+        effort: None,
     }
 }
 
@@ -1106,6 +1107,7 @@ fn run_loop_sends_the_judge_requests_to_the_judge_model() {
         api_key_env: Some("JUDGE_KEY".into()),
         token_budget: None,
         thinking: None,
+        effort: None,
     };
     let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
     let mut out = Vec::new();

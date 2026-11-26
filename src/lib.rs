@@ -24,9 +24,9 @@ pub use executor::{
     ActionRunner, ActorRunner, DryRunner, Executor, JobOutcome, JobReport, TaskReport, TaskStatus,
 };
 pub use job::{Event, Hook, Job, SkipIf, Task, Trigger};
-pub use parser::{ParseError, parse_job};
+pub use parser::{ParseError, ParseWarning, parse_job, parse_job_with_warnings};
 pub use passer::Passer;
 pub use printer::{
-    TIMESTAMP_FORMAT, color_allowed, format_error, format_job, local_timestamp, print_error,
-    print_job, use_color,
+    TIMESTAMP_FORMAT, color_allowed, format_error, format_job, format_warning, local_timestamp,
+    print_error, print_job, print_warning, use_color,
 };

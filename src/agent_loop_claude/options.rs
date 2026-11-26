@@ -349,8 +349,7 @@ impl ClaudeAgentConfig {
                 AgentSource::Managed(AgentDefinition {
                     name: get("name").unwrap_or(default_name).to_string(),
                     model: profile.model.clone(),
-                    // `effort=` of the profile comes in phase 4 of the plan.
-                    effort: None,
+                    effort: profile.effort.clone(),
                     system: get("system").map(str::to_string),
                     native,
                     local_tools: local_tools.clone(),

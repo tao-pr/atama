@@ -286,6 +286,10 @@ Options of every agent:
 With `--debug`, the agent writes its configuration, each request, each reply
 and each tool call to stderr. See "Debug output" in [README.md](README.md).
 
+These agents ignore `effort=` of a model profile. If a profile with
+`effort=` is the `model=` or the `judge_model=` of one of these agents,
+Atama writes a red warning to stderr, and the job runs.
+
 ### `agent:coder`
 
 A `coder` agent has the `bash` tool. The tool runs a command in the
@@ -536,6 +540,41 @@ Atama reads the block and the options of every agent action before the job
 starts. An unknown key, an unknown tool, an invalid option, or an
 `autonomous` action without `success=` or `success_check=` stops the job
 with the line of the error.
+
+## `agent:claude-agent`
+
+```text
+agent:claude-agent
+  - model=<profile>
+  - <key>=<value>
+  - ...
+```
+
+Runs a Claude Managed Agent with the Anthropic Managed Agents API, not
+with `/chat/completions`. This action is in progress: Atama reads it and
+makes sure of its options before the job starts, and `--dry-run` shows it,
+but a run fails with "`agent:claude-agent` cannot run yet". See
+[PLAN-claude-agent.md](PLAN-claude-agent.md) for the options, the rules
+between them and the status.
+
+The options are a list under the action, as for `agent:<type>`. The model
+profile needs `api_key=`, and cannot have `thinking=`. `effort=` of the
+profile sets the effort of the model. A `foreach agent:claude-agent` action
+has the list under the `foreach` line.
+
+A ```` ```claude-env:<name> ```` block before the `# <name>` heading
+defines a cloud environment, and `environment=<name>` selects it. Each line
+is `<key>: <value>`:
+
+````markdown
+```claude-env:research
+networking: limited
+allowed_hosts: arxiv.org, *.docs.rs
+```
+````
+
+Without `name=`, the agent gets the name `atama-<job>-<task>-<n>`, in lower
+case, where `<n>` is the number of the action in its task.
 
 ## `read_file`
 

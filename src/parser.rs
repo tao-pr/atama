@@ -57,11 +57,14 @@
 //!     `foreach agent:<type>` action has the list in the same way.
 //! - Lines inside ``` code fences are always treated as description text.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
-use crate::actor::{Actor, AgentType, ApiVerb, Auth, list_files};
+use crate::actor::{Actor, AgentType, ApiVerb, Auth, CLAUDE_AGENT, list_files};
+use crate::agent_loop_claude::definition::EnvironmentDefinition;
+use crate::agent_loop_claude::env_block;
+use crate::agent_loop_claude::options::ClaudeAgentConfig;
 use crate::agent_loop_openai_compat::agent_options::AgentConfig;
 use crate::budget_block::{self, BudgetBlocks};
 use crate::job::{Event, Hook, Job, SkipIf, Task, Trigger};
@@ -104,6 +107,46 @@ enum Block {
     Schema(String),
     /// ```` ```budget:<name> ````: a budget block.
     Budget(String),
+    /// ```` ```claude-env:<name> ````: a cloud environment of a
+    /// `claude-agent` action.
+    ClaudeEnv(String),
+}
+
+/// The blocks before the `# <job name>` heading.
+#[derive(Default)]
+struct Blocks {
+    profiles: Profiles,
+    schemas: Schemas,
+    budgets: BudgetBlocks,
+    /// The ```` ```claude-env:<name> ```` blocks, by name.
+    envs: BTreeMap<String, EnvironmentDefinition>,
+}
+
+/// Where an action is in the job, for the default name of a
+/// `claude-agent` action.
+struct Place<'a> {
+    job: &'a str,
+    task: &'a str,
+    /// The number of the action in its task, from 1.
+    number: usize,
+}
+
+impl Place<'_> {
+    /// The default name of the agent of a `claude-agent` action:
+    /// `atama-<job>-<task>-<number>`, in lower case, with `-` for each run
+    /// of other characters than letters and digits.
+    fn agent_name(&self) -> String {
+        let text = format!("atama-{}-{}-{}", self.job, self.task, self.number);
+        let mut name = String::new();
+        for c in text.chars() {
+            if c.is_ascii_alphanumeric() {
+                name.push(c.to_ascii_lowercase());
+            } else if !name.ends_with('-') {
+                name.push('-');
+            }
+        }
+        name.trim_matches('-').to_string()
+    }
 }
 
 /// An action of a task that the parser read, but did not parse yet,
@@ -130,17 +173,38 @@ struct ParsedTask {
     parallel_field: Option<bool>,
 }
 
-/// Parses the contents of a job config markdown file.
+/// A problem in a job file that does not stop the job, for example an
+/// option that an agent ignores.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseWarning {
+    /// 1-based line number the warning refers to.
+    pub line: usize,
+    pub message: String,
+}
+
+impl fmt::Display for ParseWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}: {}", self.line, self.message)
+    }
+}
+
+/// Parses the contents of a job config markdown file. It drops the
+/// warnings (see [`parse_job_with_warnings`]).
 pub fn parse_job(input: &str) -> Result<Job, ParseError> {
+    parse_job_with_warnings(input).map(|(job, _)| job)
+}
+
+/// Parses the contents of a job config markdown file, and returns the job
+/// and its warnings, in the order of their lines.
+pub fn parse_job_with_warnings(input: &str) -> Result<(Job, Vec<ParseWarning>), ParseError> {
     let mut name: Option<String> = None;
     let mut job_description: Vec<String> = Vec::new();
     let mut tasks: Vec<ParsedTask> = Vec::new();
     let mut in_actions = false;
     let mut pending: Option<PendingAction> = None;
     let mut in_code_block = false;
-    let mut profiles = Profiles::new();
-    let mut schemas = Schemas::new();
-    let mut budgets = BudgetBlocks::new();
+    let mut blocks = Blocks::default();
+    let mut warnings: Vec<ParseWarning> = Vec::new();
     // The open ```config, ```json:<name> or ```budget:<name> block: the line
     // number of its fence, its kind, and the lines after the fence.
     let mut open_block: Option<(usize, Block, Vec<&str>)> = None;
@@ -159,18 +223,39 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             let at = |(index, message)| ParseError::new(start + 1 + index, message);
             match kind {
                 Block::Config => {
-                    profiles = profile::parse_profiles(lines.iter().copied()).map_err(at)?
+                    blocks.profiles = profile::parse_profiles(lines.iter().copied()).map_err(at)?
                 }
                 Block::Schema(name) => {
                     let parsed = schema::parse_block(name, &lines.join("\n")).map_err(at)?;
-                    schemas.insert(name.to_string(), parsed);
+                    blocks.schemas.insert(name.to_string(), parsed);
                 }
                 Block::Budget(name) => {
                     let parsed = budget_block::parse_block(name, lines).map_err(at)?;
-                    budgets.insert(name.to_string(), parsed);
+                    blocks.budgets.insert(name.to_string(), parsed);
+                }
+                Block::ClaudeEnv(name) => {
+                    let parsed = env_block::parse_block(name, lines).map_err(at)?;
+                    blocks.envs.insert(name.to_string(), parsed);
                 }
             }
             open_block = None;
+            continue;
+        }
+        if let Some(env_name) = env_block::block_name(line).filter(|_| !in_code_block) {
+            if name.is_some() {
+                return Err(ParseError::new(
+                    line_no,
+                    "the ```claude-env:<name> block must come before the `# <job name>` heading",
+                ));
+            }
+            env_block::check_name(env_name).map_err(|message| ParseError::new(line_no, message))?;
+            if blocks.envs.contains_key(env_name) {
+                return Err(ParseError::new(
+                    line_no,
+                    format!("claude-env block `{env_name}` is defined twice"),
+                ));
+            }
+            open_block = Some((line_no, Block::ClaudeEnv(env_name.to_string()), Vec::new()));
             continue;
         }
         if let Some(budget_name) = budget_block::block_name(line).filter(|_| !in_code_block) {
@@ -182,7 +267,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             }
             budget_block::check_name(budget_name)
                 .map_err(|message| ParseError::new(line_no, message))?;
-            if budgets.contains_key(budget_name) {
+            if blocks.budgets.contains_key(budget_name) {
                 return Err(ParseError::new(
                     line_no,
                     format!("budget block `{budget_name}` is defined twice"),
@@ -199,7 +284,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 ));
             }
             schema::check_name(schema_name).map_err(|message| ParseError::new(line_no, message))?;
-            if schemas.contains_key(schema_name) {
+            if blocks.schemas.contains_key(schema_name) {
                 return Err(ParseError::new(
                     line_no,
                     format!("schema `{schema_name}` is defined twice"),
@@ -233,9 +318,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     flush(
                         &mut pending,
                         &mut current.task,
-                        &profiles,
-                        &schemas,
-                        &budgets,
+                        &blocks,
+                        name.as_deref().unwrap_or_default(),
+                        &mut warnings,
                     )?;
                 }
                 if name.is_none() {
@@ -302,9 +387,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             flush(
                 &mut pending,
                 &mut current.task,
-                &profiles,
-                &schemas,
-                &budgets,
+                &blocks,
+                name.as_deref().unwrap_or_default(),
+                &mut warnings,
             )?;
             in_actions = false;
             current.description.push(line.to_string());
@@ -324,9 +409,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 flush(
                     &mut pending,
                     &mut current.task,
-                    &profiles,
-                    &schemas,
-                    &budgets,
+                    &blocks,
+                    name.as_deref().unwrap_or_default(),
+                    &mut warnings,
                 )?;
                 pending = Some(PendingAction {
                     text: item.trim().to_string(),
@@ -352,9 +437,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             flush(
                 &mut pending,
                 &mut current.task,
-                &profiles,
-                &schemas,
-                &budgets,
+                &blocks,
+                name.as_deref().unwrap_or_default(),
+                &mut warnings,
             )?;
             in_actions = false;
         }
@@ -392,14 +477,14 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                     }
                     current.task.max_parallel = max;
                     if !value.is_empty() {
-                        current.task.actions.push(parse_action(
-                            value,
-                            line_no,
-                            &[],
-                            &profiles,
-                            &schemas,
-                            &budgets,
-                        )?);
+                        let place = Place {
+                            job: name.as_deref().unwrap_or_default(),
+                            task: &current.task.id,
+                            number: current.task.actions.len() + 1,
+                        };
+                        let action =
+                            parse_action(value, line_no, &[], &blocks, &place, &mut warnings)?;
+                        current.task.actions.push(action);
                     }
                     in_actions = true;
                 }
@@ -439,9 +524,9 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
         flush(
             &mut pending,
             &mut current.task,
-            &profiles,
-            &schemas,
-            &budgets,
+            &blocks,
+            name.as_deref().unwrap_or_default(),
+            &mut warnings,
         )?;
     }
     if let Some((start, kind, _)) = open_block {
@@ -449,6 +534,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
             Block::Config => "```config".to_string(),
             Block::Schema(name) => format!("```json:{name}"),
             Block::Budget(name) => format!("```budget:{name}"),
+            Block::ClaudeEnv(name) => format!("```claude-env:{name}"),
         };
         return Err(ParseError::new(
             start,
@@ -464,7 +550,7 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 
     validate(&tasks)?;
 
-    Ok(Job {
+    let job = Job {
         name,
         description: join_text(&job_description),
         tasks: tasks
@@ -474,7 +560,8 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
                 ..parsed.task
             })
             .collect(),
-    })
+    };
+    Ok((job, warnings))
 }
 
 /// Parses the pending action, if there is one, and adds it to the actions
@@ -482,19 +569,25 @@ pub fn parse_job(input: &str) -> Result<Job, ParseError> {
 fn flush(
     pending: &mut Option<PendingAction>,
     task: &mut Task,
-    profiles: &Profiles,
-    schemas: &Schemas,
-    budgets: &BudgetBlocks,
+    blocks: &Blocks,
+    job: &str,
+    warnings: &mut Vec<ParseWarning>,
 ) -> Result<(), ParseError> {
     if let Some(action) = pending.take() {
-        task.actions.push(parse_action(
+        let place = Place {
+            job,
+            task: &task.id,
+            number: task.actions.len() + 1,
+        };
+        let actor = parse_action(
             &action.text,
             action.line,
             &action.options,
-            profiles,
-            schemas,
-            budgets,
-        )?);
+            blocks,
+            &place,
+            warnings,
+        )?;
+        task.actions.push(actor);
     }
     Ok(())
 }
@@ -513,9 +606,9 @@ fn parse_action(
     value: &str,
     line: usize,
     options: &[(usize, String)],
-    profiles: &Profiles,
-    schemas: &Schemas,
-    budgets: &BudgetBlocks,
+    blocks: &Blocks,
+    place: &Place,
+    warnings: &mut Vec<ParseWarning>,
 ) -> Result<Actor, ParseError> {
     let mut actor: Actor = parse_value(value, line, "action")?;
     // The agent of a `foreach` action needs its profile too.
@@ -525,20 +618,9 @@ fn parse_action(
     };
     match agent_actor {
         Actor::AgentTool { agent, params, .. } => {
-            if !params.is_empty() {
-                return Err(ParseError::new(
-                    line,
-                    format!(
-                        "put the options of `agent:{agent}` in a list under the action, one \
-                         `- <key>=<value>` bullet on each line, as in `- model=<profile>`"
-                    ),
-                ));
-            }
-            *params = options
-                .iter()
-                .map(|(line, text)| unquote_option(text).map_err(|m| ParseError::new(*line, m)))
-                .collect::<Result<_, _>>()?;
+            take_options(&format!("agent:{agent}"), params, options, line)?;
         }
+        Actor::ClaudeAgent { params, .. } => take_options(CLAUDE_AGENT, params, options, line)?,
         _ => {
             if let Some((option_line, text)) = options.first() {
                 return Err(ParseError::new(
@@ -552,37 +634,110 @@ fn parse_action(
             }
         }
     }
-    if let Actor::AgentTool {
-        agent,
-        params,
-        profile,
-        output_schema,
-        budget_block,
-        judge_profile,
-    } = agent_actor
-    {
-        let error = |message| ParseError::new(line, message);
-        *profile = Some(profile::resolve(*agent, params, profiles).map_err(error)?);
-        *output_schema = schema::resolve(params, schemas).map_err(error)?;
-        // Only an `autonomous` agent takes `budget=`. For another agent,
-        // `AgentConfig::check` names the option.
-        if *agent == AgentType::Autonomous {
-            *budget_block = budget_block::resolve(params, budgets).map_err(error)?;
+    let error = |message| ParseError::new(line, message);
+    match agent_actor {
+        Actor::AgentTool {
+            agent,
+            params,
+            profile,
+            output_schema,
+            budget_block,
+            judge_profile,
+        } => {
+            let resolved = profile::resolve(*agent, params, &blocks.profiles).map_err(error)?;
+            if let Some(effort) = &resolved.effort {
+                warnings.push(ParseWarning {
+                    line,
+                    message: format!(
+                        "model profile `{}` sets `effort={effort}`, but `agent:{agent}` \
+                         ignores it. Only `{CLAUDE_AGENT}` uses `effort=`",
+                        resolved.name
+                    ),
+                });
+            }
+            *profile = Some(resolved);
+            *output_schema = schema::resolve(params, &blocks.schemas).map_err(error)?;
+            // Only an `autonomous` agent takes `budget=`. For another agent,
+            // `AgentConfig::check` names the option.
+            if *agent == AgentType::Autonomous {
+                *budget_block = budget_block::resolve(params, &blocks.budgets).map_err(error)?;
+            }
+            let merged = match budget_block {
+                Some(block) => block.merge(params),
+                None => params.clone(),
+            };
+            // `judge_model=` can come from the budget block. For another
+            // agent, `AgentConfig::check` names the option.
+            if *agent == AgentType::Autonomous
+                && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
+            {
+                let judge = profile::find(name, &blocks.profiles).map_err(error)?;
+                if let Some(effort) = &judge.effort {
+                    warnings.push(ParseWarning {
+                        line,
+                        message: format!(
+                            "model profile `{}` sets `effort={effort}`, but the judge of \
+                             `agent:{agent}` ignores it. Only `{CLAUDE_AGENT}` uses `effort=`",
+                            judge.name
+                        ),
+                    });
+                }
+                *judge_profile = Some(Box::new(judge));
+            }
+            AgentConfig::check(*agent, &merged, profile.as_ref()).map_err(error)?;
         }
-        let merged = match budget_block {
-            Some(block) => block.merge(params),
-            None => params.clone(),
-        };
-        // `judge_model=` can come from the budget block. For another agent,
-        // `AgentConfig::check` names the option.
-        if *agent == AgentType::Autonomous
-            && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
-        {
-            *judge_profile = Some(Box::new(profile::find(name, profiles).map_err(error)?));
+        Actor::ClaudeAgent {
+            params,
+            profile,
+            output_schema,
+            environment,
+            default_name,
+        } => {
+            // Without `model=`, `ClaudeAgentConfig::check` names the option.
+            if let Some(name) = params.iter().find_map(|p| p.strip_prefix("model=")) {
+                *profile = Some(profile::find(name, &blocks.profiles).map_err(error)?);
+            }
+            *output_schema = schema::resolve(params, &blocks.schemas).map_err(error)?;
+            // An unknown block name: `ClaudeAgentConfig::check` names it.
+            *environment = params
+                .iter()
+                .find_map(|p| p.strip_prefix("environment="))
+                .and_then(|name| blocks.envs.get(name))
+                .cloned();
+            *default_name = place.agent_name();
+            ClaudeAgentConfig::check(params, profile.as_ref(), environment.as_ref())
+                .map_err(error)?;
         }
-        AgentConfig::check(*agent, &merged, profile.as_ref()).map_err(error)?;
+        _ => {}
     }
     Ok(actor)
+}
+
+/// Sets `params` of an agent action from the list of its `options`. Each
+/// item of `options` is its line number and its text.
+///
+/// Fails if the line of the action has options, because they must be in
+/// the list, or an option has text after its closing quote.
+fn take_options(
+    action: &str,
+    params: &mut Vec<String>,
+    options: &[(usize, String)],
+    line: usize,
+) -> Result<(), ParseError> {
+    if !params.is_empty() {
+        return Err(ParseError::new(
+            line,
+            format!(
+                "put the options of `{action}` in a list under the action, one \
+                 `- <key>=<value>` bullet on each line, as in `- model=<profile>`"
+            ),
+        ));
+    }
+    *params = options
+        .iter()
+        .map(|(line, text)| unquote_option(text).map_err(|m| ParseError::new(*line, m)))
+        .collect::<Result<_, _>>()?;
+    Ok(())
 }
 
 /// Checks rules that need the whole job: unique ids and valid trigger references.
@@ -816,6 +971,13 @@ impl FromStr for Actor {
                 _ => Actor::MockPlaceholder,
             }),
             // Prefixed action, e.g. "agent:{}"
+            CLAUDE_AGENT => Ok(Actor::ClaudeAgent {
+                params: split_quoted(rest)?,
+                profile: None,
+                output_schema: None,
+                environment: None,
+                default_name: String::new(),
+            }),
             other => match other.strip_prefix("agent:") {
                 Some(agent) => Ok(Actor::AgentTool {
                     agent: agent.parse()?,
@@ -979,8 +1141,8 @@ impl FromStr for AgentType {
                     .to_string(),
             ),
             _ => Err(format!(
-                "unknown agent type `{s}`, expected `agent:coder`, `agent:summarizer` or \
-                 `agent:autonomous`"
+                "unknown agent type `{s}`, expected `agent:coder`, `agent:summarizer`, \
+                 `agent:autonomous` or `agent:claude-agent`"
             )),
         }
     }

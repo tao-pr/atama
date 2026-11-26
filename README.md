@@ -166,13 +166,51 @@ If you use `agent:coder` or `agent:autonomous`, the model can run any
 command with your permissions. Use them only in a directory and with a
 model that you trust.
 
+### Three kinds of agent tasks
+
+Atama supports three kinds of agent tasks. Each kind needs a model profile
+(see "Model profiles" below).
+
+1. A specific agent task (`agent:coder`, `agent:summarizer`) does one task
+   in one attempt. Atama runs the loop: it sends the conversation to an
+   OpenAI compatible `/chat/completions` endpoint, and runs the tool calls
+   of the model. It works with OpenAI, Ollama, vLLM and other servers.
+
+   ```config
+   local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
+   ```
+
+2. An autonomous agent task (`agent:autonomous`) uses the same endpoint and
+   the same loop. It works in iterations until its success checks pass, in
+   the limits of its budget.
+
+   ```config
+   gpt: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY, thinking=false
+   ```
+
+3. A Claude agent task (`agent:claude-agent`) runs a Claude Managed Agent
+   with the Anthropic Managed Agents API, not with `/chat/completions`.
+   Anthropic runs the loop. The native tools of Claude, such as
+   `web_search`, run in the cloud, and the local tools of Atama run on your
+   machine. `effort=` sets how much the model thinks. The other agents
+   ignore `effort=`, and Atama warns in red if they get it. This agent type
+   is in progress: Atama reads and checks the action, but cannot run it yet
+   (see [PLAN-claude-agent.md](PLAN-claude-agent.md)).
+
+   ```config
+   claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=ANTHROPIC_API_KEY, effort=high
+   ```
+
+The job file never holds an API key. `api_key=` names the environment
+variable that holds it.
+
 ### Model profiles
 
 A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>][, effort=<level>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -188,6 +226,8 @@ on one line of the `config` block:
 - `thinking=false`: send `"reasoning_effort": "none"` for each action that
   uses the profile. Use it for a model such as `gpt-6-luna`, which takes
   tools only without reasoning. A `thinking=` option of the action replaces it.
+- `effort=<level>`: the effort of a Claude model, `low`, `medium`, `high`,
+  `xhigh` or `max`. Only `agent:claude-agent` uses it.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job
