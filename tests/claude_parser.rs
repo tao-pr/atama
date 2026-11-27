@@ -336,7 +336,7 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
         ]
     );
 
-    let agent = |task: usize| match &job.tasks[task].actions[1] {
+    let agent = |task: usize, index: usize| match &job.tasks[task].actions[index] {
         Actor::ClaudeAgent {
             params,
             profile,
@@ -351,19 +351,19 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
         ),
         other => panic!("expected a claude agent, got {other:?}"),
     };
-    for task in [2, 3] {
-        let (params, profile, _, environment) = agent(task);
+    for (task, index) in [(2, 1), (3, 0)] {
+        let (params, profile, _, _) = agent(task, index);
         assert_eq!(profile.model, "claude-opus-5-5");
         assert_eq!(profile.api_key_env.as_deref(), Some("CLAUDE_API_KEY"));
         assert_eq!(profile.effort.as_deref(), Some("high"));
-        // The agents only read the search results: no native tools, the
-        // default environment.
+        // The agents only read the search results: no native tools.
         assert!(
             !params.iter().any(|param| param.starts_with("native_tools=")),
             "{params:?}"
         );
-        assert!(environment.is_none());
-        assert!(params.contains(&"max_cost_usd=0.50".to_string()));
+        for option in ["max_time=10m", "max_cost_usd=0.50", "token_budget=200_000"] {
+            assert!(params.contains(&option.to_string()), "{option} in {params:?}");
+        }
     }
     assert_eq!(
         actions(0)[1],
@@ -371,31 +371,41 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
     );
     // The first agent writes `matches.json` with the local `write_file`
     // tool, and a success check makes sure that it is valid JSON.
-    let (params, _, schema, _) = agent(2);
+    let (params, _, schema, environment) = agent(2, 1);
     assert_eq!(schema.as_deref(), Some("matches"));
+    assert!(environment.is_none());
     for option in [
+        "name=atama-sample-last-results",
+        "system=You read football results from web search data. You never guess a score \
+         that the data does not give.",
         "local_tools=write_file",
         "autonomy=no_ask",
         "protect=./output/claude_agent/search.json",
         "success_check=test -s ./output/claude_agent/matches.json && python3 -m json.tool \
          ./output/claude_agent/matches.json > /dev/null",
+        "max_turns=3",
     ] {
         assert!(params.contains(&option.to_string()), "{option} in {params:?}");
     }
     assert_eq!(job.tasks[2].actions.len(), 2);
-    let (params, _, schema, _) = agent(3);
-    assert_eq!(schema, None);
-    assert!(
-        !params.iter().any(|param| param.starts_with("local_tools=")),
-        "{params:?}"
-    );
     assert_eq!(actions(2)[0], "read_file ./output/claude_agent/search.json");
+    // The second agent reads the search results with read-only local
+    // tools, in the `offline` environment.
+    let (params, _, schema, environment) = agent(3, 0);
+    assert_eq!(schema, None);
+    let environment = environment.expect("the claude-env:offline block");
+    assert_eq!(environment.name, "atama-offline");
+    for option in [
+        "environment=offline",
+        "local_tools=list_files, read_file",
+        "autonomy=ask_if_risky",
+        "on_ask=deny",
+    ] {
+        assert!(params.contains(&option.to_string()), "{option} in {params:?}");
+    }
+    assert_eq!(job.tasks[3].actions.len(), 2);
     assert_eq!(
-        actions(3)[0],
-        "bash cat ./output/claude_agent/matches.json ./output/claude_agent/search.json"
-    );
-    assert_eq!(
-        actions(3)[2],
+        actions(3)[1],
         "write_file ./output/claude_agent/winners_form.md"
     );
 }

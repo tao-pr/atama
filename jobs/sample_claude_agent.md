@@ -44,6 +44,11 @@ claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CL
 }
 ```
 
+```claude-env:offline
+networking: limited
+allow_package_managers: false
+```
+
 # Premier League form
 
 Finds the results of the last Premier League matches, and writes a short
@@ -52,13 +57,14 @@ searches the web with Tavily. Then two Claude Managed Agent steps
 (`agent:claude-agent`) read only the search results. The agents have no
 native tools, so they cannot search or fetch pages themselves, and they use
 few tokens. The first agent has the local `write_file` tool, and a success
-check makes sure that it wrote a valid JSON file. Needs `TAVILY_API_KEY` and `CLAUDE_API_KEY`. Every file goes into
-`./output/claude_agent/`.
+check makes sure that it wrote a valid JSON file. The second agent reads
+the search results with the local `read_file` tool. Needs `TAVILY_API_KEY`
+and `CLAUDE_API_KEY`. Every file goes into `./output/claude_agent/`.
 
 This job is a sample of the `claude-agent` agent type. The first run
 creates the agent of each step and the default environment, and keeps
 their IDs in `.atama/claude-lock.json`. The next runs use them again. Each
-agent step stops at 10 minutes or at $0.50. With `--debug`, Atama writes
+agent step stops at 10 minutes, at $0.50 or at its token budget. With `--debug`, Atama writes
 the link of each session in the Claude Console to stderr. Without
 `--debug`, Atama does not show the link.
 
@@ -94,20 +100,28 @@ each. Then the success check runs on this machine. It makes sure that the
 file exists, is not empty, and is valid JSON. If the check fails, the
 agent gets the error and tries again, 3 turns at most.
 
+`name=` gives the agent object a fixed name in the Claude Console and in
+the lock file. `system=` is the system prompt of the stored agent.
 `autonomy=no_ask` lets the agent write without a prompt on the terminal.
-`protect=` stops it from writing over the search results.
+`protect=` stops it from writing over the search results. `max_turns=3`
+is the default, written here to show the limit of the success check.
 
 - actions:
   - read_file ./output/claude_agent/search.json
   - agent:claude-agent
     - model=claude
+    - name=atama-sample-last-results
+    - system=You read football results from web search data. You never
+      guess a score that the data does not give.
     - output_schema=matches
     - local_tools=write_file
     - autonomy=no_ask
     - protect=./output/claude_agent/search.json
     - success_check=test -s ./output/claude_agent/matches.json && python3 -m json.tool ./output/claude_agent/matches.json > /dev/null
+    - max_turns=3
     - max_time=10m
     - max_cost_usd=0.50
+    - token_budget=200_000
     - task=The input is the JSON response of a web search for the latest
       Premier League results. Use only this input. List the most recent
       finished Premier League matches that it has, 10 matches at most, the
@@ -120,21 +134,34 @@ agent gets the error and tries again, 3 turns at most.
 
 ## Form of the Winners
 
-The agent reads the results of the last step and the search results. For
-each team that won one of the matches, it writes two sentences at most on
-its form. The report is Markdown.
+The input of the agent is the output of the last step, the `matches`
+JSON. The agent finds the search results with the local `list_files` tool,
+and reads them with the local `read_file` tool. For each team that won one
+of the matches, it writes two sentences at most on its form. The report is
+Markdown.
+
+`autonomy=ask_if_risky` lets the read-only tools run without approval.
+`on_ask=deny` denies any other call without a prompt on the terminal.
+`environment=offline` selects the ```` ```claude-env:offline ```` block,
+because the agent needs no network in its cloud container.
 
 - actions:
-  - bash cat ./output/claude_agent/matches.json ./output/claude_agent/search.json
   - agent:claude-agent
     - model=claude
+    - environment=offline
+    - local_tools=list_files, read_file
+    - autonomy=ask_if_risky
+    - on_ask=deny
     - max_time=10m
     - max_cost_usd=0.50
-    - task=The input has two JSON values. The first is a list of the most
-      recent Premier League results. The second is the web search response
-      that the results come from. Use only this input. Take each team that
-      won one of the matches. For each team, describe its form in two
-      sentences at most, from what the input says about its recent results.
+    - token_budget=200_000
+    - task=The input is a JSON list of the most recent Premier League
+      results. List the files in ./output/claude_agent/ with the
+      list_files tool, and read search.json with the read_file tool. It
+      is the web search response that the results come from. Use only the
+      input and this file. Take each team that won one of the matches.
+      For each team, describe its form in two sentences at most, from
+      what the input and the file say about its recent results.
       Reply with Markdown only: a `# Form of the winners` heading, then a
       `## <team>` heading and the sentences for each team, in the order of
       the results. Do not add other text.
