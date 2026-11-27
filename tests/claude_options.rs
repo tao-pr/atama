@@ -357,7 +357,10 @@ fn on_ask_judge_needs_a_judge_model_and_guardrails() {
     .unwrap();
     assert_eq!(config.on_ask, OnAsk::Judge);
     assert_eq!(config.judge_model.as_deref(), Some("local"));
-    assert_eq!(config.guardrails.as_deref(), Some("Write only in ./output."));
+    assert_eq!(
+        config.guardrails.as_deref(),
+        Some("Write only in ./output.")
+    );
 
     let needs = "`on_ask=judge` needs `judge_model=<profile>` and `guardrails=<rules>`: the \
                  judge is a model of an OpenAI compatible profile, and it allows a call that \
@@ -366,7 +369,12 @@ fn on_ask_judge_needs_a_judge_model_and_guardrails() {
     assert_eq!(error(&["on_ask=judge", "judge_model=local"]), needs);
     assert_eq!(error(&["on_ask=judge", "guardrails=x"]), needs);
     assert_eq!(
-        error(&["on_ask=judge", "judge_model=local", "guardrails=x", "autonomy=no_ask"]),
+        error(&[
+            "on_ask=judge",
+            "judge_model=local",
+            "guardrails=x",
+            "autonomy=no_ask"
+        ]),
         "`on_ask=judge` does nothing with `autonomy=no_ask`, because no call waits for \
          approval. Use `ask_if_risky` or `always_ask`"
     );

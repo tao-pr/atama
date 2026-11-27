@@ -558,7 +558,12 @@ fn fails_when_the_success_check_fails_at_the_last_turn() {
         idle("i2", "end_turn"),
     ]]);
     let option = format!("success_check={command}");
-    let error = run("success-fail", &api, &["task=Work.", &option, "max_turns=2"]).unwrap_err();
+    let error = run(
+        "success-fail",
+        &api,
+        &["task=Work.", &option, "max_turns=2"],
+    )
+    .unwrap_err();
     assert_eq!(
         error,
         format!(
@@ -592,7 +597,10 @@ fn checks_the_schema_before_the_success_check() {
         |run| run.with_tools(tools).schema_block(Some(schema)),
     )
     .unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&output).unwrap(), json!({"n": 1}));
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({"n": 1})
+    );
     // The check ran once, after the reply matched the schema.
     assert_eq!(fs::read_to_string(&count).unwrap().trim(), "1");
 }
@@ -1097,7 +1105,8 @@ fn the_tokens_of_the_judge_count_in_the_token_budget() {
     options.push("token_budget=100");
     let (tools, _) = echo();
     let error = run_with("judge-budget", &api, &options, "", |run| {
-        run.with_tools(tools).judge_client(MockJudge::new(&[(true, "ok", 50)]))
+        run.with_tools(tools)
+            .judge_client(MockJudge::new(&[(true, "ok", 50)]))
     })
     .unwrap_err();
     assert_eq!(
@@ -1105,7 +1114,10 @@ fn the_tokens_of_the_judge_count_in_the_token_budget() {
         "agent:claude-agent (claude): the session `sesn_1` used 110 tokens (50 of them by the \
          judge), more than its budget of 100"
     );
-    assert_eq!(api.sent().last().unwrap(), &json!({"type": "user.interrupt"}));
+    assert_eq!(
+        api.sent().last().unwrap(),
+        &json!({"type": "user.interrupt"})
+    );
 }
 
 #[test]

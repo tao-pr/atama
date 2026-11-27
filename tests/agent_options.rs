@@ -5,12 +5,13 @@ use atama::actor::{Actor, AgentType};
 use std::time::Duration;
 
 use atama::agent_loop_openai_compat::agent_options::{
-    AgentConfig, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS, DEFAULT_EXPERTISE,
-    DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS, DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS,
-    DEFAULT_SUMMARIZER_PROMPT, MaxOutput, SummarizerOptions, ToolGuard, format_duration,
-    parse_duration,
+    AgentConfig, ApprovalOptions, AutonomousOptions, DEFAULT_AUTONOMOUS_MAX_STEPS,
+    DEFAULT_AUTONOMY, DEFAULT_EXPERTISE, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_STEPS,
+    DEFAULT_MAX_TIME, DEFAULT_MAX_VIOLATIONS, DEFAULT_SUMMARIZER_PROMPT, MaxOutput,
+    SummarizerOptions, ToolGuard, format_duration, parse_duration,
 };
 use atama::profile::ModelProfile;
+use atama::tools::{Autonomy, OnAsk};
 
 fn params(params: &[&str]) -> Vec<String> {
     params.iter().map(|param| param.to_string()).collect()
@@ -182,7 +183,7 @@ fn rejects_invalid_configuration() {
             vec!["model=m", "base_url=http://x.test"],
             "unknown option `base_url`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`, `autonomy=`, `on_ask=`",
         ),
         (vec!["model=m", "task="], "option `task` has no value"),
         (vec!["model="], "option `model` has no value"),
@@ -272,6 +273,7 @@ fn summary_shows_whether_the_api_key_is_set_but_not_the_key() {
         thinking: None,
         output_schema: None,
         autonomous: None,
+        approval: ApprovalOptions::default(),
     };
     assert_eq!(
         config.summary(),
@@ -416,7 +418,7 @@ fn rejects_invalid_summarizer_options() {
             vec!["topic=rust".into()],
             "unknown option `topic`, expected `model=`, `max_steps=`, `token_budget=`, `max_context=`, `task=`, `thinking=`, `output_schema=`, \
              `expertise=`, `max_output=`, `max_iterations=`, `max_time=`, `success_check=`, \
-             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`"
+             `guardrails=`, `success=`, `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`, `autonomy=`, `on_ask=`"
                 .into(),
         ),
         (
@@ -637,11 +639,15 @@ fn other_agents_reject_the_options_of_autonomous() {
                 &no_env,
             )
             .err();
-            assert_eq!(
-                err,
-                Some(format!("option `{key}` works only with `agent:autonomous`")),
-                "{agent} {option}"
-            );
+            let expected = if agent == AgentType::Coder && key == "guardrails" {
+                // A `coder` agent takes `guardrails=` for `on_ask=judge`.
+                "option `guardrails` of `agent:coder` needs `on_ask=judge`, with \
+                 `autonomy=ask_if_risky` or `autonomy=always_ask`"
+                    .to_string()
+            } else {
+                format!("option `{key}` works only with `agent:autonomous`")
+            };
+            assert_eq!(err, Some(expected), "{agent} {option}");
         }
     }
 }
@@ -730,4 +736,188 @@ fn takes_thinking_from_the_profile_unless_the_action_sets_it() {
     };
     assert_eq!(thinking(&["model=m"]), Some(false));
     assert_eq!(thinking(&["model=m", "thinking=true"]), Some(true));
+}
+
+// `autonomy=` and `on_ask=`
+
+fn config(agent: AgentType, options: &[&str]) -> Result<AgentConfig, String> {
+    let mut all = vec!["model=m"];
+    all.extend_from_slice(options);
+    AgentConfig::from_params(agent, &params(&all), Some(&profile()), &no_env)
+}
+
+#[test]
+fn without_autonomy_each_call_runs() {
+    for agent in [
+        AgentType::Coder,
+        AgentType::Autonomous,
+        AgentType::Summarizer,
+    ] {
+        let options: &[&str] = if agent == AgentType::Autonomous {
+            &["success_check=true"]
+        } else {
+            &[]
+        };
+        let approval = config(agent, options).unwrap().approval;
+        assert_eq!(approval, ApprovalOptions::default(), "{agent}");
+        assert_eq!(approval.autonomy, Autonomy::NoAsk);
+        assert_eq!(approval.autonomy, DEFAULT_AUTONOMY);
+        assert_eq!(approval.on_ask, OnAsk::Prompt);
+        assert!(!approval.uses_judge());
+    }
+}
+
+#[test]
+fn coder_and_autonomous_read_autonomy_and_on_ask() {
+    let approval = config(AgentType::Coder, &["autonomy=ask_if_risky", "on_ask=deny"])
+        .unwrap()
+        .approval;
+    assert_eq!(approval.autonomy, Autonomy::AskIfRisky);
+    assert_eq!(approval.on_ask, OnAsk::Deny);
+    let approval = config(
+        AgentType::Autonomous,
+        &["success_check=true", "autonomy=always_ask"],
+    )
+    .unwrap()
+    .approval;
+    assert_eq!(approval.autonomy, Autonomy::AlwaysAsk);
+    assert_eq!(approval.on_ask, OnAsk::Prompt);
+}
+
+#[test]
+fn a_coder_takes_guardrails_and_judge_model_for_on_ask_judge() {
+    let config = config(
+        AgentType::Coder,
+        &[
+            "autonomy=ask_if_risky",
+            "on_ask=judge",
+            "guardrails=Do not push.",
+            "judge_model=small",
+        ],
+    )
+    .unwrap();
+    assert!(config.approval.uses_judge());
+    assert_eq!(config.approval.guardrails.as_deref(), Some("Do not push."));
+    assert_eq!(config.approval.judge_model.as_deref(), Some("small"));
+    assert!(config.autonomous.is_none());
+    assert!(
+        config.summary().ends_with(
+            "\nautonomy: ask_if_risky\non_ask: judge\nguardrails: Do not push.\njudge_model: small"
+        ),
+        "{}",
+        config.summary()
+    );
+}
+
+#[test]
+fn an_autonomous_agent_shares_its_guardrails_and_judge_with_on_ask_judge() {
+    let config = config(
+        AgentType::Autonomous,
+        &[
+            "success_check=true",
+            "autonomy=always_ask",
+            "on_ask=judge",
+            "guardrails=Do not push.",
+            "judge_model=small",
+        ],
+    )
+    .unwrap();
+    assert_eq!(config.approval.guardrails.as_deref(), Some("Do not push."));
+    assert_eq!(config.approval.judge_model.as_deref(), Some("small"));
+    let options = config.autonomous.as_ref().unwrap();
+    assert_eq!(options.judge_model.as_deref(), Some("small"));
+    assert_eq!(options.guard, ToolGuard::Prompt);
+    // The autonomous options show the guardrails once.
+    assert_eq!(config.summary().matches("guardrails:").count(), 1);
+}
+
+#[test]
+fn rejects_invalid_autonomy_and_on_ask() {
+    let cases: [(AgentType, &[&str], &str); 10] = [
+        (
+            AgentType::Coder,
+            &["autonomy=sometimes"],
+            "`autonomy=sometimes` is not `no_ask`, `ask_if_risky` or `always_ask`",
+        ),
+        (
+            AgentType::Coder,
+            &["autonomy=always_ask", "on_ask=maybe"],
+            "`on_ask=maybe` is not `prompt`, `deny` or `judge`",
+        ),
+        (
+            AgentType::Summarizer,
+            &["autonomy=always_ask"],
+            "option `autonomy` works only with `agent:coder` and `agent:autonomous`, because \
+             `agent:summarizer` has no tools",
+        ),
+        (
+            AgentType::Summarizer,
+            &["on_ask=deny"],
+            "option `on_ask` works only with `agent:coder` and `agent:autonomous`, because \
+             `agent:summarizer` has no tools",
+        ),
+        (
+            AgentType::Coder,
+            &["on_ask=deny"],
+            "`on_ask=` does nothing with `autonomy=no_ask`, the default of `agent:coder`, \
+             because no call waits for approval. Set `autonomy=ask_if_risky` or \
+             `autonomy=always_ask`",
+        ),
+        (
+            AgentType::Coder,
+            &["autonomy=always_ask", "on_ask=deny"],
+            "`autonomy=always_ask` and `on_ask=deny` cannot be together, because Atama then \
+             denies each tool call",
+        ),
+        (
+            AgentType::Coder,
+            &["autonomy=always_ask", "on_ask=judge"],
+            "`on_ask=judge` needs `guardrails=<text>`",
+        ),
+        (
+            AgentType::Autonomous,
+            &["success_check=true", "autonomy=always_ask", "on_ask=judge"],
+            "`on_ask=judge` needs `guardrails=<text>`",
+        ),
+        (
+            AgentType::Coder,
+            &["autonomy=always_ask", "guardrails=x"],
+            "option `guardrails` of `agent:coder` needs `on_ask=judge`, with \
+             `autonomy=ask_if_risky` or `autonomy=always_ask`",
+        ),
+        (
+            AgentType::Autonomous,
+            &[
+                "success_check=true",
+                "guardrails=x",
+                "toolGuard=judge",
+                "autonomy=ask_if_risky",
+            ],
+            "`toolGuard=judge` and `autonomy=ask_if_risky` cannot be together, because both \
+             examine each tool call. Use `toolGuard=judge` alone, or `autonomy=` with \
+             `on_ask=judge`",
+        ),
+    ];
+    for (agent, options, message) in cases {
+        assert_eq!(
+            config(agent, options).err().as_deref(),
+            Some(message),
+            "{agent} {options:?}"
+        );
+    }
+}
+
+#[test]
+fn judge_model_of_an_autonomous_agent_works_with_on_ask_judge_alone() {
+    let config = config(
+        AgentType::Autonomous,
+        &[
+            "success_check=true",
+            "autonomy=ask_if_risky",
+            "on_ask=judge",
+            "guardrails=x",
+            "judge_model=small",
+        ],
+    );
+    assert!(config.is_ok(), "{:?}", config.err());
 }

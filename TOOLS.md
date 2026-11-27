@@ -167,20 +167,24 @@ A search with this tool costs less than the Claude `web_search` and
 
 ### Approval of local tools
 
-A `claude-agent` action can make a local tool wait for approval before it
-runs. `autonomy=` sets which calls wait, and `on_ask=` sets who answers.
+A `claude-agent`, `coder` or `autonomous` action can make a local tool wait
+for approval before it runs. `autonomy=` sets which calls wait, and
+`on_ask=` sets who answers.
 
 | `autonomy=` | Which calls wait |
 | --- | --- |
-| `no_ask` | No call. |
-| `ask_if_risky` (default) | Each call of `bash` and `write_file`. `read_file` and `list_files` run. |
+| `no_ask` | No call. This is the default of `coder` and `autonomous`. |
+| `ask_if_risky` | Each call of `bash` and `write_file`. The read-only tools `read_file`, `list_files` and `web_search` run. This is the default of `claude-agent`. |
 | `always_ask` | Each call. |
 
 `on_ask=prompt` asks you on the terminal, `on_ask=deny` denies the call, and
 `on_ask=judge` asks a judge model. See
-[A judge for the calls that wait](ACTIONS.md#a-judge-for-the-calls-that-wait).
-An `autonomous` agent does not wait for approval, but `toolGuard=judge` can
-block a call (see [`agent:autonomous`](ACTIONS.md#agentautonomous)).
+[Approval of the tool calls](ACTIONS.md#approval-of-the-tool-calls) for
+`coder` and `autonomous`, and
+[A judge for the calls that wait](ACTIONS.md#a-judge-for-the-calls-that-wait)
+for `claude-agent`. An `autonomous` agent can also block a call with
+`toolGuard=judge` (see [`agent:autonomous`](ACTIONS.md#agentautonomous)),
+but not together with `autonomy=`.
 
 ## Provider tools
 

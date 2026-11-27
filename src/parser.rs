@@ -666,9 +666,10 @@ fn parse_action(
                 Some(block) => block.merge(params),
                 None => params.clone(),
             };
-            // `judge_model=` can come from the budget block. For another
-            // agent, `AgentConfig::check` names the option.
-            if *agent == AgentType::Autonomous
+            // `judge_model=` can come from the budget block. A `coder`
+            // agent takes it with `on_ask=judge`. For a `summarizer`,
+            // `AgentConfig::check` names the option.
+            if *agent != AgentType::Summarizer
                 && let Some(name) = merged.iter().find_map(|p| p.strip_prefix("judge_model="))
             {
                 let judge = profile::find(name, &blocks.profiles).map_err(error)?;

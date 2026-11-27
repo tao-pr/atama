@@ -1842,7 +1842,8 @@ fn rejects_invalid_budget_blocks_and_agent_options() {
             "unknown option `max_step`, expected `model=`, `max_steps=`, `token_budget=`, \
              `max_context=`, `task=`, `thinking=`, `output_schema=`, `expertise=`, `max_output=`, \
              `max_iterations=`, `max_time=`, `success_check=`, `guardrails=`, `success=`, \
-             `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
+             `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`, \
+             `autonomy=`, `on_ask=`",
         ),
     ];
     for (text, line, message) in cases {
@@ -1918,10 +1919,16 @@ fn rejects_an_invalid_judge_model() {
                 "",
                 "agent:autonomous model=p success_check=true judge_model=small",
             ),
-            "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`",
+            "`judge_model=` needs a judge: `success=<criteria>`, `toolGuard=judge` or \
+             `on_ask=judge`",
         ),
         (
             judge_job("", "agent:coder model=p judge_model=small"),
+            "option `judge_model` of `agent:coder` needs `on_ask=judge`, with \
+             `autonomy=ask_if_risky` or `autonomy=always_ask`",
+        ),
+        (
+            judge_job("", "agent:summarizer model=p judge_model=small"),
             "option `judge_model` works only with `agent:autonomous`",
         ),
     ];

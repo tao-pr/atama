@@ -213,8 +213,8 @@ mod approval {
 
     use super::counter;
     use atama::tools::{
-        Approval, Approver, Autonomy, Bash, DenyApprover, Limited, ListFiles, PromptApprover,
-        ReadFile, Tool, WriteFile,
+        Approval, Approver, Autonomy, Bash, DenyApprover, Limited, ListFiles, OnAsk,
+        PromptApprover, ReadFile, Tool, WriteFile,
     };
 
     /// A writer that keeps what it gets, so that a test can read it.
@@ -299,6 +299,22 @@ mod approval {
         assert!(Limited::new(Box::new(ReadFile), None, None).read_only());
         let (tool, _) = counter();
         assert!(!tool.read_only());
+    }
+
+    #[test]
+    fn reads_and_writes_the_values_of_on_ask() {
+        for (text, value) in [
+            ("prompt", OnAsk::Prompt),
+            ("deny", OnAsk::Deny),
+            ("judge", OnAsk::Judge),
+        ] {
+            assert_eq!(text.parse::<OnAsk>().unwrap(), value);
+            assert_eq!(value.to_string(), text);
+        }
+        assert_eq!(
+            "maybe".parse::<OnAsk>().unwrap_err(),
+            "`on_ask=maybe` is not `prompt`, `deny` or `judge`"
+        );
     }
 
     #[test]

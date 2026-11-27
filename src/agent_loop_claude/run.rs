@@ -28,10 +28,12 @@ use super::lock::{AgentLock, LOCK_PATH};
 use super::options::{AgentSource, ClaudeAgentConfig, EnvironmentSource, OnAsk};
 use crate::actor::CLAUDE_AGENT;
 use crate::agent_loop_openai_compat::ChatClient;
-use crate::agent_loop_openai_compat::agent_options::{format_duration, named_profile, read_api_key};
+use crate::agent_loop_openai_compat::agent_options::{
+    format_duration, named_profile, read_api_key,
+};
+use crate::agent_loop_openai_compat::checks::CommandCheck;
 use crate::agent_loop_openai_compat::judge::JudgeApprover;
 use crate::agent_loop_openai_compat::openai::OpenAiClient;
-use crate::agent_loop_openai_compat::checks::CommandCheck;
 use crate::profile::ModelProfile;
 use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};

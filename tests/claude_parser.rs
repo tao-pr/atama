@@ -358,11 +358,16 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
         assert_eq!(profile.effort.as_deref(), Some("high"));
         // The agents only read the search results: no native tools.
         assert!(
-            !params.iter().any(|param| param.starts_with("native_tools=")),
+            !params
+                .iter()
+                .any(|param| param.starts_with("native_tools=")),
             "{params:?}"
         );
         for option in ["max_time=10m", "max_cost_usd=0.50", "token_budget=200_000"] {
-            assert!(params.contains(&option.to_string()), "{option} in {params:?}");
+            assert!(
+                params.contains(&option.to_string()),
+                "{option} in {params:?}"
+            );
         }
     }
     assert_eq!(
@@ -385,7 +390,10 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
          ./output/claude_agent/matches.json > /dev/null",
         "max_turns=3",
     ] {
-        assert!(params.contains(&option.to_string()), "{option} in {params:?}");
+        assert!(
+            params.contains(&option.to_string()),
+            "{option} in {params:?}"
+        );
     }
     assert_eq!(job.tasks[2].actions.len(), 2);
     assert_eq!(actions(2)[0], "read_file ./output/claude_agent/search.json");
@@ -401,7 +409,10 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
         "autonomy=ask_if_risky",
         "on_ask=deny",
     ] {
-        assert!(params.contains(&option.to_string()), "{option} in {params:?}");
+        assert!(
+            params.contains(&option.to_string()),
+            "{option} in {params:?}"
+        );
     }
     assert_eq!(job.tasks[3].actions.len(), 2);
     assert_eq!(
@@ -449,5 +460,45 @@ fn on_ask_judge_uses_the_profile_of_judge_model() {
 
     // Without `on_ask=judge`, the action has no judge profile.
     let action = first_action(&job("  - agent:claude-agent\n    - model=claude\n"));
-    assert!(matches!(action, Actor::ClaudeAgent { judge_profile: None, .. }));
+    assert!(matches!(
+        action,
+        Actor::ClaudeAgent {
+            judge_profile: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn sample_approval_job_asks_before_each_change_of_the_search_results() {
+    let job = parse_job(include_str!("../jobs/sample_approval.md")).expect("job should parse");
+    let names: Vec<&str> = job.tasks.iter().map(|task| task.id.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Prepare", "Search", "Trim the Results", "Add Takeaways"]
+    );
+    let Actor::AgentTool { agent, params, .. } = &job.tasks[2].actions[0] else {
+        panic!("expected a coder agent");
+    };
+    assert_eq!(agent.to_string(), "coder");
+    let Actor::ClaudeAgent {
+        params: claude_params,
+        ..
+    } = &job.tasks[3].actions[0]
+    else {
+        panic!("expected a claude agent");
+    };
+    for params in [params, claude_params] {
+        for option in ["autonomy=ask_if_risky", "on_ask=prompt"] {
+            assert!(
+                params.contains(&option.to_string()),
+                "{option} in {params:?}"
+            );
+        }
+    }
+    assert!(claude_params.contains(&"local_tools=read_file, write_file".to_string()));
+    assert_eq!(
+        job.tasks[2].actions[1].to_string(),
+        "bash python3 ./jobs/scripts/check_search_json.py trimmed ./output/approval/search.json"
+    );
 }

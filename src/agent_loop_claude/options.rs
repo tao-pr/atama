@@ -5,7 +5,6 @@
 //! reads them without the API key, so that the job parser can stop an
 //! invalid job before it starts.
 
-use std::str::FromStr;
 use std::time::Duration;
 
 use super::custom_tools;
@@ -17,6 +16,7 @@ use crate::agent_loop_openai_compat::agent_options::{
 use crate::profile::{ModelProfile, parse_token_budget};
 use crate::protect::parse_patterns;
 use crate::tools::Autonomy;
+pub use crate::tools::OnAsk;
 
 /// The default most `user.message` events of a run: the task, and one for
 /// each failed check of the reply (the output schema or `success_check=`).
@@ -60,32 +60,6 @@ const DEFINITION_KEYS: [&str; 5] = [
     "allowed_domains",
     "blocked_domains",
 ];
-
-/// Who answers a tool call that waits for approval, from `on_ask=`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnAsk {
-    /// `prompt`: ask on the terminal. Without a terminal, deny.
-    Prompt,
-    /// `deny`: deny each call.
-    Deny,
-    /// `judge`: a judge model decides from `guardrails=`, with the same
-    /// guard as `toolGuard=judge` of an `autonomous` agent
-    /// ([`crate::agent_loop_openai_compat::judge::review`]).
-    Judge,
-}
-
-impl FromStr for OnAsk {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, String> {
-        match value {
-            "prompt" => Ok(OnAsk::Prompt),
-            "deny" => Ok(OnAsk::Deny),
-            "judge" => Ok(OnAsk::Judge),
-            _ => Err(format!("`on_ask={value}` is not `prompt`, `deny` or `judge`")),
-        }
-    }
-}
 
 /// The agent of a run.
 #[derive(Debug, Clone, PartialEq, Eq)]

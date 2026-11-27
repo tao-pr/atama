@@ -200,7 +200,9 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. Other
+`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. A
+`coder` and an `autonomous` agent also take `autonomy=` and `on_ask=` (see
+"Approval of the tool calls" below). Other
 agent types fail on the options of another type (`only_for`).
 
 The options of an agent action are not on the line of the action. They are
@@ -429,8 +431,8 @@ a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
 key of that profile (`agent_options::read_api_key`), and sets it as
 `AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
 client, and adds the tokens of each judge reply to the budget.
-`judge_model=` needs `success=` or `toolGuard=judge`. The context summary uses
-the model of the agent.
+`judge_model=` needs `success=`, `toolGuard=judge` or `on_ask=judge`. The
+context summary uses the model of the agent.
 
 The success judge gets the task, the criteria, the tool calls and results
 of the conversation (`judge::evidence`, the last `MAX_EVIDENCE_CHARS`) and
@@ -440,6 +442,46 @@ arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
 fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Approval of the tool calls
+
+`autonomy=<no_ask|ask_if_risky|always_ask>` and `on_ask=<prompt|deny|judge>`
+work for a `coder` and an `autonomous` agent, as for a `claude-agent`
+action. A `summarizer` agent has no tools, so it fails on them.
+`ApprovalOptions::from_values` reads them into `AgentConfig::approval`.
+`Autonomy`, `OnAsk` and the `Approver` are in `src/tools/approval.rs`.
+
+The default of `autonomy=` is `DEFAULT_AUTONOMY`, `no_ask`, so a job without
+the option runs each call, as before. This default is not the default of a
+`claude-agent` action, `ask_if_risky`. `on_ask=` with `no_ask` is a parse
+error, because no call waits. `always_ask` with `on_ask=deny` is also an
+error.
+
+Before each tool call, `run_with` calls `AgentToolLoop::must_ask`. It uses
+`Autonomy::must_ask`, so with `ask_if_risky`, only a tool whose
+`Tool::read_only` is false waits. A call of an unknown tool, or with
+arguments that are not JSON, does not wait, because it fails without
+running. A call that waits goes to the answer of `on_ask=`:
+
+- `prompt` and `deny` call `AgentToolLoop::ask_approver`. It makes a
+  `PromptApprover` or a `DenyApprover` at the first call.
+  `AgentToolLoop::approver` replaces it in tests.
+- `judge` calls `judge::review` with `guardrails=`, the guard of
+  `toolGuard=judge`. It uses the judge client of `judge_model=`, or the
+  client of the agent, and adds the tokens of the reply to the budget.
+
+A denied call does not run. The model gets "error: <reason>", and the run
+goes on. A denied call is not a violation, so `max_violations=` does not
+count it. With `--debug`, the loop writes a `denied` block with the reason.
+
+`on_ask=judge` needs `guardrails=`. A `coder` agent takes `guardrails=` and
+`judge_model=` only with `on_ask=judge`. The guardrails also go into its
+system prompt. `parse_action` resolves `judge_model=` for a `coder` and an
+`autonomous` agent. `toolGuard=judge` and an `autonomy=` other than
+`no_ask` cannot be together, because both examine each call. A budget
+block can set `autonomy` and `on_ask`. Tests of the loop are in
+`tests/approval_loop.rs`, and tests of the options are in
+`tests/agent_options.rs`.
 
 ### Protected paths
 

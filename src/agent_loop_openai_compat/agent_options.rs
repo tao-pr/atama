@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::actor::AgentType;
 use crate::profile::ModelProfile;
+use crate::tools::{Autonomy, OnAsk};
 
 /// Most model replies that one run of the loop asks for.
 pub const DEFAULT_MAX_STEPS: u32 = 10;
@@ -21,13 +22,16 @@ pub const DEFAULT_MAX_TIME: Duration = Duration::from_secs(30 * 60);
 /// Most tool calls that the guard of an `autonomous` agent blocks in one
 /// run, before the run fails.
 pub const DEFAULT_MAX_VIOLATIONS: u32 = 3;
+/// The level of `autonomy=` of a `coder` or an `autonomous` agent without
+/// the option: each tool call runs, as before the option existed.
+pub const DEFAULT_AUTONOMY: Autonomy = Autonomy::NoAsk;
 /// Expertise of a `summarizer` agent if the action has no `expertise=`.
 pub const DEFAULT_EXPERTISE: &str = "general";
 /// Instruction of a `summarizer` agent if the action has no `task=`.
 pub const DEFAULT_SUMMARIZER_PROMPT: &str = "Summarize the input.";
 
 /// Options of an agent action.
-const OPTION_KEYS: [&str; 19] = [
+const OPTION_KEYS: [&str; 21] = [
     "model",
     "max_steps",
     "token_budget",
@@ -47,6 +51,8 @@ const OPTION_KEYS: [&str; 19] = [
     "protect",
     "budget",
     "judge_model",
+    "autonomy",
+    "on_ask",
 ];
 
 /// The configuration of one run, read from the action's params, its model
@@ -93,6 +99,94 @@ pub struct AgentConfig {
     pub output_schema: Option<String>,
     /// The options of an `autonomous` agent. `None` for other agent types.
     pub autonomous: Option<AutonomousOptions>,
+    /// When a tool call waits for approval, and who answers it.
+    pub approval: ApprovalOptions,
+}
+
+/// The approval of the tool calls of a `coder` or an `autonomous` agent,
+/// from `autonomy=` and `on_ask=` (see [`crate::tools::approval`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalOptions {
+    /// From `autonomy=<no_ask|ask_if_risky|always_ask>`. The default is
+    /// [`DEFAULT_AUTONOMY`].
+    pub autonomy: Autonomy,
+    /// From `on_ask=<prompt|deny|judge>`. The default is [`OnAsk::Prompt`].
+    pub on_ask: OnAsk,
+    /// From `guardrails=`: the rules of the judge of `on_ask=judge`. For
+    /// an `autonomous` agent, it is also [`AutonomousOptions::guardrails`].
+    pub guardrails: Option<String>,
+    /// From `judge_model=<profile>`: the profile of the judges. `None`
+    /// uses the model of the agent. For an `autonomous` agent, it is also
+    /// [`AutonomousOptions::judge_model`].
+    pub judge_model: Option<String>,
+}
+
+impl Default for ApprovalOptions {
+    /// Each call runs.
+    fn default() -> Self {
+        ApprovalOptions {
+            autonomy: DEFAULT_AUTONOMY,
+            on_ask: OnAsk::Prompt,
+            guardrails: None,
+            judge_model: None,
+        }
+    }
+}
+
+impl ApprovalOptions {
+    /// Reads `autonomy=` and `on_ask=` of an `agent` action.
+    ///
+    /// Fails if a value is invalid, `agent` is a `summarizer`, `on_ask=`
+    /// is set with `autonomy=no_ask`, or `autonomy=always_ask` is with
+    /// `on_ask=deny`.
+    fn from_values(
+        agent: AgentType,
+        autonomy: Option<String>,
+        on_ask: Option<String>,
+    ) -> Result<Self, String> {
+        if agent == AgentType::Summarizer
+            && let Some(key) = [("autonomy", &autonomy), ("on_ask", &on_ask)]
+                .into_iter()
+                .find_map(|(key, value)| value.is_some().then_some(key))
+        {
+            return Err(format!(
+                "option `{key}` works only with `agent:coder` and `agent:autonomous`, because \
+                 `agent:summarizer` has no tools"
+            ));
+        }
+        let autonomy = autonomy
+            .as_deref()
+            .map(str::parse)
+            .transpose()?
+            .unwrap_or(DEFAULT_AUTONOMY);
+        let on_ask: Option<OnAsk> = on_ask.as_deref().map(str::parse).transpose()?;
+        if on_ask.is_some() && autonomy == Autonomy::NoAsk {
+            return Err(format!(
+                "`on_ask=` does nothing with `autonomy=no_ask`, the default of \
+                 `agent:{agent}`, because no call waits for approval. Set \
+                 `autonomy=ask_if_risky` or `autonomy=always_ask`"
+            ));
+        }
+        let on_ask = on_ask.unwrap_or(OnAsk::Prompt);
+        if autonomy == Autonomy::AlwaysAsk && on_ask == OnAsk::Deny {
+            return Err(
+                "`autonomy=always_ask` and `on_ask=deny` cannot be together, because Atama \
+                 then denies each tool call"
+                    .to_string(),
+            );
+        }
+        Ok(ApprovalOptions {
+            autonomy,
+            on_ask,
+            guardrails: None,
+            judge_model: None,
+        })
+    }
+
+    /// Whether a judge answers the calls that wait.
+    pub fn uses_judge(&self) -> bool {
+        self.autonomy != Autonomy::NoAsk && self.on_ask == OnAsk::Judge
+    }
 }
 
 /// How an `autonomous` agent enforces its guardrails.
@@ -187,8 +281,10 @@ impl AutonomousOptions {
     /// Reads the options from their values.
     ///
     /// Fails if a value is invalid, the values have neither `success=` nor
-    /// `success_check=`, or `toolGuard=judge` has no `guardrails=`.
-    fn from_values(values: AutonomousValues) -> Result<Self, String> {
+    /// `success_check=`, `toolGuard=judge` or `on_ask=judge` has no
+    /// `guardrails=`, or `toolGuard=judge` is with `autonomy=` other than
+    /// `no_ask`.
+    fn from_values(values: AutonomousValues, approval: &ApprovalOptions) -> Result<Self, String> {
         if values.success.is_none() && values.success_check.is_none() {
             return Err(
                 "`agent:autonomous` needs `success=<criteria>`, success criteria that a model \
@@ -205,9 +301,25 @@ impl AutonomousOptions {
         if guard == ToolGuard::Judge && values.guardrails.is_none() {
             return Err("`toolGuard=judge` needs `guardrails=<text>`".to_string());
         }
-        if values.judge_model.is_some() && values.success.is_none() && guard != ToolGuard::Judge {
+        if guard == ToolGuard::Judge && approval.autonomy != Autonomy::NoAsk {
+            return Err(format!(
+                "`toolGuard=judge` and `autonomy={}` cannot be together, because both \
+                 examine each tool call. Use `toolGuard=judge` alone, or `autonomy=` with \
+                 `on_ask=judge`",
+                approval.autonomy
+            ));
+        }
+        if approval.uses_judge() && values.guardrails.is_none() {
+            return Err("`on_ask=judge` needs `guardrails=<text>`".to_string());
+        }
+        if values.judge_model.is_some()
+            && values.success.is_none()
+            && guard != ToolGuard::Judge
+            && !approval.uses_judge()
+        {
             return Err(
-                "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`"
+                "`judge_model=` needs a judge: `success=<criteria>`, `toolGuard=judge` or \
+                 `on_ask=judge`"
                     .to_string(),
             );
         }
@@ -454,6 +566,8 @@ struct Values {
     output_schema: Option<String>,
     expertise: Option<String>,
     max_output: Option<String>,
+    autonomy: Option<String>,
+    on_ask: Option<String>,
     autonomous: AutonomousValues,
 }
 
@@ -490,6 +604,8 @@ impl Values {
                 "protect" => &mut values.autonomous.protect,
                 "budget" => &mut values.autonomous.budget_name,
                 "judge_model" => &mut values.autonomous.judge_model,
+                "autonomy" => &mut values.autonomy,
+                "on_ask" => &mut values.on_ask,
                 _ => {
                     return Err(format!(
                         "unknown option `{key}`, expected {}",
@@ -535,8 +651,32 @@ impl AgentConfig {
             output_schema,
             expertise,
             max_output,
-            autonomous,
+            autonomy,
+            on_ask,
+            mut autonomous,
         } = Values::read(params)?;
+        let mut approval = ApprovalOptions::from_values(agent, autonomy, on_ask)?;
+        // A `coder` agent takes the guardrails and the judge of `on_ask=judge`.
+        if agent == AgentType::Coder {
+            if approval.uses_judge() {
+                approval.guardrails = autonomous.guardrails.take();
+                approval.judge_model = autonomous.judge_model.take();
+                if approval.guardrails.is_none() {
+                    return Err("`on_ask=judge` needs `guardrails=<text>`".to_string());
+                }
+            } else if let Some(key) = [
+                ("guardrails", &autonomous.guardrails),
+                ("judge_model", &autonomous.judge_model),
+            ]
+            .into_iter()
+            .find_map(|(key, value)| value.is_some().then_some(key))
+            {
+                return Err(format!(
+                    "option `{key}` of `agent:coder` needs `on_ask=judge`, with \
+                     `autonomy=ask_if_risky` or `autonomy=always_ask`"
+                ));
+            }
+        }
 
         // The options of one agent type only control that agent, so another
         // agent fails on them instead of ignoring them.
@@ -553,8 +693,12 @@ impl AgentConfig {
             .then(|| SummarizerOptions::from_values(expertise, max_output))
             .transpose()?;
         let autonomous = (agent == AgentType::Autonomous)
-            .then(|| AutonomousOptions::from_values(autonomous))
+            .then(|| AutonomousOptions::from_values(autonomous, &approval))
             .transpose()?;
+        if let Some(options) = &autonomous {
+            approval.guardrails = options.guardrails.clone();
+            approval.judge_model = options.judge_model.clone();
+        }
         let max_steps = match max_steps {
             None if agent == AgentType::Autonomous => DEFAULT_AUTONOMOUS_MAX_STEPS,
             None => DEFAULT_MAX_STEPS,
@@ -587,6 +731,7 @@ impl AgentConfig {
             thinking: thinking.or(profile.thinking),
             output_schema,
             autonomous,
+            approval,
         })
     }
 }
@@ -631,6 +776,20 @@ impl AgentConfig {
         }
         if let Some(output_schema) = &self.output_schema {
             summary.push_str(&format!("\noutput_schema: {output_schema}"));
+        }
+        if self.approval.autonomy != DEFAULT_AUTONOMY {
+            summary.push_str(&format!(
+                "\nautonomy: {}\non_ask: {}",
+                self.approval.autonomy, self.approval.on_ask
+            ));
+        }
+        if self.autonomous.is_none()
+            && let Some(guardrails) = &self.approval.guardrails
+        {
+            let judge_model = self.approval.judge_model.as_deref().unwrap_or("not set");
+            summary.push_str(&format!(
+                "\nguardrails: {guardrails}\njudge_model: {judge_model}"
+            ));
         }
         if let Some(options) = &self.summarizer {
             let max_output = options

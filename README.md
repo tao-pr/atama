@@ -61,6 +61,10 @@ must be unique.
   Premier League results, and two `claude-agent` steps read only the search results. One lists the
   matches as JSON, and one writes the form of each winner in Markdown. Needs `TAVILY_API_KEY` and
   `CLAUDE_API_KEY`.
+- [`jobs/sample_approval.md`](jobs/sample_approval.md): a `websearch` action downloads search results,
+  and a `coder` agent and a `claude-agent` step change the file. Each change waits for your approval
+  on the terminal (`autonomy=ask_if_risky`, `on_ask=prompt`). Needs `TAVILY_API_KEY` and
+  `CLAUDE_API_KEY`.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
@@ -171,7 +175,9 @@ the parts of the job file that agents use.
 
 If you use `agent:coder` or `agent:autonomous`, the model can run any
 command with your permissions. Use them only in a directory and with a
-model that you trust.
+model that you trust. To approve each command before it runs, add
+`autonomy=ask_if_risky` to the action (see
+[Approval of the tool calls](ACTIONS.md#approval-of-the-tool-calls)).
 
 ### Three kinds of agent tasks
 

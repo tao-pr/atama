@@ -56,6 +56,16 @@ impl FromStr for Autonomy {
     }
 }
 
+impl fmt::Display for OnAsk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OnAsk::Prompt => "prompt",
+            OnAsk::Deny => "deny",
+            OnAsk::Judge => "judge",
+        })
+    }
+}
+
 impl fmt::Display for Autonomy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -63,6 +73,34 @@ impl fmt::Display for Autonomy {
             Autonomy::AskIfRisky => "ask_if_risky",
             Autonomy::AlwaysAsk => "always_ask",
         })
+    }
+}
+
+/// Who answers a tool call that waits for approval, from `on_ask=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnAsk {
+    /// `prompt`: ask on the terminal. Without a terminal, deny.
+    Prompt,
+    /// `deny`: deny each call.
+    Deny,
+    /// `judge`: a judge model decides from `guardrails=`, with the same
+    /// guard as `toolGuard=judge` of an `autonomous` agent
+    /// ([`crate::agent_loop_openai_compat::judge::review`]).
+    Judge,
+}
+
+impl FromStr for OnAsk {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, String> {
+        match value {
+            "prompt" => Ok(OnAsk::Prompt),
+            "deny" => Ok(OnAsk::Deny),
+            "judge" => Ok(OnAsk::Judge),
+            _ => Err(format!(
+                "`on_ask={value}` is not `prompt`, `deny` or `judge`"
+            )),
+        }
     }
 }
 

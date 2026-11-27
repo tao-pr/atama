@@ -291,15 +291,72 @@ These agents ignore `effort=` of a model profile. If a profile with
 `effort=` is the `model=` or the `judge_model=` of one of these agents,
 Atama writes a red warning to stderr, and the job runs.
 
+### Approval of the tool calls
+
+A `coder` and an `autonomous` agent take `autonomy=` and `on_ask=`. They
+work as for an [`agent:claude-agent`](#agentclaude-agent) action, but on the
+tools of Atama only. `autonomy=` sets which tool calls wait for approval
+before they run. `on_ask=` sets who answers a call that waits.
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `autonomy=<no_ask\|ask_if_risky\|always_ask>` | No | `no_ask`, the default, runs each call. `ask_if_risky` lets a read-only tool run, `read_file`, `list_files` or `web_search`, and each other call waits. `always_ask` makes each call wait. |
+| `on_ask=<prompt\|deny\|judge>` | No | `prompt`, the default, asks you `allow? [y/N]` on the terminal. If stdin is not a terminal, for example in CI, it denies the call. `deny` denies the call. `judge` asks a judge model with `guardrails=`. It needs `autonomy=ask_if_risky` or `always_ask`. |
+| `guardrails="<text>"` | With `on_ask=judge` | The rules that the judge applies. Atama also puts them into the system prompt. |
+| `judge_model=<profile>` | No | The model profile of the judge. Without it, the judge uses the model of the agent. |
+
+The default of `autonomy=` is `no_ask`, so a job without the option runs as
+before. A `claude-agent` action has the default `ask_if_risky`.
+
+A denied call does not run. The model gets the reason as the result of the
+call, and it can try another way. A denied call does not count in
+`max_violations=`. With `--debug`, Atama writes each denied call and its
+reason to stderr. The tokens of the judge count in the token budget of the
+action.
+
+These rules stop the job before it starts:
+
+1. `on_ask=` with `autonomy=no_ask`, because no call waits.
+2. `autonomy=always_ask` with `on_ask=deny`, because each call is denied.
+3. `on_ask=judge` without `guardrails=`.
+4. For a `coder` agent, `guardrails=` or `judge_model=` without
+   `on_ask=judge`.
+5. For an `autonomous` agent, `toolGuard=judge` with `autonomy=` other than
+   `no_ask`. Both examine each call, so use one of them.
+6. `autonomy=` or `on_ask=` for a `summarizer` agent, which has no tools.
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - autonomy=ask_if_risky
+    - task=Fix the failing test.
+  - agent:coder
+    - model=local-qwen
+    - autonomy=always_ask
+    - on_ask=judge
+    - judge_model=small-judge
+    - guardrails=Do not run git push. Do not delete files.
+    - task=Clean up the build scripts.
+```
+
+In the first action, each `bash` command asks you on the terminal before
+it runs. In the second action, a judge model decides each call, so the job
+can run alone.
+
 ### `agent:coder`
 
 A `coder` agent has the `bash` tool. The tool runs a command in the
 directory where you start Atama. Atama cuts a tool result after 20,000
 characters. A `coder` agent fails on the options `expertise=` and
-`max_output=`, and on the options of `autonomous`.
+`max_output=`, and on the options of `autonomous`. It takes `autonomy=`
+and `on_ask=`, and with `on_ask=judge` also `guardrails=` and
+`judge_model=` (see [Approval of the tool calls](#approval-of-the-tool-calls)).
 
-If you use `agent:coder`, the model can run any command with your
-permissions. Use it only in a directory and with a model that you trust.
+If you use `agent:coder` without `autonomy=`, the model can run any command
+with your permissions. Use it only in a directory and with a model that you
+trust. With `autonomy=ask_if_risky`, each `bash` command waits for your
+approval.
 
 ```markdown
 - actions:
@@ -381,7 +438,9 @@ It takes these options:
 | `toolGuard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
 | `protect="<patterns>"` | No | Globs of the paths that the tools cannot write, separated by commas, as in `protect="src/**,Cargo.toml"`. See [Protected paths](#protected-paths). |
-| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `toolGuard=judge`. |
+| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=`, `toolGuard=judge` or `on_ask=judge`. |
+| `autonomy=<no_ask\|ask_if_risky\|always_ask>` | No | Which tool calls wait for approval. The default is `no_ask`. See [Approval of the tool calls](#approval-of-the-tool-calls). It cannot be with `toolGuard=judge`. |
+| `on_ask=<prompt\|deny\|judge>` | No | Who answers a call that waits. `judge` uses the guard of `toolGuard=judge` with `guardrails=`, but a denied call is not a violation. |
 | `budget=<name>` | No | The name of a budget block with the general limits and tools of the agent. See [Budget blocks](#budget-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
@@ -399,8 +458,8 @@ With `--debug`, each header of a run with more than one iteration names
 the iteration, as in `iteration 2 step 3`. The header of each request also
 shows the used time, as in `41s of 30m`.
 
-If you use `agent:autonomous`, the model can run any command with your
-permissions, and nobody approves each command. Use it only in a directory
+If you use `agent:autonomous` without `autonomy=`, the model can run any
+command with your permissions, and nobody approves each command. Use it only in a directory
 and with a model that you trust. `protect=` keeps the agent from writing
 the paths that you name, but it does not limit the other commands.
 
@@ -428,7 +487,7 @@ the types and functions in `src/agent_loop_openai_compat/`.
 1. The loop starts with the system prompt and the task. It makes the list of `FinalLoopCheck`s from the options: `SchemaCheck`, `CommandCheck`, then `SuccessJudge`.
 2. Before each step, `RunBudget` makes sure that the run still has steps, tokens and time. With `max_context=`, the loop compacts a conversation that is too long.
 3. The loop sends the conversation to the model. The model replies with tool calls or with a final text.
-4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
+4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation. With `autonomy=`, a call that waits goes to the answer of `on_ask=` instead. A denied call does not run, and it is not a violation.
 5. If the guard allows the call, the tool runs. With `protect=`, a write to a protected path fails. The result goes into the conversation, and the loop goes back to step 2.
 6. A reply without tool calls goes through the `FinalLoopCheck`s in order. `SchemaCheck` and `CommandCheck` decide without a model.
 7. `SuccessJudge` asks the `Judge` with the criteria, the evidence and the reply. The `Verdict` becomes `Done` if `pass` is true, else `Retry` with its `reason`.
@@ -525,7 +584,7 @@ Each line is `<key>: <value>`. A key with no value starts a list, and each
 item of the list is a `- <item>` line after it. The keys are the options
 `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
 `max_time`, `success_check`, `success`, `toolGuard`, `max_violations`,
-`judge_model`, and `tools`. A list of text, such as `success:`, gives the
+`judge_model`, `autonomy`, `on_ask`, and `tools`. A list of text, such as `success:`, gives the
 agent one `- <item>` line for each item.
 
 An option of the action replaces the same option of the block. The action

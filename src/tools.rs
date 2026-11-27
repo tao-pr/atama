@@ -27,7 +27,7 @@ mod limited;
 mod registry;
 mod web_search;
 
-pub use approval::{Approval, Approver, Autonomy, DenyApprover, PromptApprover};
+pub use approval::{Approval, Approver, Autonomy, DenyApprover, OnAsk, PromptApprover};
 pub use bash::Bash;
 pub use files::{ListFiles, ReadFile, WriteFile};
 pub use limited::{DEFAULT_MAX_CALLS, DEFAULT_MAX_FAILURES, Limited};

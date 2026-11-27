@@ -119,7 +119,7 @@ fn rejects_invalid_lines() {
             0,
             "unknown key `model` in budget block `fix`, expected `max_steps`, `token_budget`, \
              `max_context`, `thinking`, `max_iterations`, `max_time`, `success_check`, `success`, \
-             `toolGuard`, `max_violations`, `judge_model` or `tools`",
+             `toolGuard`, `max_violations`, `judge_model`, `autonomy`, `on_ask` or `tools`",
         ),
         (
             &["success: a", "success: b"],
