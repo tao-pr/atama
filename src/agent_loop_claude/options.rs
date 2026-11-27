@@ -19,14 +19,14 @@ use crate::protect::parse_patterns;
 use crate::tools::Autonomy;
 
 /// The default most `user.message` events of a run: the task, and one for
-/// each failed check of the reply.
+/// each failed check of the reply (the output schema or `success_check=`).
 pub const DEFAULT_MAX_TURNS: u32 = 3;
 
 /// The default level of `autonomy=`.
 pub const DEFAULT_AUTONOMY: Autonomy = Autonomy::AskIfRisky;
 
 /// The keys of the options of a `claude-agent` action.
-pub const OPTION_KEYS: [&str; 19] = [
+pub const OPTION_KEYS: [&str; 20] = [
     "model",
     "task",
     "system",
@@ -46,6 +46,7 @@ pub const OPTION_KEYS: [&str; 19] = [
     "token_budget",
     "max_turns",
     "output_schema",
+    "success_check",
 ];
 
 /// The options that define an agent. An action with `agent_id=` cannot
@@ -124,6 +125,9 @@ pub struct ClaudeAgentConfig {
     pub max_turns: u32,
     /// The raw value of `output_schema=`.
     pub output_schema: Option<String>,
+    /// The bash command of `success_check=`. It runs on the local machine
+    /// at the end of each turn.
+    pub success_check: Option<String>,
 }
 
 /// The value of each option, if the params set it.
@@ -388,6 +392,7 @@ impl ClaudeAgentConfig {
             token_budget,
             max_turns,
             output_schema: get("output_schema").map(str::to_string),
+            success_check: get("success_check").map(str::to_string),
         })
     }
 

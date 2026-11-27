@@ -4,7 +4,9 @@
 //! a session, opens its event stream, and sends the task. Anthropic runs the
 //! agent loop. Atama reads the events: it runs each local tool call, answers
 //! each native tool call that waits for approval, and returns the last
-//! message of the agent when the agent ends its turn.
+//! message of the agent when the agent ends its turn. If the reply does not
+//! match the output schema, or the `success_check=` command fails, the run
+//! sends the error as the next `user.message`, up to `max_turns`.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -26,6 +28,7 @@ use super::lock::{AgentLock, LOCK_PATH};
 use super::options::{AgentSource, ClaudeAgentConfig, EnvironmentSource, OnAsk};
 use crate::actor::CLAUDE_AGENT;
 use crate::agent_loop_openai_compat::agent_options::format_duration;
+use crate::agent_loop_openai_compat::checks::CommandCheck;
 use crate::profile::ModelProfile;
 use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};
@@ -209,6 +212,10 @@ impl<'a> ClaudeAgentRun<'a> {
         }
         let mut message = first_message(config, input, output_schema.as_ref(), protect.as_deref())?;
         let deadline = start + config.max_time;
+        let success_check = config
+            .success_check
+            .clone()
+            .map(|command| CommandCheck::new(command).with_deadline_time(Some(deadline)));
 
         let approver = self
             .approver
@@ -343,27 +350,23 @@ impl<'a> ClaudeAgentRun<'a> {
                             let reply = run.last_reply.take().ok_or_else(|| {
                                 format!("the session `{}` ended its turn without a message", run.id)
                             })?;
-                            let Some(schema) = &output_schema else {
-                                return Ok(reply);
+                            let retry = match self.final_check(
+                                reply,
+                                output_schema.as_ref(),
+                                success_check.as_ref(),
+                            ) {
+                                Ok(output) => return Ok(output),
+                                Err(retry) => retry,
                             };
-                            match schema.check_reply(&reply) {
-                                Ok(json) => return Ok(json),
-                                Err(error) if run.turns >= config.max_turns => {
-                                    return Err(format!(
-                                        "the reply does not match the output schema after \
-                                         {} turns: {error}",
-                                        run.turns
-                                    ));
-                                }
-                                Err(error) => {
-                                    message = format!(
-                                        "Your reply is not valid: {error}\nReply again with \
-                                         only the JSON value."
-                                    );
-                                    api.send_events(&run.id, &[user_message(&message)])?;
-                                    run.turns += 1;
-                                }
+                            if run.turns >= config.max_turns {
+                                return Err(format!(
+                                    "{} after {} turns: {}",
+                                    retry.failure, run.turns, retry.error
+                                ));
                             }
+                            message = retry.message;
+                            api.send_events(&run.id, &[user_message(&message)])?;
+                            run.turns += 1;
                         }
                         IdleStop::RetriesExhausted => {
                             return Err(run.failure("failed after its retries"));
@@ -449,12 +452,62 @@ impl<'a> ClaudeAgentRun<'a> {
         Ok(session)
     }
 
+    /// Checks the reply at the end of a turn: first the output schema,
+    /// then the success check. Returns the output, or what to send to the
+    /// agent for the next turn.
+    fn final_check(
+        &mut self,
+        reply: String,
+        output_schema: Option<&OutputSchema>,
+        success_check: Option<&CommandCheck>,
+    ) -> Result<String, Retry> {
+        let output = match output_schema {
+            None => reply,
+            Some(schema) => schema.check_reply(&reply).map_err(|error| Retry {
+                message: format!(
+                    "Your reply is not valid: {error}\nReply again with only the JSON value."
+                ),
+                failure: "the reply does not match the output schema".to_string(),
+                error,
+            })?,
+        };
+        let Some(check) = success_check else {
+            return Ok(output);
+        };
+        match check.run() {
+            Ok(()) => {
+                self.write_debug(&format!("success check `{}` passed", check.command()));
+                Ok(output)
+            }
+            Err(error) => {
+                self.write_debug(&format!(
+                    "success check `{}` failed: {error}",
+                    check.command()
+                ));
+                Err(Retry {
+                    message: check.retry_message(&error),
+                    failure: format!("the success check `{}` failed", check.command()),
+                    error,
+                })
+            }
+        }
+    }
+
     fn write_debug(&mut self, text: &str) {
         let label = &self.label;
         if let Some(out) = self.debug.as_mut() {
             let _ = writeln!(out, "=== {label} {text}");
         }
     }
+}
+
+/// A failed check at the end of a turn.
+struct Retry {
+    /// The next `user.message`.
+    message: String,
+    /// What failed, for the error of the run after the last turn.
+    failure: String,
+    error: String,
 }
 
 /// The state of an open session.

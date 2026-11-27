@@ -93,6 +93,7 @@ fn a_minimal_action_gets_the_defaults() {
             token_budget: Some(50_000),
             max_turns: DEFAULT_MAX_TURNS,
             output_schema: None,
+            success_check: None,
         }
     );
     assert_eq!(DEFAULT_AUTONOMY, Autonomy::AskIfRisky);
@@ -117,6 +118,7 @@ fn reads_every_option() {
         "token_budget=100_000",
         "max_turns=4",
         "output_schema=papers",
+        "success_check=test -s papers.json",
     ])
     .unwrap();
     assert_eq!(config.task, "Find papers.");
@@ -144,7 +146,8 @@ fn reads_every_option() {
     assert_eq!(config.token_budget, Some(100_000));
     assert_eq!(config.max_turns, 4);
     assert_eq!(config.output_schema.as_deref(), Some("papers"));
-    assert_eq!(OPTION_KEYS.len(), 19);
+    assert_eq!(config.success_check.as_deref(), Some("test -s papers.json"));
+    assert_eq!(OPTION_KEYS.len(), 20);
 }
 
 #[test]

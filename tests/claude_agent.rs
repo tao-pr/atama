@@ -499,6 +499,103 @@ fn asks_the_schema_again_until_the_reply_matches() {
     );
 }
 
+/// A success check that fails until it ran `passes_at` times. It counts
+/// its runs in a file in a new directory.
+fn counting_check(name: &str, passes_at: u32) -> (String, PathBuf) {
+    let dir = lock_path(name).parent().unwrap().to_path_buf();
+    let count = dir.join("count");
+    let command = format!(
+        "n=$(( $(cat {0} 2>/dev/null || echo 0) + 1 )); echo $n > {0}; \
+         echo \"run $n\"; [ $n -ge {passes_at} ]",
+        count.display()
+    );
+    (command, count)
+}
+
+#[test]
+fn sends_a_failed_success_check_until_it_passes() {
+    let (command, count) = counting_check("success", 2);
+    let api = MockApi::with_streams(vec![vec![
+        message("m1", "First try."),
+        idle("i1", "end_turn"),
+        message("m2", "Second try."),
+        idle("i2", "end_turn"),
+    ]]);
+    let option = format!("success_check={command}");
+    let debug = Output::default();
+    let (tools, _) = echo();
+    let output = run_with("success", &api, &["task=Work.", &option], "", |run| {
+        run.with_tools(tools).debug(debug.clone())
+    })
+    .unwrap();
+    assert_eq!(output, "Second try.");
+    assert_eq!(fs::read_to_string(&count).unwrap().trim(), "2");
+
+    let sent = api.sent();
+    assert_eq!(sent.len(), 2);
+    let retry = sent[1]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        retry.starts_with(&format!(
+            "The task is not done yet, because the success check `{command}` failed:\n\
+             exit status: 1\nrun 1\n"
+        )),
+        "{retry}"
+    );
+    let debug = String::from_utf8(debug.0.lock().unwrap().clone()).unwrap();
+    assert!(debug.contains("success check `"), "{debug}");
+    assert!(debug.contains("` failed: exit status: 1"), "{debug}");
+    assert!(debug.contains("` passed"), "{debug}");
+}
+
+#[test]
+fn fails_when_the_success_check_fails_at_the_last_turn() {
+    let (command, _) = counting_check("success-fail", 10);
+    let api = MockApi::with_streams(vec![vec![
+        message("m1", "One."),
+        idle("i1", "end_turn"),
+        message("m2", "Two."),
+        idle("i2", "end_turn"),
+    ]]);
+    let option = format!("success_check={command}");
+    let error = run("success-fail", &api, &["task=Work.", &option, "max_turns=2"]).unwrap_err();
+    assert_eq!(
+        error,
+        format!(
+            "agent:claude-agent (claude): the success check `{command}` failed after 2 turns: \
+             exit status: 1\nrun 2"
+        )
+    );
+    assert_eq!(api.sent().len(), 2);
+}
+
+#[test]
+fn checks_the_schema_before_the_success_check() {
+    let schema = OutputSchema {
+        name: "answer".into(),
+        schema: json!({"type": "object", "required": ["n"]}),
+    };
+    let (command, count) = counting_check("schema-success", 1);
+    let api = MockApi::with_streams(vec![vec![
+        message("m1", "Not JSON."),
+        idle("i1", "end_turn"),
+        message("m2", "{\"n\": 1}"),
+        idle("i2", "end_turn"),
+    ]]);
+    let option = format!("success_check={command}");
+    let (tools, _) = echo();
+    let output = run_with(
+        "schema-success",
+        &api,
+        &["task=Count.", "output_schema=answer", &option],
+        "",
+        |run| run.with_tools(tools).schema_block(Some(schema)),
+    )
+    .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&output).unwrap(), json!({"n": 1}));
+    // The check ran once, after the reply matched the schema.
+    assert_eq!(fs::read_to_string(&count).unwrap().trim(), "1");
+}
+
 #[test]
 fn fails_when_the_session_stops() {
     let cases = [

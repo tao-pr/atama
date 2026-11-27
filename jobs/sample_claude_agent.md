@@ -49,9 +49,10 @@ claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CL
 Finds the results of the last Premier League matches, and writes a short
 report on the form of each team that won one of them. A `websearch` action
 searches the web with Tavily. Then two Claude Managed Agent steps
-(`agent:claude-agent`) read only the search results: the agents have no
-tools, so they cannot search or fetch pages themselves, and they use few
-tokens. Needs `TAVILY_API_KEY` and `CLAUDE_API_KEY`. Every file goes into
+(`agent:claude-agent`) read only the search results. The agents have no
+native tools, so they cannot search or fetch pages themselves, and they use
+few tokens. The first agent has the local `write_file` tool, and a success
+check makes sure that it wrote a valid JSON file. Needs `TAVILY_API_KEY` and `CLAUDE_API_KEY`. Every file goes into
 `./output/claude_agent/`.
 
 This job is a sample of the `claude-agent` agent type. The first run
@@ -67,8 +68,12 @@ cargo run -- --debug jobs/sample_claude_agent.md
 
 ## Prepare
 
+The step removes the `matches.json` of an earlier run, so that the success
+check of "Last Results" cannot pass on an old file.
+
 - actions:
   - bash mkdir -p ./output/claude_agent
+  - bash rm -f ./output/claude_agent/matches.json
 
 ## Search
 
@@ -81,15 +86,25 @@ response JSON, with a short text of each page.
 
 ## Last Results
 
-The agent reads the search results, and replies with JSON that matches the
+The agent reads the search results, writes `matches.json` with the local
+`write_file` tool, and replies with the same JSON. The reply must match the
 `matches` schema: 10 matches at most, with the score and the winner of
-each.
+each. Then the success check runs on this machine. It makes sure that the
+file exists, is not empty, and is valid JSON. If the check fails, the
+agent gets the error and tries again, 3 turns at most.
+
+`autonomy=no_ask` lets the agent write without a prompt on the terminal.
+`protect=` stops it from writing over the search results.
 
 - actions:
   - read_file ./output/claude_agent/search.json
   - agent:claude-agent
     - model=claude
     - output_schema=matches
+    - local_tools=write_file
+    - autonomy=no_ask
+    - protect=./output/claude_agent/search.json
+    - success_check=test -s ./output/claude_agent/matches.json && python3 -m json.tool ./output/claude_agent/matches.json > /dev/null
     - max_time=10m
     - max_cost_usd=0.50
     - task=The input is the JSON response of a web search for the latest
@@ -98,8 +113,9 @@ each.
       newest first. For each match, give the date, the two teams, the goals
       of each team, the winner, or null for a draw, and the URL of the
       search result that has the score. Leave out a match whose score is not
-      in the input.
-  - write_file ./output/claude_agent/matches.json
+      in the input. Write the JSON value to
+      ./output/claude_agent/matches.json with the write_file tool. Then
+      reply with the same JSON value.
 
 ## Form of the Winners
 

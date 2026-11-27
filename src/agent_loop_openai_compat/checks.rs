@@ -147,7 +147,7 @@ impl CommandCheck {
     }
 
     /// Runs the command. Fails with the exit status and the output.
-    fn run(&self) -> Result<(), String> {
+    pub fn run(&self) -> Result<(), String> {
         let mut command = Command::new("bash");
         command.arg("-c").arg(&self.command);
         let output = run_process(command, "bash", &self.command, "", self.deadline_time)?;
@@ -167,16 +167,28 @@ impl CommandCheck {
     }
 }
 
+impl CommandCheck {
+    /// The command of the check.
+    pub fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// The message to the model after the check failed with `error`.
+    pub fn retry_message(&self, error: &str) -> String {
+        format!(
+            "The task is not done yet, because the success check `{}` failed:\n\
+             {error}\nContinue the work. When you are done, reply without tool calls.",
+            self.command
+        )
+    }
+}
+
 impl FinalLoopCheck for CommandCheck {
     fn check(&mut self, reply: &str, _: &mut Judge, _: &[Message]) -> CheckResult {
         match self.run() {
             Ok(()) => CheckResult::Done(reply.to_string()),
             Err(error) => CheckResult::Retry {
-                message: format!(
-                    "The task is not done yet, because the success check `{}` failed:\n\
-                     {error}\nContinue the work. When you are done, reply without tool calls.",
-                    self.command
-                ),
+                message: self.retry_message(&error),
                 error,
             },
         }

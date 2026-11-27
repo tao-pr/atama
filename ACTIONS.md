@@ -559,6 +559,15 @@ tool call that waits for approval. The output is the last message of the
 agent. See [PLAN-claude-agent.md](PLAN-claude-agent.md) for the options and
 the rules between them.
 
+`success_check=<command>` is a bash command that Atama runs on the local
+machine at the end of each turn of the agent. Exit status 0 means that the
+task is done. If the command fails, Atama sends its exit status and the
+last 5,000 characters of its stdout and stderr to the agent as the next
+message. The check cannot see the files of the cloud environment, so the
+agent must do its work with `local_tools=`. With `output_schema=`, the
+reply must match the schema before the check runs. `max_turns=` (default
+3) limits the messages that Atama sends, the task included.
+
 The run fails at `max_time=`, at `max_cost_usd=`, over `token_budget=`, or
 if the session fails. Then Atama sends `user.interrupt` to the session when
 it can. Atama does not delete the session, so that you can read it in the
