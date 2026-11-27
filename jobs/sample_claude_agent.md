@@ -59,7 +59,8 @@ This job is a sample of the `claude-agent` agent type. The first run
 creates the agent of each step and the default environment, and keeps
 their IDs in `.atama/claude-lock.json`. The next runs use them again. Each
 agent step stops at 10 minutes or at $0.50. With `--debug`, Atama writes
-the link of each session in the Claude Console to stderr.
+the link of each session in the Claude Console to stderr. Without
+`--debug`, Atama does not show the link.
 
 ```bash
 cargo run -- --dry-run jobs/sample_claude_agent.md

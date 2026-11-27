@@ -310,6 +310,10 @@ Each block starts with a line such as
 `=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`. To save
 the debug output in a file, add `2> debug.log`.
 
+For an `agent:claude-agent` action, `--debug` also writes the link of the
+session in the Claude Console, as a line that starts with `console`. This
+is the only way to get the link. Without `--debug`, Atama does not show it.
+
 ## Building
 
 You need Rust with Cargo, from <https://rustup.rs>.

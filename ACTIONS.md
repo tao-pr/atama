@@ -574,7 +574,8 @@ The run fails at `max_time=`, at `max_cost_usd=`, over `token_budget=`, or
 if the session fails. Then Atama sends `user.interrupt` to the session when
 it can. Atama does not delete the session, so that you can read it in the
 Claude Console. With `--debug`, Atama writes the link of the session and
-each event to stderr.
+each event to stderr. To get the link of a session, you must run the job
+with `--debug`. Without it, Atama does not show the link.
 
 The options are a list under the action, as for `agent:<type>`. The model
 profile needs `api_key=`, and cannot have `thinking=`. `effort=` of the
