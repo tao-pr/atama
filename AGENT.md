@@ -288,6 +288,9 @@ model gets the error text as the tool result, and it can try again.
 
 ### Tools of each agent type
 
+`TOOLS.md` lists each tool for the users of Atama: the local tools and the
+native tools of Claude. Update it when you add or change a tool.
+
 The tools are in a shared tool layer, `src/tools.rs`, so that every agent
 loop can use them. It does not depend on an API. The files are:
 

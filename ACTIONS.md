@@ -1,7 +1,8 @@
 # Actions
 
 This file describes each action of an Atama job and all of its parameters.
-For the format of a job file, see [README.md](README.md).
+For the format of a job file, see [README.md](README.md). For the tools
+that the model of an agent can call, see [TOOLS.md](TOOLS.md).
 
 An action is one line in the `- actions:` list of a task. The first word is
 the action type. The other words are its parameters.
@@ -534,7 +535,7 @@ needs `model=` in its options.
 `write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most
 calls in one run (default 50), and `max_failures=<n>`, the most failed
 calls (default 10). Without `tools:`, the agent gets all four tools with the
-default limits.
+default limits. [TOOLS.md](TOOLS.md#local-tools) describes each tool.
 
 Atama reads the block and the options of every agent action before the job
 starts. An unknown key, an unknown tool, an invalid option, or an
@@ -596,7 +597,8 @@ case, where `<n>` is the number of the action in its task.
 ### Remote tools and local tools
 
 A `claude-agent` action can use two kinds of tools. Without a tool option,
-the agent has no tools and only replies with text.
+the agent has no tools and only replies with text. [TOOLS.md](TOOLS.md)
+describes each tool.
 
 | | Remote tools | Local tools |
 | --- | --- | --- |

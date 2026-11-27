@@ -160,7 +160,10 @@ agent types:
   enforces them without a model, with the
   [macOS sandbox](ACTIONS.md#protected-paths) for `bash`.
 
-[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
+[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent.
+[TOOLS.md](TOOLS.md) lists the tools that each agent can call, and tells
+which tools Atama runs on this machine and which tools the model provider
+runs. A
 ```` ```budget:<name> ```` block can hold the general limits and tools of
 an `autonomous` agent, so that many actions can use them (see
 [Budget blocks](ACTIONS.md#budget-blocks)). This section describes
