@@ -649,7 +649,8 @@ These rules apply to the remote tools:
    each call run. `ask_if_risky`, the default, lets a safe call run, denies
    a high-risk call, and asks you about an unclear call. `always_ask` asks
    you about each call. `on_ask=` sets who answers: `prompt` asks on the
-   terminal, and `deny` denies the call.
+   terminal, `deny` denies the call, and `judge` asks a judge model (see
+   "A judge for the calls that wait" below).
 4. The web tools can read many pages, and each page costs tokens. Set
    `max_cost_usd=` or `token_budget=`. If you only need search results,
    the `websearch` action in an earlier step costs less.
@@ -679,12 +680,69 @@ These rules apply to the local tools:
    `local_write_file`. Atama runs the call and sends the result back.
 2. With `ask_if_risky`, `read_file` and `list_files` run, and `bash` and
    `write_file` wait for approval. With no terminal, for example in CI,
-   `on_ask=prompt` denies the call. So use `autonomy=no_ask` with
-   `protect=` for a job that runs alone.
+   `on_ask=prompt` denies the call. So for a job that runs alone, use
+   `autonomy=no_ask` with `protect=`, or `on_ask=judge`.
 3. `protect=` names the paths that the local tools cannot write. It needs
    `local_tools=`, and it does not apply to the remote tools.
 4. Each local tool can run 50 times at most, and can fail 10 times at
    most.
+
+#### A judge for the calls that wait
+
+`on_ask=judge` sends each tool call that waits for approval to a judge
+model, instead of to you. It is the same judge as the guard of
+`toolGuard=judge` of an [`agent:autonomous`](#agentautonomous) action. The
+same code (`judge::review`) asks the same question, so a judge profile and
+guardrails that work for an `autonomous` action also work here.
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `on_ask=judge` | No | A judge decides each call that waits. |
+| `judge_model=<profile>` | With `on_ask=judge` | The model profile of the judge, in the `config` block. It is an OpenAI compatible profile, as the `judge_model=` of an `autonomous` action. The API key comes from its own `api_key=` variable. |
+| `guardrails=<rules>` | With `on_ask=judge` | The rules in natural language that the judge applies, as the `guardrails=` of an `autonomous` action. |
+
+To change an `autonomous` action with `toolGuard=judge` to a
+`claude-agent` action, keep `judge_model=` and `guardrails=`, and replace
+`toolGuard=judge` with `on_ask=judge`:
+
+````markdown
+```config
+claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY
+local: model=qwen3, base_url=http://localhost:11434/v1, thinking=false
+```
+
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - local_tools=bash, write_file
+    - autonomy=ask_if_risky
+    - on_ask=judge
+    - judge_model=local
+    - guardrails=Write files only in ./output. Never delete files.
+    - task=Make a report of the logs in ./logs in ./output/report.md.
+````
+
+These rules apply to the judge:
+
+1. The judge gets the guardrails, the name of the tool and its input. It
+   allows a call that breaks none of the guardrails. Else it denies the
+   call, and the agent gets "blocked by guardrail: <reason>". A judge that
+   fails denies the call.
+2. The judge decides only the calls that wait. With
+   `autonomy=ask_if_risky`, a remote call that the API finds safe and a
+   local `read_file` or `list_files` run without the judge. With
+   `always_ask`, the judge decides each call. `autonomy=no_ask` with
+   `on_ask=judge` stops the job, because no call waits.
+3. The tokens of the judge count in `token_budget=` of the action, with
+   the tokens of the session. `max_cost_usd=` counts only the session.
+4. `judge_model=` and `guardrails=` need `on_ask=judge`. To give the agent
+   rules without a judge, put them in `system=`.
+5. A denied call does not stop the run. The agent can try another way.
+   Unlike `max_violations=` of an `autonomous` action, no limit counts the
+   denied calls. `max_time=`, `token_budget=` and `max_cost_usd=` still
+   stop the run.
+6. With `--debug`, Atama writes each answer and the reason of each denied
+   call to stderr.
 
 #### Both kinds
 

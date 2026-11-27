@@ -87,6 +87,8 @@ fn a_minimal_action_gets_the_defaults() {
             local_tools: vec![],
             autonomy: DEFAULT_AUTONOMY,
             on_ask: OnAsk::Prompt,
+            judge_model: None,
+            guardrails: None,
             protect: vec![],
             max_time: Duration::from_secs(30 * 60),
             max_cost_cents: None,
@@ -147,7 +149,7 @@ fn reads_every_option() {
     assert_eq!(config.max_turns, 4);
     assert_eq!(config.output_schema.as_deref(), Some("papers"));
     assert_eq!(config.success_check.as_deref(), Some("test -s papers.json"));
-    assert_eq!(OPTION_KEYS.len(), 20);
+    assert_eq!(OPTION_KEYS.len(), 22);
 }
 
 #[test]
@@ -192,12 +194,8 @@ fn rejects_invalid_options() {
         "`autonomy=often` is not `no_ask`, `ask_if_risky` or `always_ask`"
     );
     assert_eq!(
-        error(&["on_ask=judge"]),
-        "`on_ask=judge` is not available yet, use `prompt` or `deny`"
-    );
-    assert_eq!(
         error(&["on_ask=maybe"]),
-        "`on_ask=maybe` is not `prompt` or `deny`"
+        "`on_ask=maybe` is not `prompt`, `deny` or `judge`"
     );
     assert_eq!(
         error(&["max_time=soon"]),
@@ -347,4 +345,33 @@ fn reads_an_amount_of_dollars_as_cents() {
             "{bad}"
         );
     }
+}
+
+#[test]
+fn on_ask_judge_needs_a_judge_model_and_guardrails() {
+    let config = config(&[
+        "on_ask=judge",
+        "judge_model=local",
+        "guardrails=Write only in ./output.",
+    ])
+    .unwrap();
+    assert_eq!(config.on_ask, OnAsk::Judge);
+    assert_eq!(config.judge_model.as_deref(), Some("local"));
+    assert_eq!(config.guardrails.as_deref(), Some("Write only in ./output."));
+
+    let needs = "`on_ask=judge` needs `judge_model=<profile>` and `guardrails=<rules>`: the \
+                 judge is a model of an OpenAI compatible profile, and it allows a call that \
+                 breaks none of the guardrails";
+    assert_eq!(error(&["on_ask=judge"]), needs);
+    assert_eq!(error(&["on_ask=judge", "judge_model=local"]), needs);
+    assert_eq!(error(&["on_ask=judge", "guardrails=x"]), needs);
+    assert_eq!(
+        error(&["on_ask=judge", "judge_model=local", "guardrails=x", "autonomy=no_ask"]),
+        "`on_ask=judge` does nothing with `autonomy=no_ask`, because no call waits for \
+         approval. Use `ask_if_risky` or `always_ask`"
+    );
+    let without = "`judge_model=` and `guardrails=` need `on_ask=judge`. To give the agent rules \
+                   without a judge, put them in `system=`";
+    assert_eq!(error(&["judge_model=local"]), without);
+    assert_eq!(error(&["on_ask=deny", "guardrails=x"]), without);
 }

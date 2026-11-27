@@ -26,7 +26,7 @@ pub const DEFAULT_MAX_TURNS: u32 = 3;
 pub const DEFAULT_AUTONOMY: Autonomy = Autonomy::AskIfRisky;
 
 /// The keys of the options of a `claude-agent` action.
-pub const OPTION_KEYS: [&str; 20] = [
+pub const OPTION_KEYS: [&str; 22] = [
     "model",
     "task",
     "system",
@@ -35,6 +35,8 @@ pub const OPTION_KEYS: [&str; 20] = [
     "native_tools",
     "autonomy",
     "on_ask",
+    "judge_model",
+    "guardrails",
     "allowed_domains",
     "blocked_domains",
     "local_tools",
@@ -66,6 +68,10 @@ pub enum OnAsk {
     Prompt,
     /// `deny`: deny each call.
     Deny,
+    /// `judge`: a judge model decides from `guardrails=`, with the same
+    /// guard as `toolGuard=judge` of an `autonomous` agent
+    /// ([`crate::agent_loop_openai_compat::judge::review`]).
+    Judge,
 }
 
 impl FromStr for OnAsk {
@@ -75,8 +81,8 @@ impl FromStr for OnAsk {
         match value {
             "prompt" => Ok(OnAsk::Prompt),
             "deny" => Ok(OnAsk::Deny),
-            "judge" => Err("`on_ask=judge` is not available yet, use `prompt` or `deny`".into()),
-            _ => Err(format!("`on_ask={value}` is not `prompt` or `deny`")),
+            "judge" => Ok(OnAsk::Judge),
+            _ => Err(format!("`on_ask={value}` is not `prompt`, `deny` or `judge`")),
         }
     }
 }
@@ -115,6 +121,12 @@ pub struct ClaudeAgentConfig {
     pub local_tools: Vec<String>,
     pub autonomy: Autonomy,
     pub on_ask: OnAsk,
+    /// The name of the model profile of the judge, from `judge_model=`.
+    /// `on_ask=judge` needs it.
+    pub judge_model: Option<String>,
+    /// The rules that the judge applies, from `guardrails=`. `on_ask=judge`
+    /// needs it.
+    pub guardrails: Option<String>,
     /// The patterns of `protect=`.
     pub protect: Vec<String>,
     pub max_time: Duration,
@@ -270,6 +282,31 @@ impl ClaudeAgentConfig {
                     .to_string(),
             );
         }
+        let judge_model = get("judge_model").map(str::to_string);
+        let guardrails = get("guardrails").map(str::to_string);
+        if on_ask == OnAsk::Judge {
+            if judge_model.is_none() || guardrails.is_none() {
+                return Err(
+                    "`on_ask=judge` needs `judge_model=<profile>` and `guardrails=<rules>`: the \
+                     judge is a model of an OpenAI compatible profile, and it allows a call \
+                     that breaks none of the guardrails"
+                        .to_string(),
+                );
+            }
+            if autonomy == Autonomy::NoAsk {
+                return Err(
+                    "`on_ask=judge` does nothing with `autonomy=no_ask`, because no call waits \
+                     for approval. Use `ask_if_risky` or `always_ask`"
+                        .to_string(),
+                );
+            }
+        } else if judge_model.is_some() || guardrails.is_some() {
+            return Err(
+                "`judge_model=` and `guardrails=` need `on_ask=judge`. To give the agent rules \
+                 without a judge, put them in `system=`"
+                    .to_string(),
+            );
+        }
         let protect = match get("protect") {
             None => Vec::new(),
             Some(_) if local_tools.is_empty() => {
@@ -386,6 +423,8 @@ impl ClaudeAgentConfig {
             local_tools,
             autonomy,
             on_ask,
+            judge_model,
+            guardrails,
             protect,
             max_time,
             max_cost_cents,

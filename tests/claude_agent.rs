@@ -19,6 +19,7 @@ use atama::agent_loop_claude::api::{AgentRef, AgentsApi, ApiError, EventStream};
 use atama::agent_loop_claude::custom_tools::LocalTools;
 use atama::agent_loop_claude::events::{SessionEvent, parse_event};
 use atama::agent_loop_claude::run::MAX_RECONNECTS;
+use atama::agent_loop_openai_compat::{ChatClient, Message, Reply};
 use atama::profile::ModelProfile;
 use atama::schema::OutputSchema;
 use atama::tools::{Approver, Tool};
@@ -984,4 +985,166 @@ fn without_a_mock_the_run_sends_requests_to_the_base_url_of_the_profile() {
         )),
         "{error}"
     );
+}
+
+/// A scripted verdict: pass, reason and tokens.
+type Verdict = (bool, &'static str, u64);
+
+/// A judge client that gives the scripted verdicts in order, and keeps the
+/// user message of each request.
+#[derive(Clone, Default)]
+struct MockJudge {
+    verdicts: Rc<RefCell<VecDeque<Verdict>>>,
+    questions: Rc<RefCell<Vec<String>>>,
+}
+
+impl MockJudge {
+    fn new(verdicts: &[Verdict]) -> Self {
+        let judge = MockJudge::default();
+        judge.verdicts.borrow_mut().extend(verdicts.iter().copied());
+        judge
+    }
+}
+
+impl ChatClient for MockJudge {
+    fn chat(&mut self, messages: &[Message], _: &[Box<dyn Tool>]) -> Result<Reply, String> {
+        if let Some(Message::User(question)) = messages.get(1) {
+            self.questions.borrow_mut().push(question.clone());
+        }
+        let (pass, reason, tokens) = self
+            .verdicts
+            .borrow_mut()
+            .pop_front()
+            .expect("a verdict for each request");
+        Ok(Reply {
+            content: Some(json!({"pass": pass, "reason": reason}).to_string()),
+            tool_calls: vec![],
+            tokens: Some(tokens),
+        })
+    }
+}
+
+fn ask(id: &str, command: &str) -> Item {
+    event(json!({
+        "type": "agent.tool_use",
+        "id": id,
+        "name": "bash",
+        "input": {"command": command},
+        "evaluated_permission": "ask",
+    }))
+}
+
+const JUDGED: [&str; 4] = [
+    "task=Clean up.",
+    "on_ask=judge",
+    "judge_model=local",
+    "guardrails=Never delete files.",
+];
+
+#[test]
+fn the_judge_of_on_ask_judge_allows_and_denies_the_calls_that_wait() {
+    let api = MockApi::with_streams(vec![vec![
+        ask("u1", "ls"),
+        ask("u2", "rm -rf ./data"),
+        message("m1", "done"),
+        idle("i1", "end_turn"),
+    ]]);
+    let judge = MockJudge::new(&[(true, "only reads", 10), (false, "it deletes files", 10)]);
+    let debug = Output::default();
+    let (tools, _) = echo();
+    let output = run_with("judge", &api, &JUDGED, "", |run| {
+        run.with_tools(tools)
+            .judge_client(judge.clone())
+            .debug(debug.clone())
+    })
+    .unwrap();
+    assert_eq!(output, "done");
+    assert_eq!(
+        api.sent()[1..],
+        [
+            json!({"type": "user.tool_confirmation", "tool_use_id": "u1", "result": "allow"}),
+            json!({
+                "type": "user.tool_confirmation",
+                "tool_use_id": "u2",
+                "result": "deny",
+                "deny_message": "blocked by guardrail: it deletes files",
+            }),
+        ]
+    );
+    // The judge is the guard of `toolGuard=judge`: it gets the guardrails,
+    // the tool and its input.
+    let questions = judge.questions.borrow();
+    assert_eq!(
+        questions[1],
+        "Guardrails:\nNever delete files.\n\nTool: bash\nArguments:\n{\"command\":\"rm -rf ./data\"}"
+    );
+    let debug = String::from_utf8(debug.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        debug.contains("bash: deny (blocked by guardrail: it deletes files)"),
+        "{debug}"
+    );
+}
+
+#[test]
+fn the_tokens_of_the_judge_count_in_the_token_budget() {
+    let api = MockApi::with_streams(vec![vec![
+        event(json!({"type": "session.usage", "id": "e1", "usage": {"input_tokens": 60}})),
+        ask("u1", "ls"),
+        message("m1", "done"),
+        idle("i1", "end_turn"),
+    ]]);
+    let mut options = JUDGED.to_vec();
+    options.push("token_budget=100");
+    let (tools, _) = echo();
+    let error = run_with("judge-budget", &api, &options, "", |run| {
+        run.with_tools(tools).judge_client(MockJudge::new(&[(true, "ok", 50)]))
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "agent:claude-agent (claude): the session `sesn_1` used 110 tokens (50 of them by the \
+         judge), more than its budget of 100"
+    );
+    assert_eq!(api.sent().last().unwrap(), &json!({"type": "user.interrupt"}));
+}
+
+#[test]
+fn the_judge_uses_the_profile_of_judge_model() {
+    let local = |api_key_env: Option<&str>| ModelProfile {
+        name: "local".into(),
+        model: "qwen3".into(),
+        base_url: "http://localhost:1/v1".into(),
+        api_key_env: api_key_env.map(str::to_string),
+        token_budget: None,
+        thinking: Some(false),
+        effort: None,
+    };
+    // A profile without an API key makes a client, and a run with no call
+    // that waits does not ask it.
+    let api = MockApi::with_streams(vec![vec![message("m1", "done"), idle("i1", "end_turn")]]);
+    let (tools, _) = echo();
+    let output = run_with("judge-profile", &api, &JUDGED, "", |run| {
+        run.with_tools(tools).judge_profile(Some(local(None)))
+    })
+    .unwrap();
+    assert_eq!(output, "done");
+
+    // The run fails before the session if the key of the judge is not set,
+    // or the job has no profile with the name.
+    for (profile, expected) in [
+        (
+            Some(local(Some("LOCAL_KEY"))),
+            "model profile `local` needs the API key in `LOCAL_KEY`, but `LOCAL_KEY` is not set",
+        ),
+        (None, "model profile `local` is not defined in the job"),
+    ] {
+        let api = MockApi::default();
+        let (tools, _) = echo();
+        let error = run_with("judge-key", &api, &JUDGED, "", |run| {
+            run.with_tools(tools).judge_profile(profile)
+        })
+        .unwrap_err();
+        assert_eq!(error, format!("agent:claude-agent (claude): {expected}"));
+        assert!(api.requests().is_empty());
+    }
 }

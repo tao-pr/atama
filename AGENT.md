@@ -526,15 +526,28 @@ The modules are:
 - `src/agent_loop_claude/custom_tools.rs` has `LocalTools`. Each local tool of `local_tools=` comes from the shared registry, in a `Limited` and an `Approval`, and has the API name `local_<name>`.
 - `src/agent_loop_claude/definition.rs` has `AgentDefinition` and `EnvironmentDefinition`, and writes their JSON with a fixed order of keys. `check_existing_agent` makes sure that the local tools answer each custom tool of an agent of `agent_id=`.
 - `src/agent_loop_claude/env_block.rs` reads the ```` ```claude-env:<name> ```` blocks. Each line is `<key>: <value>`.
-- `src/agent_loop_claude/run.rs` has `ClaudeAgentRun`, one run of an action. It gets the agent and the environment through the lock file (or uses `agent_id=` and `environment_id=`), creates the session, opens the stream before it sends the first `user.message`, and reads the events on the main thread from a channel. A second thread reads the stream (`open_stream_for`). It runs each `agent.custom_tool_use` with `LocalTools`, and answers each `agent.tool_use` that waits (`evaluated_permission: ask`) with the `Approver`. At `end_turn`, the last `agent.message` is the output, after the output schema check and then the `success_check=` command (`CommandCheck`, on the local machine, with the deadline of the run). A failed check sends its error as the next `user.message` (`final_check`, `Retry`), up to `max_turns`. It fails at the deadline, at a signal, over the token budget, at `budget_reached`, `retries_exhausted` or `session.status_terminated`, and sends `user.interrupt` when it stops the session itself. If the stream ends too early, `Session::reconnect` opens it again and reads `list_events`, and the run skips the events that it handled. The builder methods (`api`, `lock_path`, `approver`, `with_tools`, `clock`, `poll_interval`, `debug`) replace the parts of a run in tests.
+- `src/agent_loop_claude/run.rs` has `ClaudeAgentRun`, one run of an action. It gets the agent and the environment through the lock file (or uses `agent_id=` and `environment_id=`), creates the session, opens the stream before it sends the first `user.message`, and reads the events on the main thread from a channel. A second thread reads the stream (`open_stream_for`). It runs each `agent.custom_tool_use` with `LocalTools`, and answers each `agent.tool_use` that waits (`evaluated_permission: ask`) with the `Approver`. At `end_turn`, the last `agent.message` is the output, after the output schema check and then the `success_check=` command (`CommandCheck`, on the local machine, with the deadline of the run). A failed check sends its error as the next `user.message` (`final_check`, `Retry`), up to `max_turns`. It fails at the deadline, at a signal, over the token budget, at `budget_reached`, `retries_exhausted` or `session.status_terminated`, and sends `user.interrupt` when it stops the session itself. If the stream ends too early, `Session::reconnect` opens it again and reads `list_events`, and the run skips the events that it handled. The builder methods (`api`, `lock_path`, `approver`, `with_tools`, `judge_client`, `clock`, `poll_interval`, `debug`) replace the parts of a run in tests.
 - `src/agent_loop_claude/lock.rs` has `AgentLock`, which keeps the IDs of the agents and the environments in `.atama/claude-lock.json`. It creates an agent once, uses it while its body is the same, and updates it with the stored version when the body changes.
 
 `autonomy=<no_ask|ask_if_risky|always_ask>` sets when a tool call waits for
-approval, and `on_ask=<prompt|deny>` sets who answers. The levels are in
+approval, and `on_ask=<prompt|deny|judge>` sets who answers. The levels are in
 the shared tool layer, `src/tools/approval.rs`: `Autonomy`, the `Approver`
 trait with `PromptApprover` and `DenyApprover`, and the `Approval` wrapper.
 With `ask_if_risky`, a tool waits unless `Tool::read_only` is true.
 `read_file` and `list_files` are read-only.
+
+`on_ask=judge` reuses the guard of `toolGuard=judge` of the `autonomous`
+agent. `judge::JudgeApprover` (`src/agent_loop_openai_compat/judge.rs`) is
+an `Approver` that calls `judge::review` with `guardrails=` and the tool
+call. It needs `judge_model=<profile>` and `guardrails=`, and
+`ClaudeAgentConfig::from_params` fails without them, with
+`autonomy=no_ask`, or with them but without `on_ask=judge`. `parse_action`
+puts the profile of `judge_model=` into `Actor::ClaudeAgent::judge_profile`.
+`ClaudeAgentRun::make_judge_client` makes an `OpenAiClient` from it, as
+`run_loop_with_env` does for an `autonomous` agent.
+`ClaudeAgentRun::judge_client` replaces the client in tests. The tokens of
+the judge (`JudgeApprover::tokens`) count in `token_budget=` with the
+tokens of the session (`ClaudeAgentRun::check_tokens`).
 
 `parse_job` reads the ```` ```claude-env:<name> ```` blocks with
 `env_block::parse_block`, and calls `ClaudeAgentConfig::check` for each

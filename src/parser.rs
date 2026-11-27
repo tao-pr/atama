@@ -692,10 +692,27 @@ fn parse_action(
             output_schema,
             environment,
             default_name,
+            judge_profile,
         } => {
             // Without `model=`, `ClaudeAgentConfig::check` names the option.
             if let Some(name) = params.iter().find_map(|p| p.strip_prefix("model=")) {
                 *profile = Some(profile::find(name, &blocks.profiles).map_err(error)?);
+            }
+            // The judge of `on_ask=judge` is the judge of an `autonomous`
+            // agent, so its profile is an OpenAI compatible one.
+            if let Some(name) = params.iter().find_map(|p| p.strip_prefix("judge_model=")) {
+                let judge = profile::find(name, &blocks.profiles).map_err(error)?;
+                if let Some(effort) = &judge.effort {
+                    warnings.push(ParseWarning {
+                        line,
+                        message: format!(
+                            "model profile `{}` sets `effort={effort}`, but the judge of \
+                             `{CLAUDE_AGENT}` ignores it",
+                            judge.name
+                        ),
+                    });
+                }
+                *judge_profile = Some(Box::new(judge));
             }
             *output_schema = schema::resolve(params, &blocks.schemas).map_err(error)?;
             // An unknown block name: `ClaudeAgentConfig::check` names it.
@@ -977,6 +994,7 @@ impl FromStr for Actor {
                 output_schema: None,
                 environment: None,
                 default_name: String::new(),
+                judge_profile: None,
             }),
             other => match other.strip_prefix("agent:") {
                 Some(agent) => Ok(Actor::AgentTool {

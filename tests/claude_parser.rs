@@ -48,6 +48,7 @@ fn reads_a_claude_agent_action_and_its_options() {
         output_schema,
         environment,
         default_name,
+        ..
     } = &job.tasks[0].actions[1]
     else {
         panic!("expected a claude agent, got {:?}", job.tasks[0].actions[1]);
@@ -397,4 +398,46 @@ fn sample_claude_agent_job_searches_results_and_reports_the_form_of_the_winners(
         actions(3)[2],
         "write_file ./output/claude_agent/winners_form.md"
     );
+}
+
+#[test]
+fn on_ask_judge_uses_the_profile_of_judge_model() {
+    let action = first_action(&job(
+        "  - agent:claude-agent\n    - model=claude\n    - native_tools=bash\n    \
+         - on_ask=judge\n    - judge_model=local\n    - guardrails=Never delete files.\n",
+    ));
+    let Actor::ClaudeAgent { judge_profile, .. } = action else {
+        panic!("expected a claude agent, got {action:?}");
+    };
+    let judge = judge_profile.expect("the profile of the judge");
+    assert_eq!(judge.name, "local");
+    assert_eq!(judge.base_url, "http://localhost:11434/v1");
+
+    // An unknown profile stops the job.
+    let (line, message) = error(&job(
+        "  - agent:claude-agent\n    - model=claude\n    - on_ask=judge\n    \
+         - judge_model=missing\n    - guardrails=x\n",
+    ));
+    assert_eq!(line, 12);
+    assert!(message.contains("`missing`"), "{message}");
+
+    // A judge ignores `effort=`, as the judges of `autonomous` do.
+    let (_, warnings) = parse_job_with_warnings(&job(
+        "  - agent:claude-agent\n    - model=claude\n    - on_ask=judge\n    \
+         - judge_model=claude\n    - guardrails=x\n",
+    ))
+    .unwrap();
+    assert_eq!(
+        warnings,
+        [ParseWarning {
+            line: 12,
+            message: "model profile `claude` sets `effort=high`, but the judge of \
+                      `agent:claude-agent` ignores it"
+                .into(),
+        }]
+    );
+
+    // Without `on_ask=judge`, the action has no judge profile.
+    let action = first_action(&job("  - agent:claude-agent\n    - model=claude\n"));
+    assert!(matches!(action, Actor::ClaudeAgent { judge_profile: None, .. }));
 }

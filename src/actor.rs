@@ -107,6 +107,9 @@ pub enum Actor {
         /// `atama-my-job-search-1`. The job parser makes it from the names
         /// of the job and the task, and the number of the action.
         default_name: String,
+        /// The model profile that `judge_model=` names, for `on_ask=judge`,
+        /// as for [`Actor::AgentTool`].
+        judge_profile: Option<Box<ModelProfile>>,
     },
     /// Searches the web with the Tavily API.
     /// Carries the search response as JSON as output
@@ -309,10 +312,12 @@ impl Actor {
                 output_schema,
                 environment,
                 default_name,
+                judge_profile,
             } => {
                 let run = ClaudeAgentRun::new(default_name)
                     .schema_block(output_schema.clone())
-                    .environment_block(environment.clone());
+                    .environment_block(environment.clone())
+                    .judge_profile(judge_profile.as_deref().cloned());
                 match debug {
                     Some(debug) => run.debug(debug).run(params, profile.as_ref(), input),
                     None => run.run(params, profile.as_ref(), input),

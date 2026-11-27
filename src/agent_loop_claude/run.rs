@@ -8,7 +8,7 @@
 //! match the output schema, or the `success_check=` command fails, the run
 //! sends the error as the next `user.message`, up to `max_turns`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,7 +27,10 @@ use super::events::{IdleStop, Permission, SessionEvent};
 use super::lock::{AgentLock, LOCK_PATH};
 use super::options::{AgentSource, ClaudeAgentConfig, EnvironmentSource, OnAsk};
 use crate::actor::CLAUDE_AGENT;
-use crate::agent_loop_openai_compat::agent_options::format_duration;
+use crate::agent_loop_openai_compat::ChatClient;
+use crate::agent_loop_openai_compat::agent_options::{format_duration, named_profile, read_api_key};
+use crate::agent_loop_openai_compat::judge::JudgeApprover;
+use crate::agent_loop_openai_compat::openai::OpenAiClient;
 use crate::agent_loop_openai_compat::checks::CommandCheck;
 use crate::profile::ModelProfile;
 use crate::protect::Protect;
@@ -68,6 +71,13 @@ pub struct ClaudeAgentRun<'a> {
     debug: Option<Box<dyn Write + 'a>>,
     clock: Box<dyn Fn() -> Instant + 'a>,
     poll_interval: Duration,
+    /// The model profile that `judge_model=` names.
+    judge_profile: Option<ModelProfile>,
+    /// The client of the judge of `on_ask=judge`. Without it, the run makes
+    /// an [`OpenAiClient`] from the judge profile.
+    judge_client: Option<Box<dyn ChatClient>>,
+    /// The tokens that the judge used, for the token budget.
+    judge_tokens: Rc<Cell<u64>>,
     /// `agent:claude-agent (<profile>)`, for the errors and the debug
     /// output.
     label: String,
@@ -87,6 +97,9 @@ impl<'a> ClaudeAgentRun<'a> {
             debug: None,
             clock: Box::new(Instant::now),
             poll_interval: DEFAULT_POLL_INTERVAL,
+            judge_profile: None,
+            judge_client: None,
+            judge_tokens: Rc::new(Cell::new(0)),
             label: CLAUDE_AGENT.to_string(),
         }
     }
@@ -147,6 +160,20 @@ impl<'a> ClaudeAgentRun<'a> {
         self
     }
 
+    /// The model profile that `judge_model=<name>` names. The judge of
+    /// `on_ask=judge` uses it, as the judges of an `autonomous` agent do.
+    pub fn judge_profile(mut self, profile: Option<ModelProfile>) -> Self {
+        self.judge_profile = profile;
+        self
+    }
+
+    /// Uses `client` for the judge of `on_ask=judge`, instead of a client
+    /// of the judge profile.
+    pub fn judge_client(mut self, client: impl ChatClient + 'static) -> Self {
+        self.judge_client = Some(Box::new(client));
+        self
+    }
+
     /// Runs the action with the options `params`, the model profile
     /// `profile` and the input `input`. It reads the environment of the
     /// process.
@@ -180,7 +207,12 @@ impl<'a> ClaudeAgentRun<'a> {
             &self.default_name,
             env,
         )
-        .and_then(|config| self.run_with(&config, input, start));
+        .and_then(|config| {
+            if config.on_ask == OnAsk::Judge && self.judge_client.is_none() {
+                self.judge_client = Some(self.make_judge_client(&config, env)?);
+            }
+            self.run_with(&config, input, start)
+        });
         result.map_err(|error| format!("{label}: {error}"))
     }
 
@@ -217,13 +249,23 @@ impl<'a> ClaudeAgentRun<'a> {
             .clone()
             .map(|command| CommandCheck::new(command).with_deadline_time(Some(deadline)));
 
-        let approver = self
-            .approver
-            .clone()
-            .unwrap_or_else(|| match config.on_ask {
+        let approver: Rc<RefCell<dyn Approver>> = match self.approver.clone() {
+            Some(approver) => approver,
+            None => match config.on_ask {
                 OnAsk::Prompt => Rc::new(RefCell::new(PromptApprover::new())),
                 OnAsk::Deny => Rc::new(RefCell::new(DenyApprover)),
-            });
+                OnAsk::Judge => {
+                    let client = self
+                        .judge_client
+                        .take()
+                        .expect("run_with_env makes the client of the judge");
+                    let guardrails = config.guardrails.as_deref().unwrap_or_default();
+                    let judge = JudgeApprover::new(client, guardrails);
+                    self.judge_tokens = judge.tokens();
+                    Rc::new(RefCell::new(judge))
+                }
+            },
+        };
         let mut tools = match self.tools.take() {
             Some(tools) => tools,
             None => LocalTools::from_names(&config.local_tools, config.autonomy, approver.clone())?,
@@ -246,6 +288,7 @@ impl<'a> ClaudeAgentRun<'a> {
             seen: HashSet::new(),
             last_reply: None,
             last_error: None,
+            tokens: 0,
             turns: 1,
             reconnects: 0,
         };
@@ -303,6 +346,7 @@ impl<'a> ClaudeAgentRun<'a> {
                                 "is_error": is_error,
                             })],
                         )?;
+                        self.check_tokens(api, &run, config)?;
                     }
                     SessionEvent::AgentToolUse {
                         id,
@@ -325,23 +369,19 @@ impl<'a> ClaudeAgentRun<'a> {
                             }),
                         };
                         self.write_debug(&format!(
-                            "{name}: {}",
-                            confirmation["result"].as_str().unwrap_or_default()
+                            "{name}: {}{}",
+                            confirmation["result"].as_str().unwrap_or_default(),
+                            confirmation["deny_message"]
+                                .as_str()
+                                .map(|reason| format!(" ({reason})"))
+                                .unwrap_or_default()
                         ));
                         api.send_events(&run.id, &[confirmation])?;
+                        self.check_tokens(api, &run, config)?;
                     }
                     SessionEvent::Usage { usage, .. } => {
-                        if let Some(budget) = config.token_budget
-                            && usage.total_tokens() > budget
-                        {
-                            interrupt(api, &run.id);
-                            return Err(format!(
-                                "the session `{}` used {} tokens, more than its budget of \
-                                 {budget}",
-                                run.id,
-                                usage.total_tokens()
-                            ));
-                        }
+                        run.tokens = usage.total_tokens();
+                        self.check_tokens(api, &run, config)?;
                     }
                     SessionEvent::Error { message, .. } => run.last_error = Some(message),
                     SessionEvent::StatusIdle { stop, .. } => match stop {
@@ -452,6 +492,48 @@ impl<'a> ClaudeAgentRun<'a> {
         Ok(session)
     }
 
+    /// Makes the client of the judge from the profile that `judge_model=`
+    /// names, with the API key of that profile.
+    fn make_judge_client(
+        &self,
+        config: &ClaudeAgentConfig,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Box<dyn ChatClient>, String> {
+        let name = config.judge_model.as_deref().unwrap_or_default();
+        let judge = named_profile(name, self.judge_profile.as_ref())?;
+        let api_key = read_api_key(judge, env)?;
+        Ok(Box::new(
+            OpenAiClient::new(&judge.base_url, &judge.model, api_key).with_thinking(judge.thinking),
+        ))
+    }
+
+    /// Fails, and interrupts the session, if the session and the judge used
+    /// more tokens than `token_budget=`.
+    fn check_tokens(
+        &self,
+        api: &mut dyn AgentsApi,
+        run: &Session,
+        config: &ClaudeAgentConfig,
+    ) -> Result<(), String> {
+        let Some(budget) = config.token_budget else {
+            return Ok(());
+        };
+        let judge = self.judge_tokens.get();
+        let used = run.tokens + judge;
+        if used <= budget {
+            return Ok(());
+        }
+        interrupt(api, &run.id);
+        let of_judge = match judge {
+            0 => String::new(),
+            n => format!(" ({n} of them by the judge)"),
+        };
+        Err(format!(
+            "the session `{}` used {used} tokens{of_judge}, more than its budget of {budget}",
+            run.id
+        ))
+    }
+
     /// Checks the reply at the end of a turn: first the output schema,
     /// then the success check. Returns the output, or what to send to the
     /// agent for the next turn.
@@ -520,6 +602,8 @@ struct Session {
     last_reply: Option<String>,
     /// The message of the last `session.error`.
     last_error: Option<String>,
+    /// The tokens of the last `session.usage`.
+    tokens: u64,
     /// The `user.message` events that the run sent.
     turns: u32,
     reconnects: u32,
