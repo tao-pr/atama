@@ -593,6 +593,122 @@ allowed_hosts: arxiv.org, *.docs.rs
 Without `name=`, the agent gets the name `atama-<job>-<task>-<n>`, in lower
 case, where `<n>` is the number of the action in its task.
 
+### Remote tools and local tools
+
+A `claude-agent` action can use two kinds of tools. Without a tool option,
+the agent has no tools and only replies with text.
+
+| | Remote tools | Local tools |
+| --- | --- | --- |
+| Option | `native_tools=` | `local_tools=` |
+| Tools | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, or `all` | `bash`, `read_file`, `write_file`, `list_files` |
+| Where they run | In the cloud container of the session | On this machine, in the working directory of Atama |
+| Who runs them | Anthropic | Atama, when the agent calls `local_<name>` |
+| Files | Stay in the container. This machine cannot read them. | Are on this machine. `success_check=` and the next actions can read them. |
+| Network | The environment of the session (`environment=`) limits it. | The network of this machine. |
+| Approval | `autonomy=` sets the permission policy of the API. | `autonomy=` and `on_ask=`, in Atama. |
+| Protection | `allowed_domains=` and `blocked_domains=` for the web tools | `protect=` |
+
+Commas separate the names of a list. An action can have both options.
+
+#### Remote tools
+
+The remote tools are the native tools of the Claude agent. Use them when
+the work does not need the files of this machine, for example to search
+the web, to read pages, or to run code in a clean container.
+
+````markdown
+```claude-env:web
+networking: limited
+allowed_hosts: *.python.org, docs.rs
+```
+
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - environment=web
+    - native_tools=web_search, web_fetch
+    - allowed_domains=python.org, docs.rs
+    - autonomy=ask_if_risky
+    - max_cost_usd=0.50
+    - task=Find the release date of the newest Python version.
+````
+
+These rules apply to the remote tools:
+
+1. `web_search` and `web_fetch` need an environment that can reach the
+   web. The default environment, `atama-default`, has `limited` networking
+   with no hosts. So name a ```` ```claude-env:<name> ```` block with
+   `allowed_hosts:`, or with `networking: unrestricted`, in
+   `environment=`. Otherwise the job stops before it starts.
+2. `allowed_domains=` names the only hosts that the web tools can reach.
+   `blocked_domains=` names the hosts that they cannot reach. Use one of
+   the two lists, not both. Each one needs `web_search` or `web_fetch`.
+   The API rejects a host that the crawler of Anthropic cannot reach.
+3. `autonomy=` becomes the permission policy of the API. `no_ask` lets
+   each call run. `ask_if_risky`, the default, lets a safe call run, denies
+   a high-risk call, and asks you about an unclear call. `always_ask` asks
+   you about each call. `on_ask=` sets who answers: `prompt` asks on the
+   terminal, and `deny` denies the call.
+4. The web tools can read many pages, and each page costs tokens. Set
+   `max_cost_usd=` or `token_budget=`. If you only need search results,
+   the `websearch` action in an earlier step costs less.
+5. An action with `agent_id=` uses an agent that exists, so it cannot set
+   `native_tools=`. The agent keeps its own tools.
+
+#### Local tools
+
+The local tools are the tools of Atama. Use them when the agent must read
+or write the files of this machine, or when `success_check=` must see its
+work.
+
+```markdown
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - local_tools=read_file, write_file
+    - autonomy=no_ask
+    - protect=./jobs, ./src
+    - success_check=test -s ./output/report.json
+    - task=Write a report of ./data/results.csv to ./output/report.json.
+```
+
+These rules apply to the local tools:
+
+1. The agent sees each tool with the prefix `local_`, as in
+   `local_write_file`. Atama runs the call and sends the result back.
+2. With `ask_if_risky`, `read_file` and `list_files` run, and `bash` and
+   `write_file` wait for approval. With no terminal, for example in CI,
+   `on_ask=prompt` denies the call. So use `autonomy=no_ask` with
+   `protect=` for a job that runs alone.
+3. `protect=` names the paths that the local tools cannot write. It needs
+   `local_tools=`, and it does not apply to the remote tools.
+4. Each local tool can run 50 times at most, and can fail 10 times at
+   most.
+
+#### Both kinds
+
+An action can use both kinds, for example `web_fetch` to read a page in
+the cloud and `local_write_file` to save the result on this machine. The
+agent decides which tool to call, so name the tool in the task:
+
+```markdown
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - environment=web
+    - native_tools=web_fetch
+    - local_tools=write_file
+    - autonomy=no_ask
+    - protect=./jobs
+    - task=Read https://docs.python.org/3/whatsnew/ with web_fetch.
+      Then save a list of the new features to ./output/python.md with
+      local_write_file.
+```
+
+A file that a remote tool writes stays in the container. To get it on
+this machine, the agent must write it again with a local tool.
+
 ## `read_file`
 
 ```text
