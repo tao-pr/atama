@@ -26,6 +26,7 @@ There are two kinds of tools:
 | [`read_file`](#read_file) | Local | This machine | `autonomous`, `claude-agent` | Yes |
 | [`write_file`](#write_file) | Local | This machine | `autonomous`, `claude-agent` | No |
 | [`list_files`](#list_files) | Local | This machine | `autonomous`, `claude-agent` | Yes |
+| [`web_search`](#web_search) | Local | This machine, which sends the search to Tavily | `autonomous`, `claude-agent` | Yes |
 | [`bash`](#claude-bash) | Provider (Claude) | The cloud container of the session | `claude-agent` | No |
 | [`read`](#claude-read) | Provider (Claude) | The cloud container of the session | `claude-agent` | Yes |
 | [`write`](#claude-write) | Provider (Claude) | The cloud container of the session | `claude-agent` | No |
@@ -50,7 +51,7 @@ the `/chat/completions` request (see
 | --- | --- | --- |
 | [`agent:coder`](ACTIONS.md#agentcoder) | `bash` | You cannot change them. |
 | [`agent:summarizer`](ACTIONS.md#agentsummarizer) | None. The model can only reply with text. | You cannot change them. |
-| [`agent:autonomous`](ACTIONS.md#agentautonomous) | `bash`, `read_file`, `write_file` and `list_files` | `tools:` of a [budget block](ACTIONS.md#budget-blocks) |
+| [`agent:autonomous`](ACTIONS.md#agentautonomous) | `bash`, `read_file`, `write_file` and `list_files` | `tools:` of a [budget block](ACTIONS.md#budget-blocks). Only `tools:` gives `web_search`. |
 | [`agent:claude-agent`](ACTIONS.md#agentclaude-agent) | None. The model can only reply with text. | `local_tools=` for the local tools, and `native_tools=` for the provider tools |
 
 ## Local tools
@@ -127,6 +128,42 @@ same as the [`list_files`](ACTIONS.md#list_files) action.
 | --- | --- | --- |
 | `dir` | Yes | The directory. |
 | `pattern` | No | The glob pattern of the file names, as in `*.rs`. The default is `*`. |
+
+### `web_search`
+
+Searches the web with Tavily, and returns the response JSON unchanged. It
+runs the same code as the [`websearch`](ACTIONS.md#websearch) action, but
+it does not get the content of the result pages, so that the result stays
+short.
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `query` | Yes | What to search for. |
+| `max_results` | No | The most results, from 1 to 20. The default is 5. |
+
+The tool needs the Tavily API key in the `TAVILY_API_KEY` environment
+variable. If it is not set, the call fails, and the model gets the error.
+
+No agent gets this tool by default, because each search uses Tavily
+credits. To give it to an agent, do one of these steps:
+
+- For `agent:autonomous`, add `- web_search` to `tools:` of the budget
+  block.
+- For `agent:claude-agent`, add `web_search` to `local_tools=`. The agent
+  sees the tool as `local_web_search`, so it does not clash with the
+  [Claude `web_search`](#claude-web_search).
+
+A search with this tool costs less than the Claude `web_search` and
+`web_fetch` tools, because the model reads only the short extracts.
+
+```markdown
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - local_tools=web_search
+    - autonomy=no_ask
+    - task=Find the release date of the newest Python version.
+```
 
 ### Approval of local tools
 
@@ -226,6 +263,6 @@ its budget of $0.50 in one step.
 Searches the web. The rules of the environment and of the domain lists are
 the same as for `web_fetch`.
 
-If you only need search results, the [`websearch`](ACTIONS.md#websearch)
-action in an earlier step costs less. A local `web_search` tool with Tavily
-is planned (phase 10 of [PLAN-claude-agent.md](PLAN-claude-agent.md)).
+If you only need search results, the local [`web_search`](#web_search)
+tool, or the [`websearch`](ACTIONS.md#websearch) action in an earlier
+step, costs less.

@@ -25,12 +25,14 @@ mod bash;
 mod files;
 mod limited;
 mod registry;
+mod web_search;
 
 pub use approval::{Approval, Approver, Autonomy, DenyApprover, PromptApprover};
 pub use bash::Bash;
 pub use files::{ListFiles, ReadFile, WriteFile};
 pub use limited::{DEFAULT_MAX_CALLS, DEFAULT_MAX_FAILURES, Limited};
 pub use registry::{TOOL_NAMES, tool_by_name};
+pub use web_search::WebSearch;
 
 /// A tool that the model can call.
 pub trait Tool {

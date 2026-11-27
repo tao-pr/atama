@@ -261,7 +261,13 @@ fn only_coder_gets_tools() {
 fn the_registry_makes_each_tool_by_its_name() {
     assert_eq!(
         TOOL_NAMES,
-        ["bash", "read_file", "write_file", "list_files"]
+        [
+            "bash",
+            "read_file",
+            "write_file",
+            "list_files",
+            "web_search"
+        ]
     );
     for name in TOOL_NAMES {
         let tool = tool_by_name(name).expect(name);

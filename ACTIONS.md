@@ -532,10 +532,11 @@ An option of the action replaces the same option of the block. The action
 needs `model=` in its options.
 
 `tools:` selects the tools of the agent from `bash`, `read_file`,
-`write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most
+`write_file`, `list_files` and `web_search`. Each tool can have `max_calls=<n>`, the most
 calls in one run (default 50), and `max_failures=<n>`, the most failed
-calls (default 10). Without `tools:`, the agent gets all four tools with the
-default limits. [TOOLS.md](TOOLS.md#local-tools) describes each tool.
+calls (default 10). Without `tools:`, the agent gets `bash`, `read_file`,
+`write_file` and `list_files` with the default limits. It gets
+`web_search` only from `tools:`, because each search uses Tavily credits. [TOOLS.md](TOOLS.md#local-tools) describes each tool.
 
 Atama reads the block and the options of every agent action before the job
 starts. An unknown key, an unknown tool, an invalid option, or an
@@ -603,7 +604,7 @@ describes each tool.
 | | Remote tools | Local tools |
 | --- | --- | --- |
 | Option | `native_tools=` | `local_tools=` |
-| Tools | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, or `all` | `bash`, `read_file`, `write_file`, `list_files` |
+| Tools | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, or `all` | `bash`, `read_file`, `write_file`, `list_files`, `web_search` |
 | Where they run | In the cloud container of the session | On this machine, in the working directory of Atama |
 | Who runs them | Anthropic | Atama, when the agent calls `local_<name>` |
 | Files | Stay in the container. This machine cannot read them. | Are on this machine. `success_check=` and the next actions can read them. |

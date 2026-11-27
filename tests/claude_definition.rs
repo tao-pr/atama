@@ -57,7 +57,7 @@ fn reads_the_names_of_the_local_tools() {
     );
     assert_eq!(
         parse_names("bash, web").unwrap_err(),
-        "`web` is not a local tool, expected `bash`, `read_file`, `write_file`, `list_files`"
+        "`web` is not a local tool, expected `bash`, `read_file`, `write_file`, `list_files`, `web_search`"
     );
     assert_eq!(
         parse_names("bash,bash").unwrap_err(),
@@ -96,6 +96,21 @@ fn local_tools_run_by_their_api_name() {
     assert_eq!(
         tools.call("bash", &json!({})).unwrap_err(),
         "unknown tool `bash`"
+    );
+}
+
+#[test]
+fn web_search_is_a_local_tool_that_runs_without_approval() {
+    let names = parse_names("web_search").unwrap();
+    let mut tools = LocalTools::from_names(&names, Autonomy::AskIfRisky, deny()).unwrap();
+    assert_eq!(tools.definitions()[0]["name"], "local_web_search");
+    // The tool only reads, so `deny` does not stop it. The empty query
+    // fails before a search.
+    assert_eq!(
+        tools
+            .call("local_web_search", &json!({"query": ""}))
+            .unwrap_err(),
+        "the argument `query` is empty"
     );
 }
 

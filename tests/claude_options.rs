@@ -217,7 +217,7 @@ fn rejects_invalid_options() {
     );
     assert_eq!(
         error(&["local_tools=web"]),
-        "`web` is not a local tool, expected `bash`, `read_file`, `write_file`, `list_files`"
+        "`web` is not a local tool, expected `bash`, `read_file`, `write_file`, `list_files`, `web_search`"
     );
     assert!(error(&["local_tools=bash", "protect=a\"b"]).contains("protect"));
 }

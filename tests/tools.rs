@@ -1,13 +1,17 @@
 //! Tests of the shared tool layer in `src/tools.rs`.
 
 use std::cell::Cell;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use serde_json::{Value, json};
 
 use atama::tools::{
     Bash, DEFAULT_MAX_CALLS, DEFAULT_MAX_FAILURES, Limited, ListFiles, MAX_RESULT_CHARS, ReadFile,
-    TOOL_NAMES, Tool, WriteFile, tool_by_name, truncate,
+    TOOL_NAMES, Tool, WebSearch, WriteFile, tool_by_name, truncate,
 };
 
 /// A tool that fails when its argument `fail` is true, and counts its calls.
@@ -423,4 +427,139 @@ mod approval {
         assert!(read.call(&json!({})).is_err());
         assert!(asked.borrow().is_empty());
     }
+}
+
+// The `web_search` tool
+
+/// Starts a local HTTP server that answers one request per response, in
+/// order. Returns its base URL and a receiver that gets each raw request.
+fn serve(responses: Vec<(u16, String)>) -> (String, Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("cannot bind test server");
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let (requests, received) = mpsc::channel();
+    thread::spawn(move || {
+        for (status, body) in responses {
+            let (mut stream, _) = listener.accept().expect("cannot accept connection");
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap();
+                }
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut request_body = vec![0; content_length];
+            reader.read_exact(&mut request_body).unwrap();
+            request.push_str(&String::from_utf8(request_body).unwrap());
+            requests.send(request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+        }
+    });
+    (url, received)
+}
+
+/// A base URL where no server listens.
+fn closed_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("http://{}", listener.local_addr().unwrap())
+}
+
+/// The JSON body of a raw HTTP request.
+fn request_json(request: &str) -> Value {
+    let (_, body) = request.split_once("\r\n\r\n").expect("request has a body");
+    serde_json::from_str(body).expect("request body is JSON")
+}
+
+/// An environment that has only the Tavily API key `key-1`.
+fn tavily_env(name: &str) -> Option<String> {
+    (name == "TAVILY_API_KEY").then(|| "key-1".to_string())
+}
+
+#[test]
+fn web_search_returns_the_response_body_unchanged() {
+    let body = r#"{"results":[{"title":"Rust","url":"https://www.rust-lang.org"}]}"#;
+    let (url, requests) = serve(vec![(200, body.to_string())]);
+    let mut tool = WebSearch::new(url, tavily_env);
+    assert_eq!(tool.name(), "web_search");
+    assert!(tool.read_only());
+    assert_eq!(tool.parameters()["required"], json!(["query"]));
+
+    assert_eq!(tool.call(&json!({"query": "rust release"})).unwrap(), body);
+    let request = requests.recv().unwrap();
+    assert!(request.starts_with("POST /search "), "{request}");
+    assert!(request.contains("Bearer key-1"), "{request}");
+    let sent = request_json(&request);
+    assert_eq!(sent["query"], "rust release");
+    assert_eq!(sent["max_results"], 5);
+    assert!(sent.get("include_raw_content").is_none(), "{sent}");
+}
+
+#[test]
+fn web_search_sends_max_results() {
+    let (url, requests) = serve(vec![(200, "{}".to_string()), (200, "{}".to_string())]);
+    let mut tool = WebSearch::new(url, tavily_env);
+    tool.call(&json!({"query": "rust", "max_results": 20}))
+        .unwrap();
+    assert_eq!(request_json(&requests.recv().unwrap())["max_results"], 20);
+    tool.call(&json!({"query": "rust", "max_results": null}))
+        .unwrap();
+    assert_eq!(request_json(&requests.recv().unwrap())["max_results"], 5);
+}
+
+#[test]
+fn web_search_rejects_invalid_arguments() {
+    // No request reaches a server, because the arguments are checked first.
+    let mut tool = WebSearch::new(closed_url(), tavily_env);
+    assert_eq!(
+        tool.call(&json!({})).unwrap_err(),
+        "missing string argument `query`"
+    );
+    assert_eq!(
+        tool.call(&json!({"query": "  "})).unwrap_err(),
+        "the argument `query` is empty"
+    );
+    for value in [json!(0), json!(21), json!(-1), json!("5"), json!(2.5)] {
+        assert_eq!(
+            tool.call(&json!({"query": "rust", "max_results": value}))
+                .unwrap_err(),
+            format!("the argument `max_results` is {value}, not a number from 1 to 20")
+        );
+    }
+}
+
+#[test]
+fn web_search_fails_without_a_key_or_a_server() {
+    let mut tool = WebSearch::new(closed_url(), |_: &str| None);
+    assert_eq!(
+        tool.call(&json!({"query": "rust"})).unwrap_err(),
+        "no Tavily API key: set `TAVILY_API_KEY`"
+    );
+    let mut tool = WebSearch::new(closed_url(), tavily_env);
+    assert!(tool.call(&json!({"query": "rust"})).is_err());
+
+    let (url, _requests) = serve(vec![(401, "bad key".to_string())]);
+    let mut tool = WebSearch::new(url, tavily_env);
+    let error = tool.call(&json!({"query": "rust"})).unwrap_err();
+    assert!(error.contains("401"), "{error}");
+}
+
+#[test]
+fn web_search_cuts_a_long_result() {
+    let body = "x".repeat(MAX_RESULT_CHARS + 10);
+    let (url, _requests) = serve(vec![(200, body)]);
+    let mut tool = WebSearch::new(url, tavily_env);
+    let result = tool.call(&json!({"query": "rust"})).unwrap();
+    assert!(result.ends_with("characters]"), "{result}");
 }

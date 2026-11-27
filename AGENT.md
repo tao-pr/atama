@@ -299,6 +299,7 @@ loop can use them. It does not depend on an API. The files are:
 - `src/tools/limited.rs` has `Limited`, `DEFAULT_MAX_CALLS` and `DEFAULT_MAX_FAILURES`.
 - `src/tools/bash.rs` has `Bash`.
 - `src/tools/files.rs` has `ReadFile`, `WriteFile` and `ListFiles`.
+- `src/tools/web_search.rs` has `WebSearch`.
 
 `src/agent_loop_openai_compat/tools.rs` re-exports these items, so that
 the old paths, as in `agent_loop_openai_compat::tools::Bash`, still work.
@@ -306,7 +307,8 @@ the old paths, as in `agent_loop_openai_compat::tools::Bash`, still work.
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
 The registry (`tools::tool_by_name` and `tools::TOOL_NAMES`) makes each
-tool by its name: `bash`, `read_file`, `write_file` and `list_files`. Each
+tool by its name: `bash`, `read_file`, `write_file`, `list_files` and
+`web_search`. Each
 call makes a new tool, so two agents do not share the state of a tool.
 `agent_loop_openai_compat::tools::default_tool_names` names the tools of
 each agent type, and `default_tools` makes them:
@@ -326,7 +328,13 @@ The tools run the same code as the actions of a job file. `bash` runs an
 `Actor::BashScript`. `read_file`, `write_file` and `list_files` run
 `Actor::ReadFile`, `Actor::WriteFile` and `Actor::ListFiles`. No agent type
 gets the file tools yet. `write_file` returns a short confirmation, not the
-content. If a result is
+content. `web_search` runs `WebSearchOptions::search`, the code of the
+`websearch` action, without `fetch_content`. No agent type gets it by
+default, because each search uses Tavily credits. A budget block gives it
+to an `autonomous` agent with `tools:`, and `local_tools=web_search` gives
+it to a `claude-agent` as `local_web_search`. `WebSearch::new` takes the
+base URL and the environment, so tests use a mock server and a fake key.
+`WebSearch::default` uses the real environment. If a result is
 longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
 it.
 
@@ -683,7 +691,9 @@ bearer token.
 - `SearchConfig::request_body` makes the JSON body. It has only the options that are set.
 - `SearchConfig::search` sends the request and returns the response body unchanged.
 
-Two actions use the client, and the output of both is the response body.
+Two actions and one tool use the client. The output of each is the
+response body. The `web_search` tool (`src/tools/web_search.rs`) is
+described in "Tools of each agent type".
 The `tavily_search` action (`Actor::TavilySearch`) takes the options of
 `SearchConfig` and a free-text query. The `websearch` action
 (`Actor::WebSearch`) takes fewer options, in `src/websearch.rs`:
