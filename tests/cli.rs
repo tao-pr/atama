@@ -204,37 +204,82 @@ fn debug_writes_agent_requests_to_stderr() {
 /// Starts a server that answers one request with `reply`. The thread
 /// returns the raw request.
 fn serve_once(reply: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    let (url, server) = serve(vec![reply]);
+    let server = std::thread::spawn(move || server.join().unwrap().remove(0));
+    (url, server)
+}
+
+/// Starts a server that answers one request with each reply, in order. The
+/// thread returns the raw requests.
+fn serve(replies: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Read, Write};
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut request = String::new();
-        let mut content_length = 0;
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
-                content_length = value.trim().parse().unwrap();
+        let mut requests = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                    content_length = value.trim().parse().unwrap();
+                }
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
             }
-            request.push_str(&line);
-            if line == "\r\n" {
-                break;
-            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).unwrap();
+            request.push_str(&String::from_utf8(body).unwrap());
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            )
+            .unwrap();
+            requests.push(request);
         }
-        let mut body = vec![0; content_length];
-        reader.read_exact(&mut body).unwrap();
-        request.push_str(&String::from_utf8(body).unwrap());
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-            reply.len()
-        )
-        .unwrap();
-        request
+        requests
     });
     (url, server)
+}
+
+#[test]
+fn on_ask_prompt_denies_a_call_when_stdin_is_not_a_terminal() {
+    let (url, server) = serve(vec![
+        r#"{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"echo ran\"}"}}]}}]}"#,
+        r#"{"choices":[{"message":{"role":"assistant","content":"done"}}]}"#,
+    ]);
+    let (dir, job) = job_in_temp_dir(
+        "on-ask-prompt",
+        &format!(
+            "```config\np: model=model-1, base_url={url}\n```\n\
+             # Job\n## Ask\n- actions:\n  - agent:coder\n    - model=p\n    \
+             - autonomy=always_ask\n    - task=hi\n"
+        ),
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_atama"))
+        .arg(&job)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to run atama binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "stdout was: {stdout}");
+    let requests = server.join().unwrap();
+    assert!(
+        requests[1].contains(
+            "error: the call of `bash` was denied, because no terminal can ask the user \
+             (`on_ask=prompt`)"
+        ),
+        "{}",
+        requests[1]
+    );
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -616,4 +661,43 @@ fn no_task_starts_after_a_signal_even_if_the_command_succeeds() {
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");
     assert!(took >= atama::signals::GRACE, "{took:?}");
     assert!(!still_runs(child), "the child process {child} still runs");
+}
+
+#[test]
+fn warns_when_an_agent_ignores_effort() {
+    let (dir, job) = job_in_temp_dir(
+        "effort",
+        "```config\np: model=m, base_url=http://localhost:1/v1, effort=high\n```\n\
+         # Job\n## Sum\n- actions:\n  - agent:summarizer\n    - model=p\n",
+    );
+    let output = run_atama(&["--dry-run", &job]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr was: {stderr}");
+    assert_eq!(
+        stderr,
+        format!(
+            "warning: {job}: line 7: model profile `p` sets `effort=high`, but \
+             `agent:summarizer` ignores it. Only `agent:claude-agent` uses `effort=`\n"
+        )
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn colors_a_warning_red_in_a_terminal() {
+    let (dir, job) = job_in_temp_dir(
+        "effort-terminal",
+        "```config\np: model=m, base_url=http://localhost:1/v1, effort=low\n```\n\
+         # Job\n## Sum\n- actions:\n  - agent:coder\n    - model=p\n",
+    );
+    let output = run_atama_in_terminal(&["--dry-run", &job], &[]);
+    assert!(
+        output.contains(&format!(
+            "\x1b[31mwarning: {job}: line 7: model profile `p` sets `effort=low`, but \
+             `agent:coder` ignores it. Only `agent:claude-agent` uses `effort=`\x1b[0m"
+        )),
+        "output was: {output:?}"
+    );
+    fs::remove_dir_all(dir).unwrap();
 }

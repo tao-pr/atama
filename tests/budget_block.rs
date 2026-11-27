@@ -119,7 +119,7 @@ fn rejects_invalid_lines() {
             0,
             "unknown key `model` in budget block `fix`, expected `max_steps`, `token_budget`, \
              `max_context`, `thinking`, `max_iterations`, `max_time`, `success_check`, `success`, \
-             `toolGuard`, `max_violations`, `judge_model` or `tools`",
+             `toolGuard`, `max_violations`, `judge_model`, `autonomy`, `on_ask` or `tools`",
         ),
         (
             &["success: a", "success: b"],
@@ -136,7 +136,7 @@ fn rejects_invalid_lines() {
         (
             &["tools:", "- rm"],
             0,
-            "unknown tool `rm`, expected `bash`, `read_file`, `write_file`, `list_files`",
+            "unknown tool `rm`, expected `bash`, `read_file`, `write_file`, `list_files`, `web_search`",
         ),
         (
             &["tools:", "- bash timeout=3"],
@@ -186,6 +186,11 @@ fn makes_the_tools_of_the_block_with_their_limits() {
     assert!(tools[0].available());
     let _ = tools[0].call(&json!({"path": "Cargo.toml"}));
     assert!(!tools[0].available());
+
+    let block = parse(&["tools:", "- web_search max_calls=3"]).unwrap();
+    let tools = block.make_tools().unwrap();
+    assert_eq!(tools[0].name(), "web_search");
+    assert!(tools[0].read_only());
 }
 
 #[test]

@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 use ureq::http::Response;
 use ureq::{Agent, Body, RequestBuilder};
 
+use crate::agent_loop_claude::ClaudeAgentRun;
+use crate::agent_loop_claude::definition::EnvironmentDefinition;
 use crate::agent_loop_openai_compat::AgentToolLoop;
 use crate::budget_block::BudgetBlock;
 use crate::http::{agent, read_response};
@@ -21,6 +23,8 @@ use crate::websearch::WebSearchOptions;
 
 mod display;
 pub mod list_files;
+
+pub use display::CLAUDE_AGENT;
 
 /// One action of a task, and how to carry it out.
 ///
@@ -83,6 +87,28 @@ pub enum Actor {
         /// it from the ```` ```config ```` block of the job. It is `None` if
         /// the action has no `judge_model=`, or it is parsed on its own. It
         /// is in a box, so that it does not make every `Actor` larger.
+        judge_profile: Option<Box<ModelProfile>>,
+    },
+    /// Runs a Claude Managed Agent (`agent:claude-agent`) with
+    /// [`ClaudeAgentRun`]. Carries the last message of the agent as output.
+    ClaudeAgent {
+        /// Options of the agent, in order, such as `task=Fix the tests`.
+        params: Vec<String>,
+        /// The model profile that `model=` names. The job parser sets it.
+        /// An action parsed on its own has `None`.
+        profile: Option<ModelProfile>,
+        /// The schema block that `output_schema=<name>` names, as for
+        /// [`Actor::AgentTool`].
+        output_schema: Option<OutputSchema>,
+        /// The ```` ```claude-env:<name> ```` block that `environment=<name>`
+        /// names. The job parser sets it.
+        environment: Option<EnvironmentDefinition>,
+        /// The name of the agent without `name=`, as in
+        /// `atama-my-job-search-1`. The job parser makes it from the names
+        /// of the job and the task, and the number of the action.
+        default_name: String,
+        /// The model profile that `judge_model=` names, for `on_ask=judge`,
+        /// as for [`Actor::AgentTool`].
         judge_profile: Option<Box<ModelProfile>>,
     },
     /// Searches the web with the Tavily API.
@@ -278,6 +304,23 @@ impl Actor {
                             .run_loop(params, profile.as_ref(), input)
                     }
                     None => agent_loop.run_loop(params, profile.as_ref(), input),
+                }
+            }
+            Actor::ClaudeAgent {
+                params,
+                profile,
+                output_schema,
+                environment,
+                default_name,
+                judge_profile,
+            } => {
+                let run = ClaudeAgentRun::new(default_name)
+                    .schema_block(output_schema.clone())
+                    .environment_block(environment.clone())
+                    .judge_profile(judge_profile.as_deref().cloned());
+                match debug {
+                    Some(debug) => run.debug(debug).run(params, profile.as_ref(), input),
+                    None => run.run(params, profile.as_ref(), input),
                 }
             }
             Actor::TavilySearch { params } => {

@@ -147,6 +147,7 @@ its own output. The main actor types are:
 - `ApiCall` (`api_call <verb> <url> ...`) sends an HTTP request. The output is the response body.
 - `DownloadFromUrl` (`download <url> ...`) saves a file. The output is the file path.
 - `AgentTool` (`agent:<type>`, with its options in a list under it) runs an agent, `coder`, `summarizer` or `autonomous`. The output is the final reply of the model.
+- `ClaudeAgent` (`agent:claude-agent`, with its options in a list under it) runs a Claude Managed Agent. `ClaudeAgentRun` runs it. The parser sets its profile, its schema block, its ```` ```claude-env:<name> ```` block and its `default_name`, `atama-<job>-<task>-<n>` (`Place::agent_name` in `src/parser.rs`). See "Claude agent" below.
 - `TavilySearch` (`tavily_search ...`) searches the web with the Tavily API (`src/tavily.rs`). The output is the response JSON.
 - `WebSearch` (`websearch topic=...`) searches one topic with Tavily (`src/websearch.rs`). The output is the response body, unchanged.
 - `ForEach` (`foreach <action>`) runs the inner actor once for each line of its input that is not blank, with the line as the input. The output is the outputs of all runs, in order, each one ending with a newline. It stops at the first run that fails. `for_each` in `src/actor.rs` runs it, and `parse_action` in `src/parser.rs` also gives the profile to an agent inside it.
@@ -173,10 +174,10 @@ the model replies without a tool call, that reply is the output.
 
 The code of the loop is in six files:
 
-- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `Tool` and `ChatClient` traits.
+- `src/agent_loop_openai_compat.rs` has `AgentToolLoop`, the messages, and the `ChatClient` trait. It re-exports the `Tool` trait of `src/tools.rs`.
 - `src/agent_loop_openai_compat/agent_options.rs` has the options of an agent action: `AgentConfig`, `WebSearchOptions`, `SummarizerOptions`, `MaxOutput`, and the defaults and environment variable names of the options.
 - `src/agent_loop_openai_compat/openai.rs` has `OpenAiClient`, the HTTP client, and the JSON format of requests and replies.
-- `src/agent_loop_openai_compat/tools.rs` has the `Tool` implementations, the tool registry and the tools of each `AgentType`.
+- `src/agent_loop_openai_compat/tools.rs` has the tools of each `AgentType`. It re-exports the shared tools of `src/tools.rs` at their old paths.
 - `src/agent_loop_openai_compat/budget.rs` has `RunBudget`, the limits of one run, and `StopReason`.
 - `src/agent_loop_openai_compat/checks.rs` has the `FinalLoopCheck` trait and `SchemaCheck`.
 
@@ -199,7 +200,9 @@ Each param of an agent action is an option. Every agent needs
 `summarizer` agent also takes
 `expertise=` and `max_output=`. An `autonomous` agent also takes
 `success_check=`, `success=`, `max_iterations=`, `max_time=`, `guardrails=`,
-`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. Other
+`toolGuard=`, `max_violations=`, `protect=`, `budget=` and `judge_model=`. A
+`coder` and an `autonomous` agent also take `autonomy=` and `on_ask=` (see
+"Approval of the tool calls" below). Other
 agent types fail on the options of another type (`only_for`).
 
 The options of an agent action are not on the line of the action. They are
@@ -287,12 +290,30 @@ model gets the error text as the tool result, and it can try again.
 
 ### Tools of each agent type
 
+`TOOLS.md` lists each tool for the users of Atama: the local tools and the
+native tools of Claude. Update it when you add or change a tool.
+
+The tools are in a shared tool layer, `src/tools.rs`, so that every agent
+loop can use them. It does not depend on an API. The files are:
+
+- `src/tools.rs` has the `Tool` trait, `MAX_RESULT_CHARS` and `truncate`.
+- `src/tools/registry.rs` has the registry, `TOOL_NAMES` and `tool_by_name`.
+- `src/tools/limited.rs` has `Limited`, `DEFAULT_MAX_CALLS` and `DEFAULT_MAX_FAILURES`.
+- `src/tools/bash.rs` has `Bash`.
+- `src/tools/files.rs` has `ReadFile`, `WriteFile` and `ListFiles`.
+- `src/tools/web_search.rs` has `WebSearch`.
+
+`src/agent_loop_openai_compat/tools.rs` re-exports these items, so that
+the old paths, as in `agent_loop_openai_compat::tools::Bash`, still work.
+
 A tool is a type that implements the `Tool` trait. The trait has four
 methods: `name`, `description`, `parameters` (a JSON schema) and `call`.
 The registry (`tools::tool_by_name` and `tools::TOOL_NAMES`) makes each
-tool by its name: `bash`, `read_file`, `write_file` and `list_files`.
-`tools::default_tool_names` names the tools of each agent type, and
-`tools::default_tools` makes them:
+tool by its name: `bash`, `read_file`, `write_file`, `list_files` and
+`web_search`. Each
+call makes a new tool, so two agents do not share the state of a tool.
+`agent_loop_openai_compat::tools::default_tool_names` names the tools of
+each agent type, and `default_tools` makes them:
 
 - `coder` gets `Bash` (`bash`).
 - `summarizer` gets no tools. `request_body` then leaves out the `tools`
@@ -309,7 +330,13 @@ The tools run the same code as the actions of a job file. `bash` runs an
 `Actor::BashScript`. `read_file`, `write_file` and `list_files` run
 `Actor::ReadFile`, `Actor::WriteFile` and `Actor::ListFiles`. No agent type
 gets the file tools yet. `write_file` returns a short confirmation, not the
-content. If a result is
+content. `web_search` runs `WebSearchOptions::search`, the code of the
+`websearch` action, without `fetch_content`. No agent type gets it by
+default, because each search uses Tavily credits. A budget block gives it
+to an `autonomous` agent with `tools:`, and `local_tools=web_search` gives
+it to a `claude-agent` as `local_web_search`. `WebSearch::new` takes the
+base URL and the environment, so tests use a mock server and a fake key.
+`WebSearch::default` uses the real environment. If a result is
 longer than `MAX_RESULT_CHARS` (20,000 characters), `tools::truncate` cuts
 it.
 
@@ -317,11 +344,12 @@ The model of an agent can call only the tools that `default_tools` gives to
 its agent type. For example, a `summarizer` agent cannot run `bash`. To give an
 agent type a new tool, do these steps:
 
-1. Write a type that implements `Tool` in `tools.rs`.
-2. Add the tool to `TOOL_NAMES` and `tool_by_name`.
+1. Write a type that implements `Tool` in a file of `src/tools/`.
+2. Add the tool to `TOOL_NAMES` and `tool_by_name` in `src/tools/registry.rs`.
 3. Add its name to the match arm of the agent type in `default_tool_names`.
 4. If the model must know when to use the tool, tell it in `system_prompt`.
-5. Add tests to `tests/agent_loop_openai_compat.rs`.
+5. Add tests of the tool to `tests/tools.rs`, and tests of the loop to
+   `tests/agent_loop_openai_compat.rs`.
 
 Tests of the options are in `tests/agent_options.rs`. Tests that run the
 loop are in `tests/agent_loop_openai_compat.rs`. Tests of `RunBudget` are
@@ -403,8 +431,8 @@ a box. `run_loop_with_env` makes an `OpenAiClient` from it, with the API
 key of that profile (`agent_options::read_api_key`), and sets it as
 `AgentToolLoop::judge_client`. `run_with` sends the judge requests to that
 client, and adds the tokens of each judge reply to the budget.
-`judge_model=` needs `success=` or `toolGuard=judge`. The context summary uses
-the model of the agent.
+`judge_model=` needs `success=`, `toolGuard=judge` or `on_ask=judge`. The
+context summary uses the model of the agent.
 
 The success judge gets the task, the criteria, the tool calls and results
 of the conversation (`judge::evidence`, the last `MAX_EVIDENCE_CHARS`) and
@@ -414,6 +442,46 @@ arguments. A blocked call does not run, the model gets "blocked by
 guardrail: <reason>", and `RunBudget::add_violation` counts it. A guard
 that fails blocks the call. After `max_violations` blocked calls, the run
 fails. `toolGuard=judge` needs `guardrails=`. Tests are in `tests/judge.rs`.
+
+### Approval of the tool calls
+
+`autonomy=<no_ask|ask_if_risky|always_ask>` and `on_ask=<prompt|deny|judge>`
+work for a `coder` and an `autonomous` agent, as for a `claude-agent`
+action. A `summarizer` agent has no tools, so it fails on them.
+`ApprovalOptions::from_values` reads them into `AgentConfig::approval`.
+`Autonomy`, `OnAsk` and the `Approver` are in `src/tools/approval.rs`.
+
+The default of `autonomy=` is `DEFAULT_AUTONOMY`, `no_ask`, so a job without
+the option runs each call, as before. This default is not the default of a
+`claude-agent` action, `ask_if_risky`. `on_ask=` with `no_ask` is a parse
+error, because no call waits. `always_ask` with `on_ask=deny` is also an
+error.
+
+Before each tool call, `run_with` calls `AgentToolLoop::must_ask`. It uses
+`Autonomy::must_ask`, so with `ask_if_risky`, only a tool whose
+`Tool::read_only` is false waits. A call of an unknown tool, or with
+arguments that are not JSON, does not wait, because it fails without
+running. A call that waits goes to the answer of `on_ask=`:
+
+- `prompt` and `deny` call `AgentToolLoop::ask_approver`. It makes a
+  `PromptApprover` or a `DenyApprover` at the first call.
+  `AgentToolLoop::approver` replaces it in tests.
+- `judge` calls `judge::review` with `guardrails=`, the guard of
+  `toolGuard=judge`. It uses the judge client of `judge_model=`, or the
+  client of the agent, and adds the tokens of the reply to the budget.
+
+A denied call does not run. The model gets "error: <reason>", and the run
+goes on. A denied call is not a violation, so `max_violations=` does not
+count it. With `--debug`, the loop writes a `denied` block with the reason.
+
+`on_ask=judge` needs `guardrails=`. A `coder` agent takes `guardrails=` and
+`judge_model=` only with `on_ask=judge`. The guardrails also go into its
+system prompt. `parse_action` resolves `judge_model=` for a `coder` and an
+`autonomous` agent. `toolGuard=judge` and an `autonomy=` other than
+`no_ask` cannot be together, because both examine each call. A budget
+block can set `autonomy` and `on_ask`. Tests of the loop are in
+`tests/approval_loop.rs`, and tests of the options are in
+`tests/agent_options.rs`.
 
 ### Protected paths
 
@@ -491,6 +559,65 @@ tools. Tests are in `tests/budget_block.rs`.
 the options of its budget block. It reads the options as
 `AgentConfig::from_params` does, but it does not read the API key. So an
 invalid option stops the job before it starts.
+
+## Claude agent
+
+`src/agent_loop_claude.rs` is the start of the `claude-agent` agent type.
+It runs a Claude Managed Agent with the Managed Agents API (`/v1/agents`,
+`/v1/environments`, `/v1/sessions`), not with `/chat/completions`. It does
+not change the OpenAI compatible loop. `PLAN-claude-agent.md` has the plan
+and the status of each phase. A job file can have an `agent:claude-agent`
+action, and `ClaudeAgentRun` (`src/agent_loop_claude/run.rs`) runs it.
+
+The modules are:
+
+- `src/agent_loop_claude/api.rs` has the `AgentsApi` trait, its HTTP client `HttpAgentsApi`, and `ApiError`. Each request sends `x-api-key`, `anthropic-version` (`API_VERSION`) and `anthropic-beta` (`BETA`).
+- `src/agent_loop_claude/sse.rs` has `SseReader`, which reads the server-sent events of the event stream.
+- `src/agent_loop_claude/events.rs` has `SessionEvent` and `parse_event`. An unknown event type becomes `SessionEvent::Other`. `Usage` reads the cumulative usage of a `session.usage` event.
+- `src/agent_loop_claude/options.rs` has `ClaudeAgentConfig`. `from_params` reads the options of the action and makes sure of the rules between them. `check` reads them without the API key. `parse_usd_cents` reads `max_cost_usd=`.
+- `src/agent_loop_claude/native_tools.rs` has `NativeTool`, `NativeToolset`, `PermissionPolicy` and `DomainFilter`. `NativeToolset::to_json` writes the `agent_toolset_20260401` entry: each tool off, except the tools of `native_tools=`.
+- `src/agent_loop_claude/custom_tools.rs` has `LocalTools`. Each local tool of `local_tools=` comes from the shared registry, in a `Limited` and an `Approval`, and has the API name `local_<name>`.
+- `src/agent_loop_claude/definition.rs` has `AgentDefinition` and `EnvironmentDefinition`, and writes their JSON with a fixed order of keys. `check_existing_agent` makes sure that the local tools answer each custom tool of an agent of `agent_id=`.
+- `src/agent_loop_claude/env_block.rs` reads the ```` ```claude-env:<name> ```` blocks. Each line is `<key>: <value>`.
+- `src/agent_loop_claude/run.rs` has `ClaudeAgentRun`, one run of an action. It gets the agent and the environment through the lock file (or uses `agent_id=` and `environment_id=`), creates the session, opens the stream before it sends the first `user.message`, and reads the events on the main thread from a channel. A second thread reads the stream (`open_stream_for`). It runs each `agent.custom_tool_use` with `LocalTools`, and answers each `agent.tool_use` that waits (`evaluated_permission: ask`) with the `Approver`. At `end_turn`, the last `agent.message` is the output, after the output schema check and then the `success_check=` command (`CommandCheck`, on the local machine, with the deadline of the run). A failed check sends its error as the next `user.message` (`final_check`, `Retry`), up to `max_turns`. It fails at the deadline, at a signal, over the token budget, at `budget_reached`, `retries_exhausted` or `session.status_terminated`, and sends `user.interrupt` when it stops the session itself. If the stream ends too early, `Session::reconnect` opens it again and reads `list_events`, and the run skips the events that it handled. The builder methods (`api`, `lock_path`, `approver`, `with_tools`, `judge_client`, `clock`, `poll_interval`, `debug`) replace the parts of a run in tests.
+- `src/agent_loop_claude/lock.rs` has `AgentLock`, which keeps the IDs of the agents and the environments in `.atama/claude-lock.json`. It creates an agent once, uses it while its body is the same, and updates it with the stored version when the body changes.
+
+`autonomy=<no_ask|ask_if_risky|always_ask>` sets when a tool call waits for
+approval, and `on_ask=<prompt|deny|judge>` sets who answers. The levels are in
+the shared tool layer, `src/tools/approval.rs`: `Autonomy`, the `Approver`
+trait with `PromptApprover` and `DenyApprover`, and the `Approval` wrapper.
+With `ask_if_risky`, a tool waits unless `Tool::read_only` is true.
+`read_file` and `list_files` are read-only.
+
+`on_ask=judge` reuses the guard of `toolGuard=judge` of the `autonomous`
+agent. `judge::JudgeApprover` (`src/agent_loop_openai_compat/judge.rs`) is
+an `Approver` that calls `judge::review` with `guardrails=` and the tool
+call. It needs `judge_model=<profile>` and `guardrails=`, and
+`ClaudeAgentConfig::from_params` fails without them, with
+`autonomy=no_ask`, or with them but without `on_ask=judge`. `parse_action`
+puts the profile of `judge_model=` into `Actor::ClaudeAgent::judge_profile`.
+`ClaudeAgentRun::make_judge_client` makes an `OpenAiClient` from it, as
+`run_loop_with_env` does for an `autonomous` agent.
+`ClaudeAgentRun::judge_client` replaces the client in tests. The tokens of
+the judge (`JudgeApprover::tokens`) count in `token_budget=` with the
+tokens of the session (`ClaudeAgentRun::check_tokens`).
+
+`parse_job` reads the ```` ```claude-env:<name> ```` blocks with
+`env_block::parse_block`, and calls `ClaudeAgentConfig::check` for each
+`agent:claude-agent` action. `effort=<low|medium|high|xhigh|max>` of a
+model profile (`ModelProfile::effort`, `profile::parse_effort`) goes to
+the agent definition. The other agents ignore it, so `parse_action` adds a
+`ParseWarning` when a profile with `effort=` is the `model=` or the
+`judge_model=` of an `agent:<type>` action. `parse_job_with_warnings`
+returns the warnings, and `parse_job` drops them. `main` prints each one in
+red with `print_warning`, and the job runs. Tests of the parser are in
+`tests/claude_parser.rs`.
+
+Tests are in `tests/claude_api.rs`, `tests/claude_sse.rs`,
+`tests/claude_events.rs`, `tests/claude_options.rs`,
+`tests/claude_native_tools.rs`, `tests/claude_definition.rs` and
+`tests/claude_lock.rs`. Tests of a whole run are in `tests/claude_agent.rs`, with a mock `AgentsApi` and scripted streams. Tests of `approval.rs` are in `tests/tools.rs`. Tests must not call the real API. Use a local
+mock server, as `tests/claude_api.rs` does, or a mock `AgentsApi`.
 
 ## Signals
 
@@ -606,7 +733,9 @@ bearer token.
 - `SearchConfig::request_body` makes the JSON body. It has only the options that are set.
 - `SearchConfig::search` sends the request and returns the response body unchanged.
 
-Two actions use the client, and the output of both is the response body.
+Two actions and one tool use the client. The output of each is the
+response body. The `web_search` tool (`src/tools/web_search.rs`) is
+described in "Tools of each agent type".
 The `tavily_search` action (`Actor::TavilySearch`) takes the options of
 `SearchConfig` and a free-text query. The `websearch` action
 (`Actor::WebSearch`) takes fewer options, in `src/websearch.rs`:

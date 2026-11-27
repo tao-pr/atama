@@ -53,6 +53,17 @@ pub fn format_error(message: &str, color: bool) -> String {
     paint(color, FAIL, &format!("error: {message}"))
 }
 
+/// Prints `warning: <message>` to stderr, in red when supported.
+pub fn print_warning(message: &str) {
+    eprintln!("{}", format_warning(message, use_color(&std::io::stderr())));
+}
+
+/// Formats `warning: <message>`. With `color`, the text is red, as an
+/// error is, so that the reader sees it. A warning does not stop the job.
+pub fn format_warning(message: &str, color: bool) -> String {
+    paint(color, FAIL, &format!("warning: {message}"))
+}
+
 /// Wraps `text` in the ANSI escape code `code` if `color` is set.
 pub(crate) fn paint(color: bool, code: &str, text: &str) -> String {
     if color {
@@ -128,10 +139,11 @@ fn format_action(action: &Actor, color: bool) -> String {
         return format!("foreach {}", format_action(inner, color));
     }
     let statement = action.to_string();
-    let Actor::AgentTool { agent, .. } = action else {
-        return statement;
+    let name = match action {
+        Actor::AgentTool { agent, .. } => format!("agent:{agent}"),
+        Actor::ClaudeAgent { .. } => crate::actor::CLAUDE_AGENT.to_string(),
+        _ => return statement,
     };
-    let name = format!("agent:{agent}");
     let params = statement.strip_prefix(&name).unwrap_or_default();
     format!("{}{params}", paint(color, AGENT, &name))
 }

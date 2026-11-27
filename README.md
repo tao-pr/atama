@@ -57,6 +57,14 @@ must be unique.
   a `summarizer` agent that explains it.
 - [`jobs/sample_autonomous.md`](jobs/sample_autonomous.md): an `autonomous` agent that works until a
   check script accepts its report.
+- [`jobs/sample_claude_agent.md`](jobs/sample_claude_agent.md): a `websearch` action finds the last
+  Premier League results, and two `claude-agent` steps read only the search results. One lists the
+  matches as JSON, and one writes the form of each winner in Markdown. Needs `TAVILY_API_KEY` and
+  `CLAUDE_API_KEY`.
+- [`jobs/sample_approval.md`](jobs/sample_approval.md): a `websearch` action downloads search results,
+  and a `coder` agent and a `claude-agent` step change the file. Each change waits for your approval
+  on the terminal (`autonomy=ask_if_risky`, `on_ask=prompt`). Needs `TAVILY_API_KEY` and
+  `CLAUDE_API_KEY`.
 
 The sample jobs call helper scripts in `jobs/scripts/`.
 `tests/sample_scripts.rs` tests them.
@@ -156,7 +164,10 @@ agent types:
   enforces them without a model, with the
   [macOS sandbox](ACTIONS.md#protected-paths) for `bash`.
 
-[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent. A
+[ACTIONS.md](ACTIONS.md#agenttype) describes the options of each agent.
+[TOOLS.md](TOOLS.md) lists the tools that each agent can call, and tells
+which tools Atama runs on this machine and which tools the model provider
+runs. A
 ```` ```budget:<name> ```` block can hold the general limits and tools of
 an `autonomous` agent, so that many actions can use them (see
 [Budget blocks](ACTIONS.md#budget-blocks)). This section describes
@@ -164,7 +175,47 @@ the parts of the job file that agents use.
 
 If you use `agent:coder` or `agent:autonomous`, the model can run any
 command with your permissions. Use them only in a directory and with a
-model that you trust.
+model that you trust. To approve each command before it runs, add
+`autonomy=ask_if_risky` to the action (see
+[Approval of the tool calls](ACTIONS.md#approval-of-the-tool-calls)).
+
+### Three kinds of agent tasks
+
+Atama supports three kinds of agent tasks. Each kind needs a model profile
+(see "Model profiles" below).
+
+1. A specific agent task (`agent:coder`, `agent:summarizer`) does one task
+   in one attempt. Atama runs the loop: it sends the conversation to an
+   OpenAI compatible `/chat/completions` endpoint, and runs the tool calls
+   of the model. It works with OpenAI, Ollama, vLLM and other servers.
+
+   ```config
+   local-qwen: model=qwen3.5:0.8b, base_url=http://localhost:11434/v1
+   ```
+
+2. An autonomous agent task (`agent:autonomous`) uses the same endpoint and
+   the same loop. It works in iterations until its success checks pass, in
+   the limits of its budget.
+
+   ```config
+   gpt: model=gpt-6-luna, base_url=https://api.openai.com/v1, api_key=OPENAI_API_KEY, thinking=false
+   ```
+
+3. A Claude agent task (`agent:claude-agent`) runs a Claude Managed Agent
+   with the Anthropic Managed Agents API, not with `/chat/completions`.
+   Anthropic runs the loop. The native tools of Claude, such as
+   `web_search`, run in the cloud, and the local tools of Atama run on your
+   machine. `effort=` sets how much the model thinks. The other agents
+   ignore `effort=`, and Atama warns in red if they get it. The options are
+   in [ACTIONS.md](ACTIONS.md#agentclaude-agent), and the design is in
+   [PLAN-claude-agent.md](PLAN-claude-agent.md).
+
+   ```config
+   claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY, effort=high
+   ```
+
+The job file never holds an API key. `api_key=` names the environment
+variable that holds it.
 
 ### Model profiles
 
@@ -172,7 +223,7 @@ A model profile is a name for one model on one server. Define each profile
 on one line of the `config` block:
 
 ```text
-<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>]
+<name>: model=<id>, base_url=<url>[, api_key=<ENV_VAR>][, token_budget=<n>][, thinking=<true|false>][, effort=<level>]
 ```
 
 - `<name>`: one word that agent actions use, as in `model=local-qwen`.
@@ -188,6 +239,8 @@ on one line of the `config` block:
 - `thinking=false`: send `"reasoning_effort": "none"` for each action that
   uses the profile. Use it for a model such as `gpt-6-luna`, which takes
   tools only without reasoning. A `thinking=` option of the action replaces it.
+- `effort=<level>`: the effort of a Claude model, `low`, `medium`, `high`,
+  `xhigh` or `max`. Only `agent:claude-agent` uses it.
 
 The job file never holds the key. If the variable is not set, the action
 fails before it asks the model. If a profile is invalid or unknown, the job
@@ -262,6 +315,10 @@ never writes the API key.
 Each block starts with a line such as
 `=== agent:coder step 1: tool call 1 of 2: bash (id call-1) ===`. To save
 the debug output in a file, add `2> debug.log`.
+
+For an `agent:claude-agent` action, `--debug` also writes the link of the
+session in the Claude Console, as a line that starts with `console`. This
+is the only way to get the link. Without `--debug`, Atama does not show it.
 
 ## Building
 

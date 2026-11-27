@@ -48,6 +48,7 @@ use crate::budget_block::BudgetBlock;
 use crate::profile::ModelProfile;
 use crate::protect::Protect;
 use crate::schema::{self, OutputSchema};
+use crate::tools::{Approver, Autonomy, DenyApprover, OnAsk, PromptApprover};
 
 pub mod agent_options;
 pub mod budget;
@@ -58,7 +59,8 @@ pub mod openai;
 pub mod tools;
 
 use agent_options::{
-    AgentConfig, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, ToolGuard, format_duration,
+    AgentConfig, DEFAULT_AUTONOMY, DEFAULT_MAX_STEPS, DEFAULT_MAX_VIOLATIONS, ToolGuard,
+    format_duration,
 };
 use budget::{RunBudget, StopReason};
 use checks::{CommandCheck, FinalLoopCheck, Rejection, SchemaCheck};
@@ -102,31 +104,9 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// A tool that the model can call.
-pub trait Tool {
-    /// The name that the model uses to call the tool.
-    fn name(&self) -> &str;
-    /// Tells the model what the tool does.
-    fn description(&self) -> &str;
-    /// JSON schema of the arguments.
-    fn parameters(&self) -> Value;
-    /// Runs the tool and returns its result for the model.
-    fn call(&mut self, arguments: &Value) -> Result<String, String>;
-    /// Whether the model can call the tool now. A request offers only the
-    /// available tools. A tool at its call limit is not available (see
-    /// [`tools::Limited`]).
-    fn available(&self) -> bool {
-        true
-    }
-    /// Sets the deadline of the run. A tool that runs a command stops it
-    /// at the deadline, as `bash` does (see [`crate::actor::run_process`]).
-    /// The default does nothing.
-    fn set_deadline_time(&mut self, _deadline_time: Option<Instant>) {}
-    /// Sets the protected paths of the run, from `protect=`. A tool that
-    /// writes files must not write them, as `bash` and `write_file` do (see
-    /// [`crate::protect`]). The default does nothing.
-    fn set_protect(&mut self, _protect: Option<Arc<Protect>>) {}
-}
+/// A tool that the model can call. The trait is in the shared tool layer,
+/// [`crate::tools`], so that every agent loop can use the same tools.
+pub use crate::tools::Tool;
 
 /// A chat model that can call tools.
 pub trait ChatClient {
@@ -176,6 +156,14 @@ pub struct AgentToolLoop<'a> {
     protect: Option<Arc<Protect>>,
     /// The most tool calls that the guard blocks before the run fails.
     max_violations: u32,
+    /// When a tool call waits for approval, from `autonomy=`.
+    autonomy: Autonomy,
+    /// Who answers a call that waits, from `on_ask=`.
+    on_ask: OnAsk,
+    /// Answers the calls that wait with `on_ask=prompt` or `on_ask=deny`.
+    /// `None` makes the loop make it at the first call that waits. Tests
+    /// set it (see [`AgentToolLoop::approver`]).
+    approver: Option<Box<dyn Approver + 'a>>,
     /// The most tokens that one run can use, if set.
     token_budget: Option<u64>,
     /// The most estimated tokens of the conversation before the loop
@@ -220,6 +208,9 @@ impl<'a> AgentToolLoop<'a> {
             guard: ToolGuard::Prompt,
             protect: None,
             max_violations: DEFAULT_MAX_VIOLATIONS,
+            autonomy: DEFAULT_AUTONOMY,
+            on_ask: OnAsk::Prompt,
+            approver: None,
             token_budget: None,
             max_context: None,
             reasoning_effort: None,
@@ -349,6 +340,30 @@ impl<'a> AgentToolLoop<'a> {
         self
     }
 
+    /// Sets when a tool call waits for approval (see [`Autonomy::must_ask`]).
+    /// [`AgentToolLoop::run_loop`] sets it from `autonomy=`.
+    pub fn autonomy(mut self, autonomy: Autonomy) -> Self {
+        self.autonomy = autonomy;
+        self
+    }
+
+    /// Sets who answers a tool call that waits for approval.
+    /// [`OnAsk::Judge`] asks the guard of `toolGuard=judge`
+    /// ([`judge::review`]) with the guardrails (see
+    /// [`AgentToolLoop::guardrails`]). [`AgentToolLoop::run_loop`] sets it
+    /// from `on_ask=`.
+    pub fn on_ask(mut self, on_ask: OnAsk) -> Self {
+        self.on_ask = on_ask;
+        self
+    }
+
+    /// Replaces the approver of `on_ask=prompt` and `on_ask=deny`. Tests use
+    /// it, so that no prompt reads the terminal.
+    pub fn approver(mut self, approver: impl Approver + 'a) -> Self {
+        self.approver = Some(Box::new(approver));
+        self
+    }
+
     /// Sets the paths that the tools must not write (see [`crate::protect`]).
     /// [`AgentToolLoop::run_with`] gives them to each tool, and tells the
     /// model about them in the system prompt.
@@ -463,14 +478,6 @@ impl<'a> AgentToolLoop<'a> {
             if let Some(tools) = self.budget_block.as_ref().and_then(BudgetBlock::make_tools) {
                 self.tools = tools;
             }
-            if let Some(name) = &options.judge_model {
-                let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
-                let api_key = agent_options::read_api_key(judge, env)?;
-                self.judge_client = Some(Box::new(
-                    openai::OpenAiClient::new(&judge.base_url, &judge.model, api_key)
-                        .with_thinking(judge.thinking),
-                ));
-            }
             self.max_iterations = options.max_iterations;
             self.max_time = Some(options.max_time);
             self.success_check = options.success_check.clone();
@@ -491,6 +498,19 @@ impl<'a> AgentToolLoop<'a> {
                     );
                 }
             }
+        }
+        if let Some(name) = &config.approval.judge_model {
+            let judge = agent_options::named_profile(name, self.judge_profile.as_ref())?;
+            let api_key = agent_options::read_api_key(judge, env)?;
+            self.judge_client = Some(Box::new(
+                openai::OpenAiClient::new(&judge.base_url, &judge.model, api_key)
+                    .with_thinking(judge.thinking),
+            ));
+        }
+        self.autonomy = config.approval.autonomy;
+        self.on_ask = config.approval.on_ask;
+        if config.autonomous.is_none() {
+            self.guardrails = config.approval.guardrails.clone();
         }
         self.max_steps = config.max_steps;
         self.token_budget = config.token_budget;
@@ -557,6 +577,11 @@ impl<'a> AgentToolLoop<'a> {
     /// if the run used the time before a request or a tool call. With
     /// [`ToolGuard::Judge`], it fails if the guard blocks `max_violations`
     /// calls.
+    ///
+    /// With [`AgentToolLoop::autonomy`], a call that must wait asks the
+    /// approver of [`AgentToolLoop::on_ask`] before it runs. A denied call
+    /// does not run, and the model gets the reason. It does not count as a
+    /// violation.
     pub fn run_with(
         &mut self,
         client: &mut dyn ChatClient,
@@ -779,6 +804,44 @@ impl<'a> AgentToolLoop<'a> {
                         continue;
                     }
                 }
+                let denied = if let Some(arguments) = self.must_ask(&call) {
+                    match self.on_ask {
+                        OnAsk::Judge => {
+                            let guardrails = self.guardrails.clone().unwrap_or_default();
+                            let mut judge = Judge::new(match judge_client.as_deref_mut() {
+                                Some(judge_client) => judge_client,
+                                None => &mut *client,
+                            });
+                            let blocked = judge::review(&mut judge, &guardrails, &call);
+                            for tokens in judge.tokens {
+                                budget
+                                    .add_tokens(tokens)
+                                    .map_err(|reason| reason.message(&self.label()))?;
+                            }
+                            blocked.map(|reason| format!("blocked by guardrail: {reason}"))
+                        }
+                        OnAsk::Prompt | OnAsk::Deny => {
+                            self.ask_approver(&call.name, &arguments).err()
+                        }
+                    }
+                } else {
+                    None
+                };
+                if let Some(reason) = denied {
+                    self.write_debug(format!(
+                        "=== {} {at}: tool call {} of {count}: {} (id {}) denied ===\narguments:\n{}\nreason: {reason}",
+                        self.label(),
+                        index + 1,
+                        call.name,
+                        call.id,
+                        pretty_json(&call.arguments),
+                    ));
+                    messages.push(Message::Tool {
+                        call_id: call.id,
+                        content: format!("error: {reason}"),
+                    });
+                    continue;
+                }
                 let result = self.call_tool(&call);
                 if self.debug.is_some() {
                     let outcome = match &result {
@@ -892,15 +955,42 @@ impl<'a> AgentToolLoop<'a> {
             .iter_mut()
             .find(|tool| tool.name() == call.name)
             .ok_or_else(|| format!("unknown tool `{}`", call.name))?;
-        // Some models send an empty string for a call without arguments.
-        let arguments = if call.arguments.trim().is_empty() {
-            Value::Object(Default::default())
-        } else {
-            serde_json::from_str(&call.arguments)
-                .map_err(|err| format!("arguments of `{}` are not JSON: {err}", call.name))?
-        };
-        tool.call(&arguments)
+        tool.call(&arguments(call)?)
     }
+
+    /// The arguments of `call` if it must wait for approval before it
+    /// runs, as [`AgentToolLoop::autonomy`] says, else `None`. A call of an
+    /// unknown tool, or with arguments that are not JSON, does not wait,
+    /// because it fails without running.
+    fn must_ask(&self, call: &ToolCall) -> Option<Value> {
+        let tool = self.tools.iter().find(|tool| tool.name() == call.name)?;
+        if !self.autonomy.must_ask(tool.as_ref()) {
+            return None;
+        }
+        arguments(call).ok()
+    }
+
+    /// Asks the approver of `on_ask=prompt` or `on_ask=deny` about a call
+    /// of `tool` with `arguments`. Makes the approver at the first call.
+    /// `Err` has the reason of a denied call.
+    fn ask_approver(&mut self, tool: &str, arguments: &Value) -> Result<(), String> {
+        let on_ask = self.on_ask;
+        let approver = self.approver.get_or_insert_with(|| match on_ask {
+            OnAsk::Deny => Box::new(DenyApprover),
+            OnAsk::Prompt | OnAsk::Judge => Box::new(PromptApprover::new()),
+        });
+        approver.approve(tool, arguments)
+    }
+}
+
+/// The arguments of `call` as JSON. Some models send an empty string for a
+/// call without arguments, which is an empty object.
+fn arguments(call: &ToolCall) -> Result<Value, String> {
+    if call.arguments.trim().is_empty() {
+        return Ok(Value::Object(Default::default()));
+    }
+    serde_json::from_str(&call.arguments)
+        .map_err(|err| format!("arguments of `{}` are not JSON: {err}", call.name))
 }
 
 /// The messages as a pretty JSON array in the chat completions format.

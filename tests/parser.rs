@@ -248,6 +248,7 @@ fn reads_model_profiles_from_the_config_block() {
                 api_key_env: None,
                 token_budget: None,
                 thinking: None,
+                effort: None,
             },
             ModelProfile {
                 name: "cloud".into(),
@@ -256,6 +257,7 @@ fn reads_model_profiles_from_the_config_block() {
                 api_key_env: Some("OPENAI_API_KEY".into()),
                 token_budget: None,
                 thinking: None,
+                effort: None,
             },
         ]
     );
@@ -341,7 +343,7 @@ fn rejects_invalid_model_profiles() {
             job("```config\np: key=k\n```\n", "mock"),
             2,
             "unknown setting `key` in profile `p`, expected `model=`, `base_url=`, `api_key=`, \
-             `token_budget=` or `thinking=`",
+             `token_budget=`, `thinking=` or `effort=`",
         ),
         (
             job(
@@ -485,8 +487,9 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
             "Providers",
             "Generate Web Search Queries",
             "Running websearch",
-            "Extract Model Data into {provider}-models.json",
-            "Search Small GGUF Models for Ollama"
+            "Extract Model Data into models-*.json",
+            "Search Small GGUF Models for Ollama",
+            "List All GGUF Models"
         ]
     );
     for (task, schema) in [(2, "search_query"), (4, "models")] {
@@ -526,9 +529,14 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
         "foreach tavily_search max_results=5 include_answer=basic"
     );
     assert_eq!(search[3], "write_file ./output/model_research/search.jsonl");
+    let extract = actions(4);
     assert_eq!(
-        actions(4).last().unwrap(),
+        extract[extract.len() - 2],
         "bash ./jobs/scripts/write_json_by_key.sh ./output/model_research provider models-"
+    );
+    assert_eq!(
+        extract.last().unwrap(),
+        "write_file ./output/model_research/model_files.txt"
     );
     // The GGUF task empties gguf.jsonl first, and appends to it last.
     let gguf = actions(5);
@@ -559,7 +567,7 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
                 } => {
                     assert_eq!(
                         profile.as_ref().map(|p| p.name.as_str()),
-                        Some("local-spark2")
+                        Some("openai-luna")
                     );
                     output_schema.as_ref().unwrap().name.clone()
                 }
@@ -569,6 +577,18 @@ fn auto_model_research_job_writes_the_models_of_each_provider_to_a_file() {
         })
         .collect();
     assert_eq!(schemas, ["search_query", "gguf"]);
+    // The last task runs an autonomous agent.
+    assert!(
+        job.tasks[6].actions.iter().any(|action| matches!(
+            action,
+            Actor::AgentTool {
+                agent: AgentType::Autonomous,
+                ..
+            }
+        )),
+        "{:?}",
+        job.tasks[6].actions
+    );
 }
 
 #[test]
@@ -1019,6 +1039,7 @@ fn sample_agents_job_searches_and_then_summarizes() {
             api_key_env: None,
             token_budget: None,
             thinking: None,
+            effort: None,
         })
     );
     let no_env = |_: &str| None;
@@ -1821,7 +1842,8 @@ fn rejects_invalid_budget_blocks_and_agent_options() {
             "unknown option `max_step`, expected `model=`, `max_steps=`, `token_budget=`, \
              `max_context=`, `task=`, `thinking=`, `output_schema=`, `expertise=`, `max_output=`, \
              `max_iterations=`, `max_time=`, `success_check=`, `guardrails=`, `success=`, \
-             `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`",
+             `toolGuard=`, `max_violations=`, `protect=`, `budget=`, `judge_model=`, \
+             `autonomy=`, `on_ask=`",
         ),
     ];
     for (text, line, message) in cases {
@@ -1864,6 +1886,7 @@ fn gives_the_profile_that_judge_model_names_to_the_agent() {
         api_key_env: None,
         token_budget: None,
         thinking: None,
+        effort: None,
     };
     let job = parse_job(&judge_job(
         "",
@@ -1896,10 +1919,16 @@ fn rejects_an_invalid_judge_model() {
                 "",
                 "agent:autonomous model=p success_check=true judge_model=small",
             ),
-            "`judge_model=` needs a judge: `success=<criteria>` or `toolGuard=judge`",
+            "`judge_model=` needs a judge: `success=<criteria>`, `toolGuard=judge` or \
+             `on_ask=judge`",
         ),
         (
             judge_job("", "agent:coder model=p judge_model=small"),
+            "option `judge_model` of `agent:coder` needs `on_ask=judge`, with \
+             `autonomy=ask_if_risky` or `autonomy=always_ask`",
+        ),
+        (
+            judge_job("", "agent:summarizer model=p judge_model=small"),
             "option `judge_model` works only with `agent:autonomous`",
         ),
     ];

@@ -120,6 +120,7 @@ fn profile(base_url: &str) -> ModelProfile {
         api_key_env: None,
         token_budget: None,
         thinking: None,
+        effort: None,
     }
 }
 
@@ -260,7 +261,13 @@ fn only_coder_gets_tools() {
 fn the_registry_makes_each_tool_by_its_name() {
     assert_eq!(
         TOOL_NAMES,
-        ["bash", "read_file", "write_file", "list_files"]
+        [
+            "bash",
+            "read_file",
+            "write_file",
+            "list_files",
+            "web_search"
+        ]
     );
     for name in TOOL_NAMES {
         let tool = tool_by_name(name).expect(name);
@@ -1106,6 +1113,7 @@ fn run_loop_sends_the_judge_requests_to_the_judge_model() {
         api_key_env: Some("JUDGE_KEY".into()),
         token_budget: None,
         thinking: None,
+        effort: None,
     };
     let env = |name: &str| (name == "JUDGE_KEY").then(|| "judge-secret".to_string());
     let mut out = Vec::new();

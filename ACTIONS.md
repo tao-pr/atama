@@ -1,7 +1,8 @@
 # Actions
 
 This file describes each action of an Atama job and all of its parameters.
-For the format of a job file, see [README.md](README.md).
+For the format of a job file, see [README.md](README.md). For the tools
+that the model of an agent can call, see [TOOLS.md](TOOLS.md).
 
 An action is one line in the `- actions:` list of a task. The first word is
 the action type. The other words are its parameters.
@@ -286,15 +287,76 @@ Options of every agent:
 With `--debug`, the agent writes its configuration, each request, each reply
 and each tool call to stderr. See "Debug output" in [README.md](README.md).
 
+These agents ignore `effort=` of a model profile. If a profile with
+`effort=` is the `model=` or the `judge_model=` of one of these agents,
+Atama writes a red warning to stderr, and the job runs.
+
+### Approval of the tool calls
+
+A `coder` and an `autonomous` agent take `autonomy=` and `on_ask=`. They
+work as for an [`agent:claude-agent`](#agentclaude-agent) action, but on the
+tools of Atama only. `autonomy=` sets which tool calls wait for approval
+before they run. `on_ask=` sets who answers a call that waits.
+
+| Parameter | Required | Description |
+| --- | --- | --- |
+| `autonomy=<no_ask\|ask_if_risky\|always_ask>` | No | `no_ask`, the default, runs each call. `ask_if_risky` lets a read-only tool run, `read_file`, `list_files` or `web_search`, and each other call waits. `always_ask` makes each call wait. |
+| `on_ask=<prompt\|deny\|judge>` | No | `prompt`, the default, asks you `allow? [y/N]` on the terminal. If stdin is not a terminal, for example in CI, it denies the call. `deny` denies the call. `judge` asks a judge model with `guardrails=`. It needs `autonomy=ask_if_risky` or `always_ask`. |
+| `guardrails="<text>"` | With `on_ask=judge` | The rules that the judge applies. Atama also puts them into the system prompt. |
+| `judge_model=<profile>` | No | The model profile of the judge. Without it, the judge uses the model of the agent. |
+
+The default of `autonomy=` is `no_ask`, so a job without the option runs as
+before. A `claude-agent` action has the default `ask_if_risky`.
+
+A denied call does not run. The model gets the reason as the result of the
+call, and it can try another way. A denied call does not count in
+`max_violations=`. With `--debug`, Atama writes each denied call and its
+reason to stderr. The tokens of the judge count in the token budget of the
+action.
+
+These rules stop the job before it starts:
+
+1. `on_ask=` with `autonomy=no_ask`, because no call waits.
+2. `autonomy=always_ask` with `on_ask=deny`, because each call is denied.
+3. `on_ask=judge` without `guardrails=`.
+4. For a `coder` agent, `guardrails=` or `judge_model=` without
+   `on_ask=judge`.
+5. For an `autonomous` agent, `toolGuard=judge` with `autonomy=` other than
+   `no_ask`. Both examine each call, so use one of them.
+6. `autonomy=` or `on_ask=` for a `summarizer` agent, which has no tools.
+
+```markdown
+- actions:
+  - agent:coder
+    - model=local-qwen
+    - autonomy=ask_if_risky
+    - task=Fix the failing test.
+  - agent:coder
+    - model=local-qwen
+    - autonomy=always_ask
+    - on_ask=judge
+    - judge_model=small-judge
+    - guardrails=Do not run git push. Do not delete files.
+    - task=Clean up the build scripts.
+```
+
+In the first action, each `bash` command asks you on the terminal before
+it runs. In the second action, a judge model decides each call, so the job
+can run alone.
+
 ### `agent:coder`
 
 A `coder` agent has the `bash` tool. The tool runs a command in the
 directory where you start Atama. Atama cuts a tool result after 20,000
 characters. A `coder` agent fails on the options `expertise=` and
-`max_output=`, and on the options of `autonomous`.
+`max_output=`, and on the options of `autonomous`. It takes `autonomy=`
+and `on_ask=`, and with `on_ask=judge` also `guardrails=` and
+`judge_model=` (see [Approval of the tool calls](#approval-of-the-tool-calls)).
 
-If you use `agent:coder`, the model can run any command with your
-permissions. Use it only in a directory and with a model that you trust.
+If you use `agent:coder` without `autonomy=`, the model can run any command
+with your permissions. Use it only in a directory and with a model that you
+trust. With `autonomy=ask_if_risky`, each `bash` command waits for your
+approval.
 
 ```markdown
 - actions:
@@ -376,7 +438,9 @@ It takes these options:
 | `toolGuard=<prompt\|judge>` | No | `prompt`, the default, only puts the guardrails into the system prompt. `judge` also sends each tool call to the judge before it runs. A call that breaks a guardrail does not run, and the agent gets the reason. `judge` needs `guardrails=`. |
 | `max_violations=<n>` | No | The most tool calls that the guard blocks before the action fails. The default is 3. |
 | `protect="<patterns>"` | No | Globs of the paths that the tools cannot write, separated by commas, as in `protect="src/**,Cargo.toml"`. See [Protected paths](#protected-paths). |
-| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=` or `toolGuard=judge`. |
+| `judge_model=<profile>` | No | The name of a model profile in the `config` block for the judge and the guard. Without it, they use the model of the agent. It needs `success=`, `toolGuard=judge` or `on_ask=judge`. |
+| `autonomy=<no_ask\|ask_if_risky\|always_ask>` | No | Which tool calls wait for approval. The default is `no_ask`. See [Approval of the tool calls](#approval-of-the-tool-calls). It cannot be with `toolGuard=judge`. |
+| `on_ask=<prompt\|deny\|judge>` | No | Who answers a call that waits. `judge` uses the guard of `toolGuard=judge` with `guardrails=`, but a denied call is not a violation. |
 | `budget=<name>` | No | The name of a budget block with the general limits and tools of the agent. See [Budget blocks](#budget-blocks). |
 
 The judge and the guard use the model profile of `judge_model=`, else the
@@ -394,8 +458,8 @@ With `--debug`, each header of a run with more than one iteration names
 the iteration, as in `iteration 2 step 3`. The header of each request also
 shows the used time, as in `41s of 30m`.
 
-If you use `agent:autonomous`, the model can run any command with your
-permissions, and nobody approves each command. Use it only in a directory
+If you use `agent:autonomous` without `autonomy=`, the model can run any
+command with your permissions, and nobody approves each command. Use it only in a directory
 and with a model that you trust. `protect=` keeps the agent from writing
 the paths that you name, but it does not limit the other commands.
 
@@ -423,7 +487,7 @@ the types and functions in `src/agent_loop_openai_compat/`.
 1. The loop starts with the system prompt and the task. It makes the list of `FinalLoopCheck`s from the options: `SchemaCheck`, `CommandCheck`, then `SuccessJudge`.
 2. Before each step, `RunBudget` makes sure that the run still has steps, tokens and time. With `max_context=`, the loop compacts a conversation that is too long.
 3. The loop sends the conversation to the model. The model replies with tool calls or with a final text.
-4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation.
+4. With `toolGuard=judge`, `judge::review` asks the `Judge` about each tool call. If the `Verdict` has `pass: false`, the call does not run, and it counts as a violation. With `autonomy=`, a call that waits goes to the answer of `on_ask=` instead. A denied call does not run, and it is not a violation.
 5. If the guard allows the call, the tool runs. With `protect=`, a write to a protected path fails. The result goes into the conversation, and the loop goes back to step 2.
 6. A reply without tool calls goes through the `FinalLoopCheck`s in order. `SchemaCheck` and `CommandCheck` decide without a model.
 7. `SuccessJudge` asks the `Judge` with the criteria, the evidence and the reply. The `Verdict` becomes `Done` if `pass` is true, else `Retry` with its `reason`.
@@ -520,22 +584,251 @@ Each line is `<key>: <value>`. A key with no value starts a list, and each
 item of the list is a `- <item>` line after it. The keys are the options
 `max_steps`, `token_budget`, `max_context`, `thinking`, `max_iterations`,
 `max_time`, `success_check`, `success`, `toolGuard`, `max_violations`,
-`judge_model`, and `tools`. A list of text, such as `success:`, gives the
+`judge_model`, `autonomy`, `on_ask`, and `tools`. A list of text, such as `success:`, gives the
 agent one `- <item>` line for each item.
 
 An option of the action replaces the same option of the block. The action
 needs `model=` in its options.
 
 `tools:` selects the tools of the agent from `bash`, `read_file`,
-`write_file` and `list_files`. Each tool can have `max_calls=<n>`, the most
+`write_file`, `list_files` and `web_search`. Each tool can have `max_calls=<n>`, the most
 calls in one run (default 50), and `max_failures=<n>`, the most failed
-calls (default 10). Without `tools:`, the agent gets all four tools with the
-default limits.
+calls (default 10). Without `tools:`, the agent gets `bash`, `read_file`,
+`write_file` and `list_files` with the default limits. It gets
+`web_search` only from `tools:`, because each search uses Tavily credits. [TOOLS.md](TOOLS.md#local-tools) describes each tool.
 
 Atama reads the block and the options of every agent action before the job
 starts. An unknown key, an unknown tool, an invalid option, or an
 `autonomous` action without `success=` or `success_check=` stops the job
 with the line of the error.
+
+## `agent:claude-agent`
+
+```text
+agent:claude-agent
+  - model=<profile>
+  - <key>=<value>
+  - ...
+```
+
+Runs a Claude Managed Agent with the Anthropic Managed Agents API, not
+with `/chat/completions`. Anthropic runs the agent loop. Atama creates the
+agent and the environment once, and keeps their IDs in
+`.atama/claude-lock.json`. Then it starts a session, sends the task and the
+input, runs the local tools that the agent calls, and answers each native
+tool call that waits for approval. The output is the last message of the
+agent. See [PLAN-claude-agent.md](PLAN-claude-agent.md) for the options and
+the rules between them.
+
+`success_check=<command>` is a bash command that Atama runs on the local
+machine at the end of each turn of the agent. Exit status 0 means that the
+task is done. If the command fails, Atama sends its exit status and the
+last 5,000 characters of its stdout and stderr to the agent as the next
+message. The check cannot see the files of the cloud environment, so the
+agent must do its work with `local_tools=`. With `output_schema=`, the
+reply must match the schema before the check runs. `max_turns=` (default
+3) limits the messages that Atama sends, the task included.
+
+The run fails at `max_time=`, at `max_cost_usd=`, over `token_budget=`, or
+if the session fails. Then Atama sends `user.interrupt` to the session when
+it can. Atama does not delete the session, so that you can read it in the
+Claude Console. With `--debug`, Atama writes the link of the session and
+each event to stderr. To get the link of a session, you must run the job
+with `--debug`. Without it, Atama does not show the link.
+
+The options are a list under the action, as for `agent:<type>`. The model
+profile needs `api_key=`, and cannot have `thinking=`. `effort=` of the
+profile sets the effort of the model. A `foreach agent:claude-agent` action
+has the list under the `foreach` line.
+
+A ```` ```claude-env:<name> ```` block before the `# <name>` heading
+defines a cloud environment, and `environment=<name>` selects it. Each line
+is `<key>: <value>`:
+
+````markdown
+```claude-env:research
+networking: limited
+allowed_hosts: arxiv.org, *.docs.rs
+```
+````
+
+Without `name=`, the agent gets the name `atama-<job>-<task>-<n>`, in lower
+case, where `<n>` is the number of the action in its task.
+
+### Remote tools and local tools
+
+A `claude-agent` action can use two kinds of tools. Without a tool option,
+the agent has no tools and only replies with text. [TOOLS.md](TOOLS.md)
+describes each tool.
+
+| | Remote tools | Local tools |
+| --- | --- | --- |
+| Option | `native_tools=` | `local_tools=` |
+| Tools | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, or `all` | `bash`, `read_file`, `write_file`, `list_files`, `web_search` |
+| Where they run | In the cloud container of the session | On this machine, in the working directory of Atama |
+| Who runs them | Anthropic | Atama, when the agent calls `local_<name>` |
+| Files | Stay in the container. This machine cannot read them. | Are on this machine. `success_check=` and the next actions can read them. |
+| Network | The environment of the session (`environment=`) limits it. | The network of this machine. |
+| Approval | `autonomy=` sets the permission policy of the API. | `autonomy=` and `on_ask=`, in Atama. |
+| Protection | `allowed_domains=` and `blocked_domains=` for the web tools | `protect=` |
+
+Commas separate the names of a list. An action can have both options.
+
+#### Remote tools
+
+The remote tools are the native tools of the Claude agent. Use them when
+the work does not need the files of this machine, for example to search
+the web, to read pages, or to run code in a clean container.
+
+````markdown
+```claude-env:web
+networking: limited
+allowed_hosts: *.python.org, docs.rs
+```
+
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - environment=web
+    - native_tools=web_search, web_fetch
+    - allowed_domains=python.org, docs.rs
+    - autonomy=ask_if_risky
+    - max_cost_usd=0.50
+    - task=Find the release date of the newest Python version.
+````
+
+These rules apply to the remote tools:
+
+1. `web_search` and `web_fetch` need an environment that can reach the
+   web. The default environment, `atama-default`, has `limited` networking
+   with no hosts. So name a ```` ```claude-env:<name> ```` block with
+   `allowed_hosts:`, or with `networking: unrestricted`, in
+   `environment=`. Otherwise the job stops before it starts.
+2. `allowed_domains=` names the only hosts that the web tools can reach.
+   `blocked_domains=` names the hosts that they cannot reach. Use one of
+   the two lists, not both. Each one needs `web_search` or `web_fetch`.
+   The API rejects a host that the crawler of Anthropic cannot reach.
+3. `autonomy=` becomes the permission policy of the API. `no_ask` lets
+   each call run. `ask_if_risky`, the default, lets a safe call run, denies
+   a high-risk call, and asks you about an unclear call. `always_ask` asks
+   you about each call. `on_ask=` sets who answers: `prompt` asks on the
+   terminal, `deny` denies the call, and `judge` asks a judge model (see
+   "A judge for the calls that wait" below).
+4. The web tools can read many pages, and each page costs tokens. Set
+   `max_cost_usd=` or `token_budget=`. If you only need search results,
+   the `websearch` action in an earlier step costs less.
+5. An action with `agent_id=` uses an agent that exists, so it cannot set
+   `native_tools=`. The agent keeps its own tools.
+
+#### Local tools
+
+The local tools are the tools of Atama. Use them when the agent must read
+or write the files of this machine, or when `success_check=` must see its
+work.
+
+```markdown
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - local_tools=read_file, write_file
+    - autonomy=no_ask
+    - protect=./jobs, ./src
+    - success_check=test -s ./output/report.json
+    - task=Write a report of ./data/results.csv to ./output/report.json.
+```
+
+These rules apply to the local tools:
+
+1. The agent sees each tool with the prefix `local_`, as in
+   `local_write_file`. Atama runs the call and sends the result back.
+2. With `ask_if_risky`, `read_file` and `list_files` run, and `bash` and
+   `write_file` wait for approval. With no terminal, for example in CI,
+   `on_ask=prompt` denies the call. So for a job that runs alone, use
+   `autonomy=no_ask` with `protect=`, or `on_ask=judge`.
+3. `protect=` names the paths that the local tools cannot write. It needs
+   `local_tools=`, and it does not apply to the remote tools.
+4. Each local tool can run 50 times at most, and can fail 10 times at
+   most.
+
+#### A judge for the calls that wait
+
+`on_ask=judge` sends each tool call that waits for approval to a judge
+model, instead of to you. It is the same judge as the guard of
+`toolGuard=judge` of an [`agent:autonomous`](#agentautonomous) action. The
+same code (`judge::review`) asks the same question, so a judge profile and
+guardrails that work for an `autonomous` action also work here.
+
+| Option | Required | Description |
+| --- | --- | --- |
+| `on_ask=judge` | No | A judge decides each call that waits. |
+| `judge_model=<profile>` | With `on_ask=judge` | The model profile of the judge, in the `config` block. It is an OpenAI compatible profile, as the `judge_model=` of an `autonomous` action. The API key comes from its own `api_key=` variable. |
+| `guardrails=<rules>` | With `on_ask=judge` | The rules in natural language that the judge applies, as the `guardrails=` of an `autonomous` action. |
+
+To change an `autonomous` action with `toolGuard=judge` to a
+`claude-agent` action, keep `judge_model=` and `guardrails=`, and replace
+`toolGuard=judge` with `on_ask=judge`:
+
+````markdown
+```config
+claude: model=claude-opus-5-5, base_url=https://api.anthropic.com/v1, api_key=CLAUDE_API_KEY
+local: model=qwen3, base_url=http://localhost:11434/v1, thinking=false
+```
+
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - local_tools=bash, write_file
+    - autonomy=ask_if_risky
+    - on_ask=judge
+    - judge_model=local
+    - guardrails=Write files only in ./output. Never delete files.
+    - task=Make a report of the logs in ./logs in ./output/report.md.
+````
+
+These rules apply to the judge:
+
+1. The judge gets the guardrails, the name of the tool and its input. It
+   allows a call that breaks none of the guardrails. Else it denies the
+   call, and the agent gets "blocked by guardrail: <reason>". A judge that
+   fails denies the call.
+2. The judge decides only the calls that wait. With
+   `autonomy=ask_if_risky`, a remote call that the API finds safe and a
+   local `read_file` or `list_files` run without the judge. With
+   `always_ask`, the judge decides each call. `autonomy=no_ask` with
+   `on_ask=judge` stops the job, because no call waits.
+3. The tokens of the judge count in `token_budget=` of the action, with
+   the tokens of the session. `max_cost_usd=` counts only the session.
+4. `judge_model=` and `guardrails=` need `on_ask=judge`. To give the agent
+   rules without a judge, put them in `system=`.
+5. A denied call does not stop the run. The agent can try another way.
+   Unlike `max_violations=` of an `autonomous` action, no limit counts the
+   denied calls. `max_time=`, `token_budget=` and `max_cost_usd=` still
+   stop the run.
+6. With `--debug`, Atama writes each answer and the reason of each denied
+   call to stderr.
+
+#### Both kinds
+
+An action can use both kinds, for example `web_fetch` to read a page in
+the cloud and `local_write_file` to save the result on this machine. The
+agent decides which tool to call, so name the tool in the task:
+
+```markdown
+- actions:
+  - agent:claude-agent
+    - model=claude
+    - environment=web
+    - native_tools=web_fetch
+    - local_tools=write_file
+    - autonomy=no_ask
+    - protect=./jobs
+    - task=Read https://docs.python.org/3/whatsnew/ with web_fetch.
+      Then save a list of the new features to ./output/python.md with
+      local_write_file.
+```
+
+A file that a remote tool writes stays in the container. To get it on
+this machine, the agent must write it again with a local tool.
 
 ## `read_file`
 

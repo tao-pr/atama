@@ -6,6 +6,12 @@
 //! a system prompt, one user message and no tools, and the reply must match
 //! [`verdict_schema`]. The judge uses the client and the model of the
 //! agent, and its tokens count in the token budget of the run.
+//!
+//! [`JudgeApprover`] uses the same guard ([`review`]) for `on_ask=judge` of
+//! a `claude-agent` action.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use serde_json::{Value, json};
 
@@ -13,6 +19,7 @@ use super::checks::{CheckResult, FinalLoopCheck, tail};
 use super::context::SUMMARY_HEADER;
 use super::{ChatClient, Message, ToolCall};
 use crate::schema::OutputSchema;
+use crate::tools::Approver;
 
 /// Most characters of the tool calls and results that the success judge
 /// gets as evidence. A longer evidence keeps its end.
@@ -188,5 +195,50 @@ pub fn review(judge: &mut Judge, guardrails: &str, call: &ToolCall) -> Option<St
         Ok(verdict) if verdict.pass => None,
         Ok(verdict) => Some(verdict.reason),
         Err(err) => Some(err),
+    }
+}
+
+/// `on_ask=judge` of a `claude-agent` action: an [`Approver`] that asks the
+/// guard of `toolGuard=judge` ([`review`]) about each call that waits for
+/// approval. It allows a call that breaks none of the guardrails. A guard
+/// that fails denies the call.
+pub struct JudgeApprover {
+    client: Box<dyn ChatClient>,
+    guardrails: String,
+    /// The tokens of all the replies of the judge. The run adds them to
+    /// its token budget.
+    tokens: Rc<Cell<u64>>,
+}
+
+impl JudgeApprover {
+    pub fn new(client: Box<dyn ChatClient>, guardrails: &str) -> Self {
+        JudgeApprover {
+            client,
+            guardrails: guardrails.to_string(),
+            tokens: Rc::new(Cell::new(0)),
+        }
+    }
+
+    /// The counter of the tokens of the judge, shared with the run.
+    pub fn tokens(&self) -> Rc<Cell<u64>> {
+        self.tokens.clone()
+    }
+}
+
+impl Approver for JudgeApprover {
+    fn approve(&mut self, tool: &str, input: &Value) -> Result<(), String> {
+        let call = ToolCall {
+            id: String::new(),
+            name: tool.to_string(),
+            arguments: input.to_string(),
+        };
+        let mut judge = Judge::new(self.client.as_mut());
+        let blocked = review(&mut judge, &self.guardrails, &call);
+        let used: u64 = judge.tokens.iter().flatten().sum();
+        self.tokens.set(self.tokens.get() + used);
+        match blocked {
+            None => Ok(()),
+            Some(reason) => Err(format!("blocked by guardrail: {reason}")),
+        }
     }
 }

@@ -33,7 +33,7 @@ use crate::agent_loop_openai_compat::tools::{
 use crate::schema::{MAX_NAME_CHARS, is_name};
 
 /// The options of an action that a budget block can set, besides `tools`.
-pub const BLOCK_KEYS: [&str; 11] = [
+pub const BLOCK_KEYS: [&str; 13] = [
     "max_steps",
     "token_budget",
     "max_context",
@@ -45,6 +45,8 @@ pub const BLOCK_KEYS: [&str; 11] = [
     "toolGuard",
     "max_violations",
     "judge_model",
+    "autonomy",
+    "on_ask",
 ];
 
 /// The options that only the action can set, because they change with
